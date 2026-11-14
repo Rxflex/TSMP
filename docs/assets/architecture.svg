@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-label="How TSMP joins two games: each game runs a script mod that talks to its launcher over the loopback interface, and the two launchers talk over the local network">
+<defs>
+<pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#1b2946" stroke-width="1"/></pattern>
+<marker id="lamp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#ffc857"/></marker>
+<marker id="sky" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#8fb4ff"/></marker>
+<marker id="good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#63d9b0"/></marker>
+</defs>
+<rect width="1280" height="520" rx="18" fill="#111b30"/>
+<rect width="1280" height="520" rx="18" fill="url(#grid)"/>
+
+<g font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+<!-- computers -->
+<g fill="#16223a" stroke="#34486e" stroke-width="2">
+<rect x="40" y="56" width="500" height="300" rx="14"/>
+<rect x="740" y="56" width="500" height="300" rx="14"/>
+</g>
+<text x="64" y="92" font-size="20" font-weight="700" fill="#eaf0fa">Host computer</text>
+<text x="764" y="92" font-size="20" font-weight="700" fill="#eaf0fa">Guest computer</text>
+
+<!-- game boxes -->
+<g fill="#1d2c49" stroke="#7f97c4" stroke-width="2">
+<rect x="64" y="116" width="452" height="128" rx="10"/>
+<rect x="764" y="116" width="452" height="128" rx="10"/>
+</g>
+<g font-size="15" fill="#93a4c4">
+<text x="84" y="144">The game</text>
+<text x="784" y="144">The game</text>
+</g>
+<g fill="#25375a" stroke="#34486e" stroke-width="1.5">
+<rect x="84" y="158" width="128" height="66" rx="8"/>
+<rect x="228" y="158" width="128" height="66" rx="8"/>
+<rect x="784" y="158" width="128" height="66" rx="8"/>
+<rect x="928" y="158" width="128" height="66" rx="8"/>
+</g>
+<g fill="#25375a" stroke="#ffc857" stroke-width="2">
+<rect x="372" y="158" width="124" height="66" rx="8"/>
+<rect x="1072" y="158" width="124" height="66" rx="8"/>
+</g>
+<g font-size="15" text-anchor="middle" fill="#eaf0fa">
+<text x="148" y="187">game client</text><text x="148" y="208" font-size="12" fill="#93a4c4">what you see</text>
+<text x="292" y="187">simulation</text><text x="292" y="208" font-size="12" fill="#93a4c4">drives both clients</text>
+<text x="434" y="187" fill="#ffc857" font-weight="700">TSMP mod</text><text x="434" y="208" font-size="12" fill="#93a4c4">Python 3.7</text>
+<text x="848" y="187">game client</text><text x="848" y="208" font-size="12" fill="#93a4c4">what you see</text>
+<text x="992" y="187">simulation</text><text x="992" y="208" font-size="12" fill="#93a4c4">muted, mirrors builds</text>
+<text x="1134" y="187" fill="#ffc857" font-weight="700">TSMP mod</text><text x="1134" y="208" font-size="12" fill="#93a4c4">Python 3.7</text>
+</g>
+
+<!-- launchers -->
+<g fill="#25375a" stroke="#ffc857" stroke-width="2">
+<rect x="64" y="280" width="452" height="54" rx="10"/>
+<rect x="764" y="280" width="452" height="54" rx="10"/>
+</g>
+<g font-size="16" text-anchor="middle">
+<text x="290" y="313" fill="#ffc857" font-weight="700">TSMP launcher<tspan fill="#93a4c4" font-weight="400">  ·  Rust, relay and file sync</tspan></text>
+<text x="990" y="313" fill="#ffc857" font-weight="700">TSMP launcher<tspan fill="#93a4c4" font-weight="400">  ·  Rust, relay and file sync</tspan></text>
+</g>
+
+<!-- mod <-> launcher -->
+<g stroke="#ffc857" stroke-width="2" fill="none">
+<path d="M434 224v56" marker-start="url(#lamp)" marker-end="url(#lamp)"/>
+<path d="M1134 224v56" marker-start="url(#lamp)" marker-end="url(#lamp)"/>
+</g>
+<g font-size="12" fill="#93a4c4">
+<text x="444" y="258">127.0.0.1</text>
+<text x="1144" y="258">127.0.0.1</text>
+</g>
+
+<!-- LAN -->
+<path d="M516 307h248" stroke="#ffc857" stroke-width="3" fill="none" marker-start="url(#lamp)" marker-end="url(#lamp)"/>
+<text x="640" y="296" font-size="14" text-anchor="middle" fill="#eaf0fa">local network</text>
+
+<!-- legend: what travels -->
+<g font-size="15">
+<path d="M64 408h150" stroke="#8fb4ff" stroke-width="2.5" marker-end="url(#sky)"/>
+<text x="232" y="413" fill="#eaf0fa">simulation messages<tspan fill="#93a4c4">  host → guest: sims, objects, clock, everything the client draws</tspan></text>
+<path d="M214 444H64" stroke="#63d9b0" stroke-width="2.5" marker-end="url(#good)"/>
+<text x="232" y="449" fill="#eaf0fa">commands<tspan fill="#93a4c4">  guest → host: clicks on sims and objects, dialog answers, game speed</tspan></text>
+<path d="M64 480h150" stroke="#ffc857" stroke-width="2.5" marker-start="url(#lamp)" marker-end="url(#lamp)"/>
+<text x="232" y="485" fill="#eaf0fa">build operations<tspan fill="#93a4c4">  both ways: walls, floors, wallpaper, furniture, repeated in the other simulation</tspan></text>
+</g>
+</g>
+</svg>
