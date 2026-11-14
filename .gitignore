@@ -1,0 +1,20 @@
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# EA game code extracted/decompiled for local research only. Never commit.
+/decompiled/
+
+# Local build tools (Python 3.7 for compiling the mod)
+/.tools/
+
+# Build output
+/dist/
+*.ts4script
+
+# Captured traffic logs
+/captures/
