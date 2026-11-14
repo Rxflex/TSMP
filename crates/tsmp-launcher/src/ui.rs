@@ -8,19 +8,21 @@ use gpui::prelude::*;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit,
-    Rgba, ScrollHandle, SharedString, Stateful, Svg, Window, WindowControlArea, div, img, px, relative, rgb, svg,
+    Animation, AnimationElement, AnimationExt, AnyElement, App, ClickEvent, Context, Div,
+    ElementId, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit, Rgba,
+    ScrollHandle, SharedString, Stateful, Svg, Window, WindowControlArea, div, img,
+    linear_color_stop, linear_gradient, pulsating_between, px, relative, rgb, svg,
 };
 use tsmp_core::packs::{PackSet, pack_name};
-use tsmp_net::protocol::DEFAULT_PORT;
 use tsmp_net::live::LiveStatus;
+use tsmp_net::protocol::DEFAULT_PORT;
 use tsmp_net::protocol::GuestStatus;
 
 use crate::i18n::{I18n, tr};
 use crate::mappings::Support;
 use crate::model::{
-    Env, GameState, HostScreen, HostStage, JoinScreen, JoinStage, JoinStep, Model, Plan, Preview, Running, Screen,
-    Synced,
+    Env, GameState, HostScreen, HostStage, JoinScreen, JoinStage, JoinStep, Model, Plan, Preview,
+    Running, Screen, Synced,
 };
 
 /// Lines of the mods' log shown under the session status.
@@ -60,7 +62,13 @@ const NAMED_SIMS: usize = 3;
 const LISTED_FILES: usize = 6;
 
 /// The steps of a session, in the order the rail shows them.
-const STEPS: [&str; 5] = ["step-role", "step-sync", "step-launch", "step-load", "step-play"];
+const STEPS: [&str; 5] = [
+    "step-role",
+    "step-sync",
+    "step-launch",
+    "step-load",
+    "step-play",
+];
 
 pub struct Launcher {
     model: Model,
@@ -75,13 +83,18 @@ pub struct Launcher {
     address_refused: bool,
     /// This computer's address on the local network, for the other player to type.
     lan_address: Option<IpAddr>,
+    /// The door of the home screen under the pointer, and the one it just left.
+    door: Option<&'static str>,
+    door_left: Option<&'static str>,
 }
 
 impl Launcher {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(100)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
                 let alive = this.update(cx, |this, cx| {
                     // The page learns its own height only once drawn, so the
                     // scroll bar follows it from here.
@@ -107,12 +120,17 @@ impl Launcher {
             address_focus: cx.focus_handle(),
             address_refused: false,
             lan_address: lan_address(),
+            door: None,
+            door_left: None,
         }
     }
 
     /// How much of the page is out of sight, and how far it is scrolled.
     fn scroll_position(&self) -> (f32, f32) {
-        (f32::from(self.scroll.max_offset().height), -f32::from(self.scroll.offset().y))
+        (
+            f32::from(self.scroll.max_offset().height),
+            -f32::from(self.scroll.offset().y),
+        )
     }
 
     /// Shows that the page goes on below, and how far down the player is.
@@ -134,7 +152,10 @@ impl Launcher {
                 .w(px(8.))
                 .h(px(thumb))
                 .rounded_full()
-                .bg(Rgba { a: 0.55, ..rgb(MUTED) }),
+                .bg(Rgba {
+                    a: 0.55,
+                    ..rgb(MUTED)
+                }),
         )
     }
 
@@ -145,7 +166,9 @@ impl Launcher {
             if keystroke.key != "v" {
                 return;
             }
-            cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default()
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .unwrap_or_default()
         } else {
             match keystroke.key.as_str() {
                 "backspace" => {
@@ -156,8 +179,11 @@ impl Launcher {
                 _ => keystroke.key_char.clone().unwrap_or_default(),
             }
         };
-        let allowed = typed.chars().filter(|c| c.is_ascii_digit() || matches!(c, '.' | ':'));
-        self.address.extend(allowed.take(ADDRESS_LENGTH.saturating_sub(self.address.len())));
+        let allowed = typed
+            .chars()
+            .filter(|c| c.is_ascii_digit() || matches!(c, '.' | ':'));
+        self.address
+            .extend(allowed.take(ADDRESS_LENGTH.saturating_sub(self.address.len())));
         self.address_refused = false;
         cx.notify();
     }
@@ -182,6 +208,22 @@ impl Launcher {
     }
 
     /// The last lines the mods of both games logged.
+    /// Remembers which door of the home screen the pointer is over.
+    fn door_hover(
+        cx: &mut Context<Self>,
+        id: &'static str,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, inside: &bool, _, cx| {
+            if *inside {
+                this.door = Some(id);
+            } else if this.door == Some(id) {
+                this.door = None;
+                this.door_left = Some(id);
+            }
+            cx.notify();
+        })
+    }
+
     fn mod_log(&self) -> Option<Div> {
         let lines = &self.model.live_log;
         if lines.is_empty() {
@@ -189,24 +231,34 @@ impl Launcher {
         }
         let from = lines.len().saturating_sub(MOD_LOG_LINES);
         Some(
-            div()
-                .mt_1()
-                .flex()
-                .flex_col()
-                .children(lines[from..].iter().map(|line| small(line.clone()).text_size(px(13.)).truncate())),
+            div().mt_1().flex().flex_col().children(
+                lines[from..]
+                    .iter()
+                    .map(|line| small(line.clone()).text_size(px(13.)).truncate()),
+            ),
         )
     }
 
     /// How many of [`STEPS`] are behind the player.
     fn steps_done(&self) -> usize {
         if let GameState::Running { .. } = self.model.game {
-            return if self.model.live.is_some_and(|live| live.is_live()) { 5 } else { 3 };
+            return if self.model.live.is_some_and(|live| live.is_live()) {
+                5
+            } else {
+                3
+            };
         }
         match &self.model.screen {
             Screen::Host(HostScreen {
                 stage: HostStage::Running(running),
                 ..
-            }) if running.guests.iter().any(|guest| matches!(guest.status, Some(GuestStatus::Ready))) => 2,
+            }) if running
+                .guests
+                .iter()
+                .any(|guest| matches!(guest.status, Some(GuestStatus::Ready))) =>
+            {
+                2
+            }
             Screen::Join(JoinScreen {
                 stage: JoinStage::Ready(_),
                 ..
@@ -224,41 +276,46 @@ impl Launcher {
         }
     }
 
-    /// Where the player is on the way into a session, as a row over the page.
-    fn steps(&self) -> Div {
+    /// Which screen is up, as a number that changes when it does, and whether
+    /// the launcher is in the middle of something there.
+    fn scene(&self) -> (usize, bool) {
+        match &self.model.screen {
+            Screen::Loading => (0, true),
+            Screen::Home => (1, false),
+            Screen::Fatal(_) => (2, false),
+            Screen::Host(screen) => match &screen.stage {
+                HostStage::Setup => (10, false),
+                HostStage::Starting => (11, true),
+                HostStage::Running(_) => (12, false),
+                HostStage::Failed(_) => (13, false),
+            },
+            Screen::Join(screen) => match &screen.stage {
+                JoinStage::Browsing => (20, false),
+                JoinStage::Working(_) => (21, true),
+                JoinStage::Review(_) => (22, false),
+                JoinStage::Syncing(_) => (23, true),
+                JoinStage::Ready(_) => (24, false),
+                JoinStage::Failed(_) => (25, false),
+            },
+        }
+    }
+
+    /// Where the player is on the way into a session: a bar per step, filled
+    /// as far as the player has come.
+    fn progress(&self, busy: bool) -> Div {
         let t = &self.i18n;
         let done = self.steps_done();
-        let mut row = div().w_full().max_w(px(PAGE_WIDTH)).mx_auto().flex();
+        let mut row = div()
+            .w_full()
+            .max_w(px(PAGE_WIDTH))
+            .mx_auto()
+            .flex()
+            .gap_2();
         for (index, key) in STEPS.iter().enumerate() {
-            let (ring, fill, label) = match index {
-                i if i < done => (GOOD, None, MUTED),
-                i if i == done => (LAMP, Some(LAMP), TEXT),
-                _ => (LINE, None, MUTED),
-            };
-            let marker = div()
-                .size(px(30.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .border_1()
-                .border_color(rgb(ring))
-                .when_some(fill, |this, fill| this.bg(rgb(fill)))
-                .text_size(px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(if fill.is_some() { INK } else { MUTED }))
-                .child(if index < done {
-                    icon("check", 15., GOOD).into_any_element()
-                } else {
-                    (index + 1).to_string().into_any_element()
-                });
-            // The line to the step before and to the step after.
-            let link = |shown: bool, walked: bool| {
-                div()
-                    .flex_1()
-                    .h(px(1.))
-                    .when(shown, |this| this.bg(rgb(if walked { GOOD } else { LINE })))
+            let (bar, label) = match index {
+                i if i < done => (GOOD, MUTED),
+                i if i == done => (LAMP, TEXT),
+                _ => (LINE, MUTED),
             };
             row = row.child(
                 div()
@@ -266,30 +323,28 @@ impl Launcher {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .items_center()
                     .gap_2()
+                    .child(if busy && index == done {
+                        pulse(div().h(px(4.)).rounded_full().bg(rgb(bar)), "step")
+                            .into_any_element()
+                    } else {
+                        div()
+                            .h(px(4.))
+                            .rounded_full()
+                            .bg(rgb(bar))
+                            .into_any_element()
+                    })
                     .child(
                         div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .child(link(index > 0, index <= done))
-                            .child(marker)
-                            .child(link(index < STEPS.len() - 1, index < done)),
-                    )
-                    .child(
-                        div()
-                            .px_2()
-                            .text_center()
-                            .text_size(px(14.))
-                            .line_height(relative(1.35))
+                            .text_size(px(13.))
+                            .line_height(relative(1.3))
                             .text_color(rgb(label))
                             .when(index == done, |this| this.font_weight(FontWeight::MEDIUM))
                             .child(tr!(t, *key)),
                     ),
             );
         }
-        div().flex_none().px(px(GUTTER)).pt_6().pb_4().child(row)
+        div().flex_none().px(px(GUTTER)).pt_5().pb_2().child(row)
     }
 
     /// The list of languages, over everything else. A click anywhere closes it.
@@ -363,24 +418,32 @@ impl Launcher {
 
     /// The strip the window is dragged by, with the window's own buttons.
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let control = |name: &'static str, area: WindowControlArea, hover: u32, fallback: fn(&mut Window)| {
-            div()
-                .id(name)
-                .group(name)
-                .w(px(46.))
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .hover(move |style| style.bg(rgb(hover)))
-                .window_control_area(area)
-                // Windows presses these itself; elsewhere it is up to us.
-                .when(!cfg!(target_os = "windows"), |this| {
-                    this.on_click(move |_, window, _| fallback(window))
-                })
-                .child(icon(name, 16., MUTED).group_hover(name, |style| style.text_color(rgb(TEXT))))
+        let control =
+            |name: &'static str, area: WindowControlArea, hover: u32, fallback: fn(&mut Window)| {
+                div()
+                    .id(name)
+                    .group(name)
+                    .w(px(46.))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(move |style| style.bg(rgb(hover)))
+                    .window_control_area(area)
+                    // Windows presses these itself; elsewhere it is up to us.
+                    .when(!cfg!(target_os = "windows"), |this| {
+                        this.on_click(move |_, window, _| fallback(window))
+                    })
+                    .child(
+                        icon(name, 16., MUTED)
+                            .group_hover(name, |style| style.text_color(rgb(TEXT))),
+                    )
+            };
+        let resize = if window.is_maximized() {
+            "restore"
+        } else {
+            "maximize"
         };
-        let resize = if window.is_maximized() { "restore" } else { "maximize" };
         div()
             .h(px(TITLEBAR_HEIGHT))
             .flex_none()
@@ -423,13 +486,13 @@ impl Launcher {
                             tr!(self.i18n, "update-ready", version = version.as_str())
                         })
                         .when(restart, |this| {
-                            this.cursor_pointer().hover(|style| style.bg(rgb(PANEL))).on_click(cx.listener(
-                                |_, _, _, cx| {
+                            this.cursor_pointer()
+                                .hover(|style| style.bg(rgb(PANEL)))
+                                .on_click(cx.listener(|_, _, _, cx| {
                                     if crate::update::restart().is_ok() {
                                         cx.quit();
                                     }
-                                },
-                            ))
+                                }))
                         }),
                 )
             }))
@@ -455,83 +518,179 @@ impl Launcher {
                         .child(self.i18n.current().name.clone()),
                 ),
             )
-            .child(control("minimize", WindowControlArea::Min, PANEL, |window| {
-                window.minimize_window()
+            .child(control(
+                "minimize",
+                WindowControlArea::Min,
+                PANEL,
+                |window| window.minimize_window(),
+            ))
+            .child(control(resize, WindowControlArea::Max, PANEL, |window| {
+                window.zoom_window()
             }))
-            .child(control(resize, WindowControlArea::Max, PANEL, |window| window.zoom_window()))
-            .child(control("close", WindowControlArea::Close, CLOSE_HOVER, |window| {
-                window.remove_window()
-            }))
+            .child(control(
+                "close",
+                WindowControlArea::Close,
+                CLOSE_HOVER,
+                |window| window.remove_window(),
+            ))
     }
 
-    fn home(&self, env: &Env, cx: &mut Context<Self>) -> AnyElement {
+    /// The first screen is one question, so it is the whole window: a door
+    /// to open and a door to walk to, with this computer's facts underneath.
+    fn home(&self, env: &Env, cx: &mut Context<Self>) -> Div {
         let t = &self.i18n;
-        page(tr!(t, "home-title"), Some(tr!(t, "home-lead")))
+        let game = match &env.game.version {
+            Some(version) => tr!(t, "rail-game", version = version.as_str()),
+            None => tr!(t, "rail-game-unknown"),
+        };
+        let packs = if env.packs.is_empty() {
+            tr!(t, "packs-none")
+        } else {
+            tr!(t, "packs-count", n = env.packs.len())
+        };
+        let building = match (self.model.building, &env.game.version) {
+            (None, _) => div()
+                .flex()
+                .gap_2()
+                .child(pulse(dot(MUTED), "checking"))
+                .child(div().min_w_0().child(tr!(t, "building-checking"))),
+            (Some(Support::Ready), _) => status_line(GOOD, tr!(t, "building-ready")),
+            (Some(Support::Missing), Some(version)) => status_line(
+                WARNING,
+                tr!(t, "building-missing", version = version.as_str()),
+            ),
+            _ => status_line(WARNING, tr!(t, "building-unknown")),
+        };
+        let glow = |id: &'static str| {
+            if self.door == Some(id) {
+                Glow::In
+            } else if self.door_left == Some(id) {
+                Glow::Out
+            } else {
+                Glow::Rest
+            }
+        };
+        let (host_glow, join_glow) = (glow("host"), glow("join"));
+        let host = door(
+            "host",
+            "door-host",
+            "door",
+            tr!(t, "home-host"),
+            tr!(t, "home-host-detail"),
+            host_glow,
+            Self::door_hover(cx, "host"),
+            Self::act(cx, Model::open_host),
+        );
+        let join = door(
+            "join",
+            "door-join",
+            "people",
+            tr!(t, "home-join"),
+            tr!(t, "home-join-detail"),
+            join_glow,
+            Self::door_hover(cx, "join"),
+            Self::act(cx, Model::open_join),
+        );
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(arrive(
+                div()
+                    .flex_none()
+                    .px(px(GUTTER / 2.))
+                    .pt_6()
+                    .pb_5()
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap_8()
+                    .child(
+                        div()
+                            .font_family(DISPLAY_FONT)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(30.))
+                            .line_height(relative(1.2))
+                            .child(tr!(t, "home-title")),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(420.))
+                            .pb_1()
+                            .text_color(rgb(MUTED))
+                            .child(tr!(t, "home-lead")),
+                    ),
+                "home-head",
+                0.,
+                10.,
+            ))
             .when(!env.script_mods_enabled, |this| {
-                this.child(notice(WARNING, tr!(t, "script-mods-off")))
+                this.child(
+                    div()
+                        .px(px(GUTTER / 2.))
+                        .pb_4()
+                        .child(notice(WARNING, tr!(t, "script-mods-off"))),
+                )
             })
             .child(
                 div()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
-                    .gap_5()
-                    .child(choice(
-                        "host",
-                        "host",
-                        tr!(t, "home-host"),
-                        tr!(t, "home-host-detail"),
-                        Self::act(cx, Model::open_host),
-                    ))
-                    .child(choice(
-                        "join",
-                        "join",
-                        tr!(t, "home-join"),
-                        tr!(t, "home-join-detail"),
-                        Self::act(cx, Model::open_join),
-                    )),
+                    .gap(px(1.))
+                    .bg(rgb(LINE))
+                    .border_t_1()
+                    .border_b_1()
+                    .border_color(rgb(LINE))
+                    .child(arrive(host, "home-host", 0.06, 0.))
+                    .child(arrive(join, "home-join", 0.16, 0.)),
             )
-            .child(
-                section(format!("{}: {}", tr!(t, "home-computer"), env.name)).child(
-                    sheet()
-                        .child(fact_with(
+            .child(arrive(
+                div()
+                    .flex_none()
+                    .bg(rgb(RAIL))
+                    .px(px(GUTTER / 2.))
+                    .py_4()
+                    .flex()
+                    .gap_8()
+                    .child(
+                        about(tr!(t, "home-computer"), div().child(env.name.clone())).flex_none(),
+                    )
+                    .child(
+                        about(
                             tr!(t, "fact-game"),
                             div()
-                                .child(match &env.game.version {
-                                    Some(version) => tr!(t, "rail-game", version = version.as_str()),
-                                    None => tr!(t, "rail-game-unknown"),
-                                })
+                                .child(game)
                                 .child(small(env.game.install_dir.display().to_string())),
-                        ))
-                        .child(fact(tr!(t, "fact-mods"), env.game.mods_dir().display().to_string()))
-                        .child(fact_with(
-                            tr!(t, "fact-building"),
-                            match (self.model.building, &env.game.version) {
-                                (None, _) => status_line(MUTED, tr!(t, "building-checking")),
-                                (Some(Support::Ready), _) => status_line(GOOD, tr!(t, "building-ready")),
-                                (Some(Support::Missing), Some(version)) => {
-                                    status_line(WARNING, tr!(t, "building-missing", version = version.as_str()))
-                                }
-                                _ => status_line(WARNING, tr!(t, "building-unknown")),
-                            },
-                        ))
-                        .child(fact_with(tr!(t, "fact-packs"), pack_chips(t, &env.packs))),
-                ),
-            )
-            .into_any_element()
+                        )
+                        .flex_1(),
+                    )
+                    .child(about(tr!(t, "fact-packs"), div().child(packs)).flex_none())
+                    .child(about(tr!(t, "fact-building"), building).flex_1()),
+                "home-facts",
+                0.26,
+                0.,
+            ))
     }
 
     fn host(&self, screen: &HostScreen, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.i18n;
         match &screen.stage {
             HostStage::Setup => {
-                let mut saves = div().flex().flex_col().gap_2().child(save_card(
-                    ("save", 0usize),
+                let mut tiles = vec![save_tile(
+                    0,
                     screen.selected.is_none(),
-                    picture(art("new-game")),
+                    art("new-game"),
                     tr!(t, "save-none"),
-                    vec![div().text_color(rgb(MUTED)).child(tr!(t, "save-none-detail"))],
+                    vec![
+                        div()
+                            .text_color(rgb(MUTED))
+                            .child(tr!(t, "save-none-detail")),
+                    ],
                     Vec::new(),
                     Self::act(cx, |model| model.select_save(None)),
-                ));
+                )];
                 for (index, save) in screen.saves.iter().enumerate() {
                     let preview = screen.previews[index].as_deref();
                     let mut foot = vec![bytes(t, save.size), ago(t, save.modified)];
@@ -542,34 +701,43 @@ impl Launcher {
                         }
                         None => save.file_name.clone(),
                     };
-                    saves = saves.child(save_card(
-                        ("save", index + 1),
+                    tiles.push(save_tile(
+                        index + 1,
                         screen.selected == Some(index),
-                        save_picture(preview),
+                        portrait(preview),
                         title,
                         save_lines(preview),
                         foot,
                         Self::act(cx, move |model| model.select_save(Some(index))),
                     ));
                 }
+                // Rows of three, each as tall as its tallest save.
+                let mut saves = div().flex().flex_col().gap(px(TILE_GAP));
+                let mut tiles = tiles.into_iter().peekable();
+                while tiles.peek().is_some() {
+                    saves = saves.child(
+                        div()
+                            .flex()
+                            .gap(px(TILE_GAP))
+                            .children(tiles.by_ref().take(3)),
+                    );
+                }
                 page(tr!(t, "host-setup-title"), Some(tr!(t, "host-setup-lead")))
                     .child(saves)
-                    .child(
-                        buttons()
-                            .child(button("start", tr!(t, "host-start"), true, Self::act(cx, Model::start_hosting)))
-                            .child(button("back", tr!(t, "back"), false, Self::act(cx, Model::back))),
-                    )
                     .into_any_element()
             }
-            HostStage::Starting => page(tr!(t, "host-reading-title"), Some(tr!(t, "host-reading-body")))
-                .child(buttons().child(button("back", tr!(t, "cancel"), false, Self::act(cx, Model::back))))
-                .into_any_element(),
-            HostStage::Running(running) => self.hosting(screen, running, cx),
-            HostStage::Failed(message) => self.failure(tr!(t, "host-failed-title"), message, cx),
+            HostStage::Starting => page(
+                tr!(t, "host-reading-title"),
+                Some(tr!(t, "host-reading-body")),
+            )
+            .child(waiting_dots())
+            .into_any_element(),
+            HostStage::Running(running) => self.hosting(screen, running),
+            HostStage::Failed(message) => self.failure(tr!(t, "host-failed-title"), message),
         }
     }
 
-    fn hosting(&self, screen: &HostScreen, running: &Running, cx: &mut Context<Self>) -> AnyElement {
+    fn hosting(&self, screen: &HostScreen, running: &Running) -> AnyElement {
         let t = &self.i18n;
         let mut players = div().flex().flex_col().gap_2().pt_1();
         if running.guests.is_empty() {
@@ -584,7 +752,7 @@ impl Launcher {
                     .child(div().flex_1().min_w_0().child(tr!(t, "players-empty"))),
             );
         }
-        for guest in &running.guests {
+        for (index, guest) in running.guests.iter().enumerate() {
             let (color, status) = match &guest.status {
                 None => (MUTED, tr!(t, "guest-connected")),
                 Some(GuestStatus::Syncing {
@@ -592,14 +760,19 @@ impl Launcher {
                     total_bytes,
                 }) => (
                     WARNING,
-                    tr!(t, "guest-syncing", done = bytes(t, *done_bytes), total = bytes(t, *total_bytes)),
+                    tr!(
+                        t,
+                        "guest-syncing",
+                        done = bytes(t, *done_bytes),
+                        total = bytes(t, *total_bytes)
+                    ),
                 ),
                 Some(GuestStatus::Ready) => (GOOD, tr!(t, "guest-ready")),
                 Some(GuestStatus::Failed { message }) => {
                     (DANGER, tr!(t, "guest-failed", message = message.as_str()))
                 }
             };
-            players = players.child(
+            players = players.child(arrive(
                 card()
                     .flex()
                     .items_center()
@@ -609,40 +782,67 @@ impl Launcher {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(div().truncate().font_weight(FontWeight::MEDIUM).child(guest.hello.name.clone()))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(guest.hello.name.clone()),
+                            )
                             .child(small(guest.address.ip().to_string()))
                             .child(small(describe_packs(t, &guest.hello.packs))),
                     )
                     .child(status_line(color, status).flex_none().max_w(px(340.))),
-            );
+                ("guest", index),
+                0.,
+                10.,
+            ));
         }
-        page(tr!(t, "host-title"), Some(tr!(t, "host-lead")))
-            .when(!running.has_mod, |this| this.child(notice(WARNING, tr!(t, "host-mod-missing"))))
+        scene_page("waiting", tr!(t, "host-title"), Some(tr!(t, "host-lead")))
+            .when(!running.has_mod, |this| {
+                this.child(notice(WARNING, tr!(t, "host-mod-missing")))
+            })
             .when(!running.set_aside.is_empty(), |this| {
                 let names = running.set_aside.join(", ");
-                this.child(notice(WARNING, tr!(t, "host-rivals-moved", names = names.as_str())))
+                this.child(notice(
+                    WARNING,
+                    tr!(t, "host-rivals-moved", names = names.as_str()),
+                ))
             })
-            .child(section(tr!(t, "host-save")).child(div().pt_1().child(match &running.save {
-                Some(file_name) => shared_save(file_name, screen.selected_preview().map(|preview| &**preview)),
-                None => card()
-                    .flex()
-                    .items_center()
-                    .gap_4()
-                    .child(picture(art("new-game")))
-                    .child(div().flex_1().min_w_0().child(tr!(t, "host-save-none"))),
-            })))
+            .child(
+                section(tr!(t, "host-save")).child(
+                    div().pt_1().child(match &running.save {
+                        Some(file_name) => shared_save(
+                            file_name,
+                            screen.selected_preview().map(|preview| &**preview),
+                        ),
+                        None => card()
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .child(picture(art("new-game")))
+                            .child(div().flex_1().min_w_0().child(tr!(t, "host-save-none"))),
+                    }),
+                ),
+            )
             .child(section(tr!(t, "players")).child(players))
             .child(
                 sheet()
-                    .children(self.lan_address.map(|address| fact(tr!(t, "host-address"), address.to_string())))
+                    .children(
+                        self.lan_address
+                            .map(|address| fact(tr!(t, "host-address"), address.to_string())),
+                    )
                     .child(fact(tr!(t, "host-port"), running.port.to_string()))
                     .child(fact(
                         tr!(t, "host-mods"),
-                        tr!(t, "host-mods-value", files = running.mod_files, size = bytes(t, running.mod_bytes)),
+                        tr!(
+                            t,
+                            "host-mods-value",
+                            files = running.mod_files,
+                            size = bytes(t, running.mod_bytes)
+                        ),
                     ))
                     .children(self.session_packs()),
             )
-            .child(buttons().child(button("back", tr!(t, "host-stop"), false, Self::act(cx, Model::back))))
             .into_any_element()
     }
 
@@ -654,7 +854,7 @@ impl Launcher {
                 for (index, host) in screen.hosts.iter().enumerate() {
                     let address = host.found.address;
                     let name = &host.found.beacon.name;
-                    hosts = hosts.child(
+                    hosts = hosts.child(arrive(
                         card()
                             .id(("host", index))
                             .flex()
@@ -668,28 +868,42 @@ impl Launcher {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(div().truncate().font_weight(FontWeight::MEDIUM).child(name.clone()))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(name.clone()),
+                                    )
                                     .child(small(match &host.found.beacon.game_version {
-                                        Some(version) => tr!(t, "rail-game", version = version.as_str()),
+                                        Some(version) => {
+                                            tr!(t, "rail-game", version = version.as_str())
+                                        }
                                         None => tr!(t, "rail-game-unknown"),
                                     })),
                             )
                             .child(small(address.ip().to_string()).flex_none())
                             .child(icon("arrow", 20., MUTED)),
-                    );
+                        ("found", index),
+                        0.,
+                        10.,
+                    ));
                 }
                 if screen.hosts.is_empty() {
                     hosts = hosts.child(
                         hollow()
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .gap_2()
-                            .px_6()
-                            .pt_6()
-                            .pb_8()
-                            .child(art("search").w(px(360.)).h(px(180.)))
-                            .child(div().text_center().text_color(rgb(MUTED)).child(tr!(t, "join-searching"))),
+                            .gap_5()
+                            .p_5()
+                            .child(beacon())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .max_w(px(680.))
+                                    .text_color(rgb(MUTED))
+                                    .child(tr!(t, "join-searching")),
+                            ),
                     );
                 }
                 let focused = self.address_focus.is_focused(window);
@@ -718,7 +932,9 @@ impl Launcher {
                     } else {
                         div().child(self.address.clone())
                     })
-                    .when(focused, |this| this.child(div().w(px(1.)).h(px(22.)).bg(rgb(LAMP))));
+                    .when(focused, |this| {
+                        this.child(div().w(px(1.)).h(px(22.)).bg(rgb(LAMP)))
+                    });
                 let by_address = div()
                     .flex()
                     .flex_col()
@@ -735,37 +951,80 @@ impl Launcher {
                     } else {
                         small(tr!(t, "join-manual-detail"))
                     });
-                page(tr!(t, "join-title"), None)
+                scene_page("search", tr!(t, "join-title"), None)
                     .child(hosts)
                     .child(section(tr!(t, "join-manual")).child(by_address))
-                    .child(buttons().child(button("back", tr!(t, "back"), false, Self::act(cx, Model::back))))
                     .into_any_element()
             }
-            JoinStage::Working(step) => page(
+            JoinStage::Working(step) => scene_page(
+                "knock",
                 tr!(t, "join-working-title"),
                 Some(match step {
                     JoinStep::Connecting => tr!(t, "join-connecting"),
                     JoinStep::Comparing => tr!(t, "join-comparing"),
                 }),
             )
-            .child(buttons().child(button("back", tr!(t, "cancel"), false, Self::act(cx, Model::back))))
+            .child(waiting_dots())
             .into_any_element(),
-            JoinStage::Review(plan) => self.review(screen, plan, cx),
+            JoinStage::Review(plan) => self.review(screen, plan),
             JoinStage::Syncing(progress) => {
                 let fraction = if progress.total_bytes == 0 {
                     0.
                 } else {
                     progress.done_bytes as f32 / progress.total_bytes as f32
                 };
-                page(tr!(t, "syncing-title"), None)
+                scene_page("copying", tr!(t, "syncing-title"), None)
                     .child(
-                        div().h(px(10.)).w_full().rounded_full().bg(rgb(PANEL)).child(
-                            div()
-                                .h_full()
-                                .w(relative(fraction.clamp(0., 1.)))
-                                .rounded_full()
-                                .bg(rgb(LAMP)),
-                        ),
+                        div()
+                            .font_family(DISPLAY_FONT)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(44.))
+                            .line_height(relative(1.1))
+                            .text_color(rgb(LAMP))
+                            .child(format!("{}%", (fraction.clamp(0., 1.) * 100.) as u32)),
+                    )
+                    .child(
+                        div()
+                            .h(px(12.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(rgb(PANEL))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .relative()
+                                    .h_full()
+                                    .w(relative(fraction.clamp(0., 1.)))
+                                    .rounded_full()
+                                    .bg(rgb(LAMP))
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .w(px(90.))
+                                            .bg(linear_gradient(
+                                                90.,
+                                                linear_color_stop(Rgba { a: 0., ..rgb(TEXT) }, 0.),
+                                                linear_color_stop(
+                                                    Rgba {
+                                                        a: 0.55,
+                                                        ..rgb(TEXT)
+                                                    },
+                                                    1.,
+                                                ),
+                                            ))
+                                            .with_animation(
+                                                "shine",
+                                                Animation::new(Duration::from_millis(1400))
+                                                    .repeat(),
+                                                |shine, delta| {
+                                                    shine.left(relative(-0.3 + 1.4 * delta))
+                                                },
+                                            ),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -779,8 +1038,8 @@ impl Launcher {
                     )
                     .into_any_element()
             }
-            JoinStage::Ready(synced) => self.ready(screen, synced, cx),
-            JoinStage::Failed(message) => self.failure(tr!(t, "join-failed-title"), message, cx),
+            JoinStage::Ready(synced) => self.ready(screen, synced),
+            JoinStage::Failed(message) => self.failure(tr!(t, "join-failed-title"), message),
         }
     }
 
@@ -791,16 +1050,28 @@ impl Launcher {
         }
     }
 
-    fn review(&self, screen: &JoinScreen, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
+    fn review(&self, screen: &JoinScreen, plan: &Plan) -> AnyElement {
         let t = &self.i18n;
-        let ours = self.model.env.as_ref().and_then(|env| env.game.version.clone());
-        let theirs = screen.host.as_ref().and_then(|host| host.game_version.clone());
+        let ours = self
+            .model
+            .env
+            .as_ref()
+            .and_then(|env| env.game.version.clone());
+        let theirs = screen
+            .host
+            .as_ref()
+            .and_then(|host| host.game_version.clone());
         let unknown = tr!(t, "version-unknown");
         let mut changes = sheet();
         if !plan.diff.fetch.is_empty() {
             changes = changes.child(change(
                 "download",
-                tr!(t, "review-download", n = plan.diff.fetch.len(), size = bytes(t, plan.diff.fetch_bytes)),
+                tr!(
+                    t,
+                    "review-download",
+                    n = plan.diff.fetch.len(),
+                    size = bytes(t, plan.diff.fetch_bytes)
+                ),
                 Some(file_list(t, &plan.diff.fetch)),
             ));
         }
@@ -814,7 +1085,12 @@ impl Launcher {
         if let (true, Some(save)) = (plan.save_needed, &plan.session.save) {
             changes = changes.child(change(
                 "file",
-                tr!(t, "review-save", name = save.file_name.as_str(), size = bytes(t, save.size)),
+                tr!(
+                    t,
+                    "review-save",
+                    name = save.file_name.as_str(),
+                    size = bytes(t, save.size)
+                ),
                 None,
             ));
         }
@@ -835,21 +1111,21 @@ impl Launcher {
                 ),
             ))
         })
-        .child(
-            buttons()
-                .child(button("sync", tr!(t, "sync"), true, Self::act(cx, Model::confirm_sync)))
-                .child(button("back", tr!(t, "cancel"), false, Self::act(cx, Model::back))),
-        )
         .into_any_element()
     }
 
-    fn ready(&self, screen: &JoinScreen, synced: &Synced, cx: &mut Context<Self>) -> AnyElement {
+    fn ready(&self, screen: &JoinScreen, synced: &Synced) -> AnyElement {
         let t = &self.i18n;
         let changed = synced.fetched + synced.moved > 0;
         let mut summary = sheet().child(change(
             "check",
             if changed {
-                tr!(t, "ready-changed", fetched = synced.fetched, moved = synced.moved)
+                tr!(
+                    t,
+                    "ready-changed",
+                    fetched = synced.fetched,
+                    moved = synced.moved
+                )
             } else {
                 tr!(t, "ready-matched")
             },
@@ -862,19 +1138,26 @@ impl Launcher {
             }),
         ));
         if let Some(save) = &synced.save {
-            let key = if synced.save_updated { "ready-save-downloaded" } else { "ready-save-matched" };
+            let key = if synced.save_updated {
+                "ready-save-downloaded"
+            } else {
+                "ready-save-matched"
+            };
             summary = summary.child(change("file", tr!(t, key, name = save.as_str()), None));
         }
-        page(tr!(t, "ready-title", host = self.host_name(screen)), None)
-            .children(
-                synced
-                    .save
-                    .as_ref()
-                    .map(|file_name| shared_save(file_name, synced.save_preview.as_deref())),
-            )
-            .child(summary.children(self.session_packs()))
-            .child(buttons().child(button("back", tr!(t, "leave"), false, Self::act(cx, Model::back))))
-            .into_any_element()
+        scene_page(
+            "ready",
+            tr!(t, "ready-title", host = self.host_name(screen)),
+            None,
+        )
+        .children(
+            synced
+                .save
+                .as_ref()
+                .map(|file_name| shared_save(file_name, synced.save_preview.as_deref())),
+        )
+        .child(summary.children(self.session_packs()))
+        .into_any_element()
     }
 
     /// Which packs the session uses and which of ours get switched off.
@@ -887,26 +1170,29 @@ impl Launcher {
         let disabled: PackSet = env.packs.difference(&common).cloned().collect();
         let mut facts = vec![fact_with(tr!(t, "session-packs"), pack_chips(t, &common))];
         if !disabled.is_empty() {
-            facts.push(fact_with(tr!(t, "session-packs-off"), pack_chips(t, &disabled).opacity(0.6)));
+            facts.push(fact_with(
+                tr!(t, "session-packs-off"),
+                pack_chips(t, &disabled).opacity(0.6),
+            ));
         }
         facts
     }
 
-    fn failure(&self, title: String, message: &str, cx: &mut Context<Self>) -> AnyElement {
-        page(title, None)
+    fn failure(&self, title: String, message: &str) -> AnyElement {
+        scene_page("trouble", title, None)
             .child(notice(DANGER, message.to_string()))
-            .child(buttons().child(button("back", tr!(self.i18n, "back"), false, Self::act(cx, Model::back))))
             .into_any_element()
     }
 
-    /// The bar about the game itself: its state and the button that starts it.
-    fn footer(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// What the game is doing, once it can be started.
+    fn game_status(&self) -> Option<Div> {
         let t = &self.i18n;
-        let can_launch = self.model.can_launch();
         let (color, text) = match &self.model.game {
-            GameState::NotStarted if !can_launch => return None,
+            GameState::NotStarted if !self.model.can_launch() => return None,
             GameState::NotStarted => (MUTED, tr!(t, "game-ready")),
-            GameState::Starting { via_steam: true, .. } => (WARNING, tr!(t, "game-starting-steam")),
+            GameState::Starting {
+                via_steam: true, ..
+            } => (WARNING, tr!(t, "game-starting-steam")),
             GameState::Starting { .. } => (WARNING, tr!(t, "game-starting")),
             GameState::Running { .. } if self.model.game.packs_match() == Some(true) => {
                 (GOOD, tr!(t, "game-running"))
@@ -920,37 +1206,130 @@ impl Launcher {
                     expected = describe_packs(t, expected)
                 ),
             ),
-            GameState::Failed(message) => (DANGER, tr!(t, "game-failed", message = message.as_str())),
+            GameState::Failed(message) => {
+                (DANGER, tr!(t, "game-failed", message = message.as_str()))
+            }
         };
         let live = match (&self.model.game, self.model.live) {
             (GameState::Running { .. }, Some(status)) => Some(describe_live(&status)),
             _ => None,
         };
-        Some(
-            div().flex_none().px(px(GUTTER)).py_5().border_t_1().border_color(rgb(LINE)).child(
-                div()
-                .w_full()
-                .max_w(px(PAGE_WIDTH))
-                .mx_auto()
+        let state = if matches!(self.model.game, GameState::Starting { .. }) {
+            div()
                 .flex()
-                .items_center()
-                .justify_between()
-                .gap_6()
+                .gap_2()
+                .child(pulse(dot(color), "game-starting"))
+                .child(div().min_w_0().child(text))
+        } else {
+            status_line(color, text)
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(state)
+                .children(live.map(|(color, key)| status_line(color, tr!(t, key))))
+                .children(live.is_some().then(|| self.mod_log()).flatten()),
+        )
+    }
+
+    /// The bar under every screen: the way back on the left, the way on at
+    /// the right, and between them what the game is doing. It stays put
+    /// while the page scrolls.
+    fn bottom(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let t = &self.i18n;
+        let mut primary = None;
+        let mut note = None;
+        let back = match &self.model.screen {
+            Screen::Host(screen) => match &screen.stage {
+                HostStage::Setup => {
+                    primary = Some(button(
+                        "start",
+                        tr!(t, "host-start"),
+                        true,
+                        Self::act(cx, Model::start_hosting),
+                    ));
+                    note = Some(
+                        match screen
+                            .selected
+                            .and_then(|index| Some((index, screen.saves.get(index)?)))
+                        {
+                            Some((index, save)) => screen.previews[index]
+                                .as_deref()
+                                .and_then(|preview| preview.about.name.clone())
+                                .unwrap_or_else(|| save.file_name.clone()),
+                            None => tr!(t, "save-none"),
+                        },
+                    );
+                    Some("back")
+                }
+                HostStage::Starting => Some("cancel"),
+                HostStage::Running(_) => Some("host-stop"),
+                HostStage::Failed(_) => Some("back"),
+            },
+            Screen::Join(screen) => match &screen.stage {
+                JoinStage::Browsing | JoinStage::Failed(_) => Some("back"),
+                JoinStage::Working(_) => Some("cancel"),
+                JoinStage::Review(_) => {
+                    primary = Some(button(
+                        "sync",
+                        tr!(t, "sync"),
+                        true,
+                        Self::act(cx, Model::confirm_sync),
+                    ));
+                    Some("cancel")
+                }
+                JoinStage::Syncing(_) => None,
+                JoinStage::Ready(_) => Some("leave"),
+            },
+            Screen::Home | Screen::Loading | Screen::Fatal(_) => None,
+        };
+        let status = self.game_status();
+        if primary.is_none() && self.model.can_launch() {
+            primary = Some(button(
+                "launch",
+                tr!(t, "game-start"),
+                true,
+                Self::act(cx, Model::launch_game),
+            ));
+        }
+        if back.is_none() && primary.is_none() && status.is_none() {
+            return None;
+        }
+        let middle = match (status, note) {
+            (Some(status), _) => status.flex_1().min_w_0(),
+            (None, Some(note)) => div().flex_1().min_w_0().flex().justify_end().child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(MUTED))
+                    .child(note),
+            ),
+            (None, None) => div().flex_1(),
+        };
+        Some(
+            div()
+                .flex_none()
+                .px(px(GUTTER))
+                .py_4()
+                .bg(rgb(RAIL))
+                .border_t_1()
+                .border_color(rgb(LINE))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
+                        .w_full()
+                        .max_w(px(PAGE_WIDTH))
+                        .mx_auto()
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(status_line(color, text))
-                        .children(live.map(|(color, key)| status_line(color, tr!(t, key))))
-                        .children(live.is_some().then(|| self.mod_log()).flatten()),
-                )
-                .when(can_launch, |this| {
-                    this.child(button("launch", tr!(t, "game-start"), true, Self::act(cx, Model::launch_game)))
-                }),
-            ),
+                        .items_center()
+                        .gap_6()
+                        .children(back.map(|key| {
+                            button("back", tr!(t, key), false, Self::act(cx, Model::back))
+                        }))
+                        .child(middle)
+                        .children(primary),
+                ),
         )
     }
 }
@@ -958,29 +1337,37 @@ impl Launcher {
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.i18n;
-        let loading = || page(tr!(t, "loading-title"), Some(tr!(t, "loading-body"))).into_any_element();
+        let loading =
+            || page(tr!(t, "loading-title"), Some(tr!(t, "loading-body"))).into_any_element();
         let body = match (&self.model.screen, &self.model.env) {
-            (Screen::Fatal(message), _) => page(tr!(t, "fatal-title"), Some(tr!(t, "fatal-hint")))
-                .child(notice(DANGER, message.clone()))
-                .into_any_element(),
+            (Screen::Fatal(message), _) => {
+                scene_page("trouble", tr!(t, "fatal-title"), Some(tr!(t, "fatal-hint")))
+                    .child(notice(DANGER, message.clone()))
+                    .into_any_element()
+            }
             (Screen::Host(screen), _) => self.host(screen, cx),
             (Screen::Join(screen), _) => self.join(screen, window, cx),
-            (Screen::Home, Some(env)) => self.home(env, cx),
             (Screen::Home | Screen::Loading, _) => loading(),
         };
-        div()
+        let (scene, busy) = self.scene();
+        let home = match (&self.model.screen, &self.model.env) {
+            (Screen::Home, Some(env)) => Some(self.home(env, cx)),
+            _ => None,
+        };
+        let frame = div()
             .relative()
             .size_full()
             .flex()
+            .flex_col()
             .bg(rgb(PAPER))
             .text_color(rgb(TEXT))
             .font_family(BODY_FONT)
             .text_size(px(16.))
             .line_height(relative(1.5))
-            .flex_col()
-            .child(self.titlebar(window, cx))
-            .child(self.steps())
-            .child(
+            .child(self.titlebar(window, cx));
+        match home {
+            Some(home) => frame.child(home),
+            None => frame.child(self.progress(busy)).child(
                 div()
                     .relative()
                     .flex_1()
@@ -992,14 +1379,22 @@ impl Render for Launcher {
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
                             .px(px(GUTTER))
-                            .pt_4()
+                            .pt_6()
                             .pb_8()
-                            .child(div().w_full().max_w(px(PAGE_WIDTH)).mx_auto().child(body)),
+                            .child(arrive(
+                                div().w_full().max_w(px(PAGE_WIDTH)).mx_auto().child(body),
+                                ("scene", scene),
+                                0.,
+                                14.,
+                            )),
                     )
                     .children(self.scrollbar()),
-            )
-            .children(self.footer(cx))
-            .when(self.choosing_language, |this| this.children(self.language_list(cx)))
+            ),
+        }
+        .children(self.bottom(cx))
+        .when(self.choosing_language, |this| {
+            this.children(self.language_list(cx))
+        })
     }
 }
 
@@ -1023,30 +1418,192 @@ fn icon(name: &str, size: f32, color: u32) -> Svg {
 
 /// A screen: what it is about, then its parts.
 fn page(title: String, lead: Option<String>) -> Div {
+    div().flex().flex_col().gap_8().child(heading(title, lead))
+}
+
+/// A page whose state has a drawing: it sits beside the title.
+fn scene_page(picture: &str, title: String, lead: Option<String>) -> Div {
     div().flex().flex_col().gap_8().child(
         div()
             .flex()
-            .flex_col()
-            .gap_3()
+            .items_center()
+            .gap_8()
+            .child(heading(title, lead).flex_1().min_w_0())
+            // The drawings are 2:1, and so is the box, which keeps them in it.
             .child(
-                div()
-                    .font_family(DISPLAY_FONT)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_size(px(34.))
-                    .line_height(relative(1.2))
-                    .child(title),
-            )
-            .children(lead.map(|lead| div().max_w(px(660.)).text_size(px(18.)).text_color(rgb(MUTED)).child(lead))),
+                art(picture)
+                    .flex_none()
+                    .w(px(300.))
+                    .h(px(150.))
+                    .rounded(px(14.)),
+            ),
     )
+}
+
+fn heading(title: String, lead: Option<String>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .font_family(DISPLAY_FONT)
+                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(32.))
+                .line_height(relative(1.2))
+                .child(title),
+        )
+        .children(lead.map(|lead| {
+            div()
+                .max_w(px(660.))
+                .text_size(px(18.))
+                .text_color(rgb(MUTED))
+                .child(lead)
+        }))
+}
+
+/// How long something takes to arrive on the screen, in seconds.
+const ARRIVAL: f32 = 0.34;
+
+/// Lets an element arrive: `delay` seconds after it first shows it fades in,
+/// settling from `rise` pixels below its place.
+fn arrive<E>(element: E, id: impl Into<ElementId>, delay: f32, rise: f32) -> AnimationElement<E>
+where
+    E: Styled + IntoElement + 'static,
+{
+    let total = delay + ARRIVAL;
+    element.with_animation(
+        id,
+        Animation::new(Duration::from_secs_f32(total)),
+        move |element, delta| {
+            let time = ((delta * total - delay) / ARRIVAL).clamp(0., 1.);
+            let eased = 1. - (1. - time).powi(3);
+            let element = element.opacity(eased);
+            if rise == 0. {
+                element
+            } else {
+                element.relative().top(px((1. - eased) * rise))
+            }
+        },
+    )
+}
+
+/// Makes an element breathe while something is going on.
+fn pulse<E>(element: E, id: impl Into<ElementId>) -> AnimationElement<E>
+where
+    E: Styled + IntoElement + 'static,
+{
+    element.with_animation(
+        id,
+        Animation::new(Duration::from_millis(1300))
+            .repeat()
+            .with_easing(pulsating_between(0.3, 1.)),
+        |element, delta| element.opacity(delta),
+    )
+}
+
+/// The dot of a [`status_line`].
+fn dot(color: u32) -> Div {
+    div()
+        .mt(px(8.))
+        .size(px(9.))
+        .flex_none()
+        .rounded_full()
+        .bg(rgb(color))
+}
+
+/// Three dots taking turns: the launcher is working and there is nothing to read yet.
+fn waiting_dots() -> Div {
+    let mut dots = div().flex().gap_2();
+    for (index, id) in ["dot-a", "dot-b", "dot-c"].into_iter().enumerate() {
+        let phase = index as f32 / 3.;
+        dots = dots.child(
+            div()
+                .size(px(10.))
+                .rounded_full()
+                .bg(rgb(LAMP))
+                .with_animation(
+                    id,
+                    Animation::new(Duration::from_millis(1200)).repeat(),
+                    move |dot, delta| {
+                        let wave = ((delta - phase).rem_euclid(1.) * std::f32::consts::TAU).cos()
+                            * 0.5
+                            + 0.5;
+                        dot.opacity(0.25 + 0.75 * wave)
+                    },
+                ),
+        );
+    }
+    dots
+}
+
+/// A lamp sending rings outwards: the launcher is looking for the host.
+fn beacon() -> Div {
+    const SIZE: f32 = 64.;
+    let ring = |id: &'static str, phase: f32| {
+        div()
+            .absolute()
+            .rounded_full()
+            .border_2()
+            .border_color(rgb(LAMP))
+            .with_animation(
+                id,
+                Animation::new(Duration::from_millis(2600)).repeat(),
+                move |ring, delta| {
+                    let time = (delta + phase).fract();
+                    let size = 14. + time * (SIZE - 14.);
+                    let inset = (SIZE - size) / 2.;
+                    ring.size(px(size))
+                        .top(px(inset))
+                        .left(px(inset))
+                        .opacity((1. - time) * 0.8)
+                },
+            )
+    };
+    div()
+        .relative()
+        .size(px(SIZE))
+        .flex_none()
+        .child(ring("ring-a", 0.))
+        .child(ring("ring-b", 0.5))
+        .child(
+            div()
+                .absolute()
+                .top(px(SIZE / 2. - 7.))
+                .left(px(SIZE / 2. - 7.))
+                .size(px(14.))
+                .rounded_full()
+                .bg(rgb(LAMP)),
+        )
+}
+
+/// What the pointer has just done to a door.
+#[derive(Clone, Copy, PartialEq)]
+enum Glow {
+    Rest,
+    In,
+    Out,
+}
+
+/// One fact of the strip under the doors: what it is, then what it says.
+fn about(label: String, value: Div) -> Div {
+    div()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(label))
+        .child(value.text_size(px(15.)).line_height(relative(1.4)))
 }
 
 /// A titled part of a screen.
 fn section(title: String) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(title))
+    div().flex().flex_col().gap_2().child(
+        div()
+            .text_size(px(18.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(title),
+    )
 }
 
 /// Ruled lines, like a list on paper: for facts and changes.
@@ -1066,7 +1623,13 @@ fn fact_with(label: String, value: Div) -> Div {
         .py(px(14.))
         .border_b_1()
         .border_color(rgb(LINE))
-        .child(div().w(px(200.)).flex_none().text_color(rgb(MUTED)).child(label))
+        .child(
+            div()
+                .w(px(200.))
+                .flex_none()
+                .text_color(rgb(MUTED))
+                .child(label),
+        )
         .child(value.flex_1().min_w_0())
 }
 
@@ -1102,17 +1665,31 @@ fn pack_chips(t: &I18n, packs: &PackSet) -> Div {
 
 /// A raised block: a player, a host, a save.
 fn card() -> Div {
-    div().p_4().rounded(px(14.)).bg(rgb(PANEL)).border_1().border_color(rgb(LINE))
+    div()
+        .p_4()
+        .rounded(px(14.))
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(LINE))
 }
 
 /// A dashed outline where something is still missing.
 fn hollow() -> Div {
-    div().rounded(px(14.)).border_1().border_dashed().border_color(rgb(LINE))
+    div()
+        .rounded(px(14.))
+        .border_1()
+        .border_dashed()
+        .border_color(rgb(LINE))
 }
 
 /// A player, as the first letter of their computer's name.
 fn avatar(name: &str) -> Div {
-    let letter: String = name.trim().chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+    let letter: String = name
+        .trim()
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
     div()
         .size(px(48.))
         .flex_none()
@@ -1120,7 +1697,10 @@ fn avatar(name: &str) -> Div {
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(Rgba { a: 0.14, ..rgb(LAMP) })
+        .bg(Rgba {
+            a: 0.14,
+            ..rgb(LAMP)
+        })
         .font_family(DISPLAY_FONT)
         .font_weight(FontWeight::MEDIUM)
         .text_size(px(19.))
@@ -1135,15 +1715,24 @@ fn art(name: &str) -> Img {
 
 /// A picture the size of a save's portrait.
 fn picture(image: Img) -> Img {
-    image.w(px(180.)).h(px(120.)).flex_none().rounded(px(10.)).object_fit(ObjectFit::Cover)
+    image
+        .w(px(180.))
+        .h(px(120.))
+        .flex_none()
+        .rounded(px(10.))
+        .object_fit(ObjectFit::Cover)
 }
 
 /// The household of a save, or a drawing when the save holds no portrait.
 fn save_picture(preview: Option<&Preview>) -> Img {
-    picture(match preview.and_then(|preview| preview.portrait.clone()) {
+    picture(portrait(preview))
+}
+
+fn portrait(preview: Option<&Preview>) -> Img {
+    match preview.and_then(|preview| preview.portrait.clone()) {
         Some(portrait) => img(portrait),
         None => art("no-picture"),
-    })
+    }
 }
 
 /// Who lives in a save and where, one line each.
@@ -1161,7 +1750,13 @@ fn save_lines(preview: Option<&Preview>) -> Vec<Div> {
     };
     let mut lines = Vec::new();
     if !about.sims.is_empty() {
-        let mut names = about.sims.iter().take(NAMED_SIMS).cloned().collect::<Vec<_>>().join(", ");
+        let mut names = about
+            .sims
+            .iter()
+            .take(NAMED_SIMS)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         if about.sims.len() > NAMED_SIMS {
             names.push_str(&format!(" +{}", about.sims.len() - NAMED_SIMS));
         }
@@ -1180,20 +1775,27 @@ fn save_lines(preview: Option<&Preview>) -> Vec<Div> {
 /// An address as a player types it: with the port, or without for the usual one.
 fn parse_address(text: &str) -> Option<SocketAddr> {
     let text = text.trim();
-    text.parse().ok().or_else(|| Some(SocketAddr::new(text.parse().ok()?, DEFAULT_PORT)))
+    text.parse()
+        .ok()
+        .or_else(|| Some(SocketAddr::new(text.parse().ok()?, DEFAULT_PORT)))
 }
 
 /// This computer's address on the local network. Nothing is sent: a UDP socket
 /// only asks the system which of its addresses it would send from.
 fn lan_address() -> Option<IpAddr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    [[192, 168, 0, 1], [10, 0, 0, 1], [172, 16, 0, 1], [8, 8, 8, 8]]
-        .into_iter()
-        .filter_map(|target| {
-            socket.connect((Ipv4Addr::from(target), 9)).ok()?;
-            Some(socket.local_addr().ok()?.ip())
-        })
-        .find(|address| !address.is_loopback() && !address.is_unspecified())
+    [
+        [192, 168, 0, 1],
+        [10, 0, 0, 1],
+        [172, 16, 0, 1],
+        [8, 8, 8, 8],
+    ]
+    .into_iter()
+    .filter_map(|target| {
+        socket.connect((Ipv4Addr::from(target), 9)).ok()?;
+        Some(socket.local_addr().ok()?.ip())
+    })
+    .find(|address| !address.is_loopback() && !address.is_unspecified())
 }
 
 /// Household funds the way the game writes them: `§12 500`.
@@ -1209,52 +1811,97 @@ fn simoleons(funds: u64) -> String {
     text
 }
 
-/// A save to pick on the host's first screen.
-fn save_card(
-    id: (&'static str, usize),
+/// Three saves across the page.
+const TILE_GAP: f32 = 16.;
+const TILE_WIDTH: f32 = (PAGE_WIDTH - 2. * TILE_GAP) / 3.;
+const TILE_FRAME: f32 = 6.;
+
+/// A save to pick on the host's first screen: its picture, then who is in it.
+fn save_tile(
+    index: usize,
     chosen: bool,
     picture: Img,
     title: String,
     lines: Vec<Div>,
     foot: Vec<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    card()
-        .id(id)
+) -> AnimationElement<Stateful<Div>> {
+    // Portraits are 3:2, and so is the box, which keeps them in it.
+    let width = TILE_WIDTH - 2. * TILE_FRAME - 2.;
+    let tile = div()
+        .id(("save", index))
+        .w(px(TILE_WIDTH))
+        .flex_none()
         .flex()
-        .items_center()
-        .gap_5()
-        .pr_5()
+        .flex_col()
+        .p(px(TILE_FRAME))
+        .rounded(px(14.))
+        .bg(rgb(if chosen { PANEL_HOVER } else { PANEL }))
+        .border_1()
         .border_color(rgb(if chosen { LAMP } else { LINE }))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(PANEL_HOVER)))
         .on_click(on_click)
-        .child(picture)
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(5.))
-                .child(div().truncate().text_size(px(19.)).font_weight(FontWeight::SEMIBOLD).child(title))
-                .children(lines)
-                .when(!foot.is_empty(), |this| {
-                    this.child(div().flex().gap_3().children(foot.into_iter().map(small)))
+                .relative()
+                .w(px(width))
+                .h(px(width / 1.5))
+                .child(
+                    picture
+                        .size_full()
+                        .rounded(px(9.))
+                        .object_fit(ObjectFit::Cover),
+                )
+                .when(chosen, |this| {
+                    this.child(arrive(
+                        div()
+                            .absolute()
+                            .top(px(10.))
+                            .right(px(10.))
+                            .size(px(30.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(rgb(LAMP))
+                            .child(icon("check", 18., INK)),
+                        "chosen",
+                        0.,
+                        0.,
+                    ))
                 }),
         )
         .child(
             div()
-                .size(px(24.))
-                .flex_none()
+                .w(px(width))
+                .px(px(10.))
+                .pt_3()
+                .pb(px(10.))
                 .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .border_1()
-                .border_color(rgb(if chosen { LAMP } else { MUTED }))
-                .when(chosen, |this| this.child(div().size(px(12.)).rounded_full().bg(rgb(LAMP)))),
-        )
+                .flex_col()
+                .gap(px(5.))
+                .text_size(px(15.))
+                .child(
+                    div()
+                        .w(px(width - 20.))
+                        .truncate()
+                        .text_size(px(17.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .children(lines)
+                .when(!foot.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_x_3()
+                            .children(foot.into_iter().map(small)),
+                    )
+                }),
+        );
+    arrive(tile, ("tile", index), 0.04 * index.min(9) as f32, 12.)
 }
 
 /// The save both players load: who is in it and where they live.
@@ -1280,12 +1927,20 @@ fn shared_save(file_name: &str, preview: Option<&Preview>) -> Div {
                         .child(title.clone().unwrap_or_else(|| file_name.to_string())),
                 )
                 .children(save_lines(preview))
-                .when(title.is_some(), |this| this.child(small(file_name.to_string()))),
+                .when(title.is_some(), |this| {
+                    this.child(small(file_name.to_string()))
+                }),
         )
         .children(
             preview
                 .and_then(|preview| preview.lot_picture.clone())
-                .map(|lot| img(lot).size(px(120.)).flex_none().rounded(px(10.)).object_fit(ObjectFit::Cover)),
+                .map(|lot| {
+                    img(lot)
+                        .size(px(120.))
+                        .flex_none()
+                        .rounded(px(10.))
+                        .object_fit(ObjectFit::Cover)
+                }),
         )
 }
 
@@ -1298,15 +1953,23 @@ fn change(picture: &'static str, text: String, detail: Option<Div>) -> Div {
         .border_b_1()
         .border_color(rgb(LINE))
         .child(div().pt(px(3.)).child(icon(picture, 18., LAMP)))
-        .child(div().flex_1().min_w_0().flex().flex_col().gap_1().child(text).children(detail))
-}
-
-fn buttons() -> Div {
-    div().flex().gap_4().pt_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(text)
+                .children(detail),
+        )
 }
 
 fn small(text: impl Into<SharedString>) -> Div {
-    div().text_size(px(14.)).text_color(rgb(MUTED)).child(text.into())
+    div()
+        .text_size(px(14.))
+        .text_color(rgb(MUTED))
+        .child(text.into())
 }
 
 /// A coloured dot and what it stands for.
@@ -1314,7 +1977,14 @@ fn status_line(color: u32, text: String) -> Div {
     div()
         .flex()
         .gap_2()
-        .child(div().mt(px(8.)).size(px(9.)).flex_none().rounded_full().bg(rgb(color)))
+        .child(
+            div()
+                .mt(px(8.))
+                .size(px(9.))
+                .flex_none()
+                .rounded_full()
+                .bg(rgb(color)),
+        )
         .child(div().min_w_0().child(text))
 }
 
@@ -1325,13 +1995,20 @@ fn notice(color: u32, text: String) -> Div {
         .gap_3()
         .p_4()
         .rounded(px(10.))
-        .bg(Rgba { a: 0.1, ..rgb(color) })
+        .bg(Rgba {
+            a: 0.1,
+            ..rgb(color)
+        })
         .child(div().pt(px(3.)).child(icon("alert", 18., color)))
         .child(div().flex_1().min_w_0().child(text))
 }
 
 fn file_list(t: &I18n, paths: &[String]) -> Div {
-    let mut list = div().flex().flex_col().text_size(px(14.)).text_color(rgb(MUTED));
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .text_size(px(14.))
+        .text_color(rgb(MUTED));
     for path in paths.iter().take(LISTED_FILES) {
         list = list.child(path.clone());
     }
@@ -1362,7 +2039,11 @@ fn button(
         .rounded(px(10.))
         .bg(rgb(background))
         .text_color(rgb(text))
-        .font_weight(if primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        .font_weight(if primary {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::MEDIUM
+        })
         .border_1()
         .border_color(rgb(border))
         .cursor_pointer()
@@ -1371,63 +2052,126 @@ fn button(
         .child(label)
 }
 
-/// One of the two ways into a session on the home screen.
-fn choice(
+/// Half of the home screen: a drawing as tall as the window allows, and
+/// over its quiet lower part what choosing it does.
+fn door(
     id: &'static str,
     picture: &'static str,
+    symbol: &'static str,
     title: String,
     detail: String,
+    glow: Glow,
+    on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    let night = rgb(RAIL);
+    // The drawing comes a little closer while the pointer is over its door.
+    let near = |frame: Div, by: f32| {
+        let out = px(-12. * by);
+        frame.top(out).left(out).right(out).bottom(out)
+    };
+    let frame = div()
+        .absolute()
+        .child(art(picture).size_full().object_fit(ObjectFit::Cover));
+    let turn = || Animation::new(Duration::from_millis(420)).with_easing(gpui::ease_out_quint());
+    let drawing = match glow {
+        Glow::Rest => near(frame, 0.).into_any_element(),
+        Glow::In => frame
+            .with_animation("near", turn(), move |frame, delta| near(frame, delta))
+            .into_any_element(),
+        Glow::Out => frame
+            .with_animation("far", turn(), move |frame, delta| near(frame, 1. - delta))
+            .into_any_element(),
+    };
     div()
         .id(id)
         .group(id)
+        .relative()
         .flex_1()
         .min_w_0()
-        .flex()
-        .flex_col()
-        .rounded(px(16.))
-        .bg(rgb(PANEL))
-        .border_1()
-        .border_color(rgb(LINE))
+        .h_full()
+        .overflow_hidden()
+        .bg(night)
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(PANEL_HOVER)).border_color(rgb(LAMP)))
+        .on_hover(on_hover)
         .on_click(on_click)
-        // The drawings are 5:2, and so is this box while the page is at its
-        // full width, which the smallest window still leaves room for.
+        .child(drawing)
+        // Night gathers at the bottom, where the words are.
         .child(
-            art(picture)
-                .w_full()
-                .h(px((PAGE_WIDTH - 20.) / 5.))
-                .rounded_t(px(15.))
-                .object_fit(ObjectFit::Cover),
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(relative(0.6))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(Rgba { a: 0., ..night }, 0.),
+                    linear_color_stop(Rgba { a: 0.94, ..night }, 0.8),
+                )),
         )
         .child(
             div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .p_8()
                 .flex()
-                .flex_col()
-                .gap_2()
-                .px_6()
-                .pt_5()
-                .pb_6()
+                .items_end()
+                .justify_between()
+                .gap_6()
                 .child(
                     div()
+                        .min_w_0()
                         .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
+                        .flex_col()
+                        .gap_2()
                         .child(
                             div()
-                                .min_w_0()
-                                .font_family(DISPLAY_FONT)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_size(px(19.))
-                                .line_height(relative(1.3))
-                                .child(title),
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(icon(symbol, 26., LAMP))
+                                .child(
+                                    div()
+                                        .font_family(DISPLAY_FONT)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_size(px(26.))
+                                        .line_height(relative(1.25))
+                                        .group_hover(id, |style| style.text_color(rgb(LAMP)))
+                                        .child(title),
+                                ),
                         )
-                        .child(icon("arrow", 22., MUTED).group_hover(id, |style| style.text_color(rgb(LAMP)))),
+                        .child(
+                            div()
+                                .max_w(px(380.))
+                                .text_size(px(17.))
+                                .text_color(rgb(TEXT))
+                                .opacity(0.82)
+                                .child(detail),
+                        ),
                 )
-                .child(div().text_color(rgb(MUTED)).child(detail)),
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(52.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(MUTED))
+                        .group_hover(id, |style| style.bg(rgb(LAMP)).border_color(rgb(LAMP)))
+                        // An icon takes its colour from itself, not from what holds it.
+                        .child(
+                            svg()
+                                .path("icons/arrow.svg")
+                                .size(px(24.))
+                                .text_color(rgb(TEXT))
+                                .group_hover(id, |style| style.text_color(rgb(INK))),
+                        ),
+                ),
         )
 }
 
@@ -1473,7 +2217,9 @@ fn bytes(t: &I18n, size: u64) -> String {
 }
 
 fn ago(t: &I18n, time: SystemTime) -> String {
-    let seconds = SystemTime::now().duration_since(time).map_or(0, |d| d.as_secs());
+    let seconds = SystemTime::now()
+        .duration_since(time)
+        .map_or(0, |d| d.as_secs());
     match seconds {
         0..60 => tr!(t, "ago-now"),
         60..3_600 => tr!(t, "ago-minutes", n = seconds / 60),
@@ -1514,11 +2260,26 @@ mod tests {
     fn packs_and_times_read_naturally() {
         let t = english();
         assert_eq!(describe_packs(&t, &PackSet::new()), "Base game only");
-        assert_eq!(describe_packs(&t, &["EP01".to_string()].into()), "1 pack: EP01");
-        assert_eq!(ago(&t, SystemTime::now() - Duration::from_secs(2 * 86_400)), "2 days ago");
-        assert_eq!(ago(&t, SystemTime::now() - Duration::from_secs(86_400)), "1 day ago");
-        assert_eq!(parse_address(" 192.168.0.10 "), Some(SocketAddr::from(([192, 168, 0, 10], DEFAULT_PORT))));
-        assert_eq!(parse_address("10.0.0.2:5000"), Some(SocketAddr::from(([10, 0, 0, 2], 5000))));
+        assert_eq!(
+            describe_packs(&t, &["EP01".to_string()].into()),
+            "1 pack: EP01"
+        );
+        assert_eq!(
+            ago(&t, SystemTime::now() - Duration::from_secs(2 * 86_400)),
+            "2 days ago"
+        );
+        assert_eq!(
+            ago(&t, SystemTime::now() - Duration::from_secs(86_400)),
+            "1 day ago"
+        );
+        assert_eq!(
+            parse_address(" 192.168.0.10 "),
+            Some(SocketAddr::from(([192, 168, 0, 10], DEFAULT_PORT)))
+        );
+        assert_eq!(
+            parse_address("10.0.0.2:5000"),
+            Some(SocketAddr::from(([10, 0, 0, 2], 5000)))
+        );
         assert_eq!(parse_address("192.168.0"), None);
         assert_eq!(parse_address(""), None);
         assert_eq!(simoleons(940), "§940");
