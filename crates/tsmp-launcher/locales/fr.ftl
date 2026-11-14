@@ -47,6 +47,7 @@ host-setup-title = Choisissez la sauvegarde à partager
 host-setup-lead = L’autre joueur en reçoit une copie. Ses propres sauvegardes restent intactes.
 save-none = Aucune sauvegarde partagée
 save-none-detail = Commencer une nouvelle partie ensemble
+save-variants = Sauvegardes de ce foyer : { $n }
 host-start = Démarrer l’hébergement
 host-reading-title = Lecture de votre dossier Mods
 host-reading-body = La première fois, chaque fichier est vérifié. Pour un gros dossier, cela peut prendre quelques minutes.

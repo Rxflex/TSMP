@@ -47,6 +47,7 @@ host-setup-title = Escolha o jogo salvo para compartilhar
 host-setup-lead = O outro jogador recebe uma cópia. Os jogos salvos dele não são alterados.
 save-none = Sem jogo salvo compartilhado
 save-none-detail = Começar um novo jogo juntos
+save-variants = Jogos salvos desta família: { $n }
 host-start = Começar a hospedar
 host-reading-title = Lendo sua pasta Mods
 host-reading-body = Na primeira vez, cada arquivo é verificado. Em uma pasta grande isso pode levar alguns minutos.

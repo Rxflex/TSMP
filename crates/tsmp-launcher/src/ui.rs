@@ -86,6 +86,8 @@ pub struct Launcher {
     /// The door of the home screen under the pointer, and the one it just left.
     door: Option<&'static str>,
     door_left: Option<&'static str>,
+    /// The household whose other saves are listed, as the index of its newest save.
+    variants_open: Option<usize>,
 }
 
 impl Launcher {
@@ -122,6 +124,7 @@ impl Launcher {
             lan_address: lan_address(),
             door: None,
             door_left: None,
+            variants_open: None,
         }
     }
 
@@ -689,37 +692,139 @@ impl Launcher {
                             .child(tr!(t, "save-none-detail")),
                     ],
                     Vec::new(),
+                    None,
                     Self::act(cx, |model| model.select_save(None)),
                 )];
-                for (index, save) in screen.saves.iter().enumerate() {
-                    let preview = screen.previews[index].as_deref();
+                let name = |index: usize| {
+                    screen.previews[index]
+                        .as_deref()
+                        .and_then(|preview| preview.about.name.clone())
+                };
+                // Saves of one household are one tile: the newest shows, and
+                // the others are a list inside it.
+                let household = |index: usize| {
+                    let mut sims = screen.previews[index].as_deref()?.about.sims.clone();
+                    sims.sort();
+                    (!sims.is_empty()).then_some(sims)
+                };
+                let mut groups: Vec<(Option<Vec<String>>, Vec<usize>)> = Vec::new();
+                for index in 0..screen.saves.len() {
+                    let sims = household(index);
+                    match groups
+                        .iter_mut()
+                        .find(|(known, _)| sims.is_some() && *known == sims)
+                    {
+                        Some((_, group)) => group.push(index),
+                        None => groups.push((sims, vec![index])),
+                    }
+                }
+                for (_, group) in groups {
+                    let first = group[0];
+                    let chosen = screen.selected.filter(|index| group.contains(index));
+                    let shown = chosen.unwrap_or(first);
+                    let save = &screen.saves[shown];
+                    let preview = screen.previews[shown].as_deref();
                     let mut foot = vec![bytes(t, save.size), ago(t, save.modified)];
-                    let title = match preview.and_then(|preview| preview.about.name.clone()) {
+                    let title = match name(shown) {
                         Some(name) => {
                             foot.insert(0, save.file_name.clone());
                             name
                         }
                         None => save.file_name.clone(),
                     };
+                    let variants = (group.len() > 1).then(|| {
+                        let open = self.variants_open == Some(first);
+                        let mut list = div().flex().flex_col().gap(px(2.)).child(
+                            div()
+                                .id(("variants", first))
+                                .h(px(40.))
+                                .px(px(10.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(8.))
+                                .bg(rgb(RAIL))
+                                .text_size(px(15.))
+                                .hover(|style| style.text_color(rgb(LAMP)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.variants_open = (!open).then_some(first);
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }))
+                                .child(tr!(t, "save-variants", n = group.len()))
+                                .child(icon(if open { "chevron" } else { "expand" }, 16., MUTED)),
+                        );
+                        if open {
+                            for (place, &index) in group.iter().enumerate() {
+                                let save = &screen.saves[index];
+                                let picked = screen.selected == Some(index);
+                                list = list.child(arrive(
+                                    div()
+                                        .id(("variant", index))
+                                        .h(px(40.))
+                                        .px(px(10.))
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .rounded(px(8.))
+                                        .text_size(px(15.))
+                                        .hover(|style| style.bg(rgb(RAIL)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.model.select_save(Some(index));
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .size(px(16.))
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded_full()
+                                                .border_1()
+                                                .border_color(rgb(if picked { LAMP } else { MUTED }))
+                                                .when(picked, |this| {
+                                                    this.child(div().size(px(8.)).rounded_full().bg(rgb(LAMP)))
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(TILE_TEXT - 160.))
+                                                .truncate()
+                                                .child(name(index).unwrap_or_else(|| save.file_name.clone())),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(small(ago(t, save.modified)).flex_none()),
+                                    ("variant-in", index),
+                                    0.03 * place.min(9) as f32,
+                                    6.,
+                                ));
+                            }
+                        }
+                        list
+                    });
                     tiles.push(save_tile(
-                        index + 1,
-                        screen.selected == Some(index),
+                        first + 1,
+                        chosen.is_some(),
                         portrait(preview),
                         title,
                         save_lines(preview),
                         foot,
-                        Self::act(cx, move |model| model.select_save(Some(index))),
+                        variants,
+                        Self::act(cx, move |model| model.select_save(Some(shown))),
                     ));
                 }
-                // Rows of three, each as tall as its tallest save.
+                // Rows of two, each as tall as its taller save.
                 let mut saves = div().flex().flex_col().gap(px(TILE_GAP));
                 let mut tiles = tiles.into_iter().peekable();
                 while tiles.peek().is_some() {
                     saves = saves.child(
                         div()
                             .flex()
+                            .items_start()
                             .gap(px(TILE_GAP))
-                            .children(tiles.by_ref().take(3)),
+                            .children(tiles.by_ref().take(2)),
                     );
                 }
                 page(tr!(t, "host-setup-title"), Some(tr!(t, "host-setup-lead")))
@@ -1811,10 +1916,13 @@ fn simoleons(funds: u64) -> String {
     text
 }
 
-/// Three saves across the page.
+/// Two saves across the page, so that the people in them can be told apart.
 const TILE_GAP: f32 = 16.;
-const TILE_WIDTH: f32 = (PAGE_WIDTH - 2. * TILE_GAP) / 3.;
+const TILE_WIDTH: f32 = (PAGE_WIDTH - TILE_GAP) / 2.;
 const TILE_FRAME: f32 = 6.;
+/// The width of what a tile holds, and of its words.
+const TILE_INSIDE: f32 = TILE_WIDTH - 2. * TILE_FRAME - 2.;
+const TILE_TEXT: f32 = TILE_INSIDE - 20.;
 
 /// A save to pick on the host's first screen: its picture, then who is in it.
 fn save_tile(
@@ -1824,10 +1932,11 @@ fn save_tile(
     title: String,
     lines: Vec<Div>,
     foot: Vec<String>,
+    variants: Option<Div>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnimationElement<Stateful<Div>> {
     // Portraits are 3:2, and so is the box, which keeps them in it.
-    let width = TILE_WIDTH - 2. * TILE_FRAME - 2.;
+    let width = TILE_INSIDE;
     let tile = div()
         .id(("save", index))
         .w(px(TILE_WIDTH))
@@ -1884,7 +1993,7 @@ fn save_tile(
                 .text_size(px(15.))
                 .child(
                     div()
-                        .w(px(width - 20.))
+                        .w(px(TILE_TEXT))
                         .truncate()
                         .text_size(px(17.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -1900,7 +2009,8 @@ fn save_tile(
                             .children(foot.into_iter().map(small)),
                     )
                 }),
-        );
+        )
+        .children(variants.map(|variants| variants.w(px(width)).pt_1()));
     arrive(tile, ("tile", index), 0.04 * index.min(9) as f32, 12.)
 }
 

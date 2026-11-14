@@ -54,6 +54,7 @@ host-setup-title = Choose the save to share
 host-setup-lead = The other player gets a copy. Their own saves stay untouched.
 save-none = No shared save
 save-none-detail = Start a new game together
+save-variants = Saves of this household: { $n }
 host-start = Start hosting
 host-reading-title = Reading your Mods folder
 host-reading-body = Every file is checked the first time, which can take a few minutes for a large folder.

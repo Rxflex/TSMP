@@ -46,6 +46,7 @@ host-setup-title = 选择要共享的存档
 host-setup-lead = 另一位玩家会得到一份副本，对方自己的存档不受影响。
 save-none = 不共享存档
 save-none-detail = 一起开始新游戏
+save-variants = 此家庭的存档：{ $n }
 host-start = 开始创建
 host-reading-title = 正在读取 Mods 文件夹
 host-reading-body = 首次会检查每个文件，文件夹较大时可能需要几分钟。

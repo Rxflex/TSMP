@@ -47,6 +47,7 @@ host-setup-title = Scegli il salvataggio da condividere
 host-setup-lead = L’altro giocatore ne riceve una copia. I suoi salvataggi non vengono toccati.
 save-none = Nessun salvataggio condiviso
 save-none-detail = Iniziate insieme una nuova partita
+save-variants = Salvataggi di questa unità familiare: { $n }
 host-start = Avvia la sessione
 host-reading-title = Lettura della cartella Mods
 host-reading-body = La prima volta viene controllato ogni file. Con una cartella grande possono volerci alcuni minuti.

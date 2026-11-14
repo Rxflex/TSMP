@@ -47,6 +47,7 @@ host-setup-title = Elige la partida que vas a compartir
 host-setup-lead = El otro jugador recibe una copia. Sus propias partidas no se tocan.
 save-none = Sin partida compartida
 save-none-detail = Empezar una partida nueva juntos
+save-variants = Partidas de esta unidad doméstica: { $n }
 host-start = Crear la sesión
 host-reading-title = Leyendo tu carpeta Mods
 host-reading-body = La primera vez se comprueba cada archivo. Con una carpeta grande puede tardar unos minutos.

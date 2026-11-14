@@ -48,6 +48,7 @@ host-setup-title = Wybierz zapis do udostępnienia
 host-setup-lead = Druga osoba dostanie kopię. Jej własne zapisy pozostaną nietknięte.
 save-none = Bez wspólnego zapisu
 save-none-detail = Zacznijcie razem nową grę
+save-variants = Zapisy tej rodziny: { $n }
 host-start = Załóż sesję
 host-reading-title = Czytamy folder Mods
 host-reading-body = Za pierwszym razem sprawdzany jest każdy plik. Przy dużym folderze może to potrwać kilka minut.

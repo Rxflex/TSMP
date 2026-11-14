@@ -47,6 +47,7 @@ host-setup-title = Spielstand zum Teilen wählen
 host-setup-lead = Die andere Person erhält eine Kopie. Ihre eigenen Spielstände bleiben unberührt.
 save-none = Kein gemeinsamer Spielstand
 save-none-detail = Zusammen ein neues Spiel beginnen
+save-variants = Spielstände dieses Haushalts: { $n }
 host-start = Hosten starten
 host-reading-title = Dein Mods-Ordner wird gelesen
 host-reading-body = Beim ersten Mal wird jede Datei geprüft. Bei einem großen Ordner kann das einige Minuten dauern.
