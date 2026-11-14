@@ -1,0 +1,20 @@
+[package]
+name = "tsmp-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.7"
+dirs = "7.0.0"
+miniz_oxide = "0.8"
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+walkdir = "2.5.0"
+
+[target."cfg(windows)".dependencies]
+winreg = "0.56.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
