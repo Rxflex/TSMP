@@ -1,0 +1,23 @@
+[package]
+name = "tsmp-launcher"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "TSMP launcher: finds a host on the LAN, syncs mods and the save, starts the game"
+
+[[bin]]
+name = "tsmp"
+path = "src/main.rs"
+
+[dependencies]
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+gpui = "0.2.2"
+rust-embed = { version = "8", features = ["include-exclude"] }
+sys-locale = "0.3"
+unic-langid = "0.9"
+tsmp-core = { path = "../tsmp-core" }
+tsmp-net = { path = "../tsmp-net" }
+
+[dev-dependencies]
+tempfile = "3"
