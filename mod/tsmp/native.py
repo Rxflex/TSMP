@@ -20,6 +20,8 @@ game, so each known build has its own `Layout`.
 """
 
 import collections
+import json
+import os
 import struct
 
 LIBRARY = "Simulation_x64.dll"
@@ -30,7 +32,8 @@ Layout = collections.namedtuple(
     "game_version area_global area_table area_slots area_interface zone_map zone_table zone_slots stream_new slots",
 )
 
-# Keyed by (PE timestamp, image size), which together identify a build.
+# Keyed by (PE timestamp, image size), which together identify a build. This
+# is the build the mod was written against; `load_mappings` adds the others.
 KNOWN_BUILDS = {
     (0x6ACFF6C2, 0x10E1000): Layout(
         game_version="1.129.39.1030",
@@ -155,6 +158,66 @@ class BytesMemory:
 
     def u64(self, address):
         return struct.unpack_from("<Q", self._image, address - self._base)[0]
+
+
+def _number(value):
+    """Mapping files write addresses as "0x..." strings and counts as numbers."""
+    return value if isinstance(value, int) else int(value, 0)
+
+
+def parse_mapping(data):
+    """((timestamp, image size), Layout) from the contents of a mapping file.
+
+    Raises on anything unexpected, so that half a mapping is never used.
+    """
+    if data["format"] != 1:
+        raise ValueError("unknown format {!r}".format(data["format"]))
+    timestamp, size = data["build"].split("-")
+    slots = {}
+    for name, (table, slot, expected) in data["slots"].items():
+        slots[str(name)] = (_number(table), _number(slot), _number(expected))
+    if not slots:
+        raise ValueError("no slots")
+    first, second = data["zone_map"]
+    layout = Layout(
+        game_version=str(data["game_version"]),
+        area_global=_number(data["area_global"]),
+        area_table=_number(data["area_table"]),
+        area_slots=_number(data["area_slots"]),
+        area_interface=_number(data["area_interface"]),
+        zone_map=(_number(first), _number(second)),
+        zone_table=_number(data["zone_table"]),
+        zone_slots=_number(data["zone_slots"]),
+        stream_new=_number(data["stream_new"]),
+        slots=slots,
+    )
+    return (int(timestamp, 16), int(size, 16)), layout
+
+
+def load_mappings(directory):
+    """Add the builds described by `<directory>/*.json`, which the launcher
+    puts there for the installed game version. Returns one line per file for
+    the log. A mapping is only ever trusted as far as `probe` confirms it.
+    """
+    lines = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return lines
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(directory, name), "r") as source:
+                build, layout = parse_mapping(json.load(source))
+        except Exception as exc:
+            lines.append("mapping {} ignored: {!r}".format(name, exc))
+            continue
+        # The built-in layout is the tested one and stays.
+        if build not in KNOWN_BUILDS:
+            KNOWN_BUILDS[build] = layout
+            lines.append("mapping {} for game {}".format(name, layout.game_version))
+    return lines
 
 
 def identify(memory, base):

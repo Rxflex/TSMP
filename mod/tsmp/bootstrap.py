@@ -149,6 +149,8 @@ def start():
         status = _write_status(directory)
         log.info("TSMP {} loaded, packs: {}".format(tsmp.__version__, ", ".join(status["packs"])))
         config = _load_config(directory)
+        for line in native.load_mappings(os.path.join(directory, "mappings")):
+            log.info(line)
         if config.get("capture"):
             _start_capture(directory)
         if config.get("live"):

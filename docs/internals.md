@@ -218,6 +218,10 @@ through `_omega.send`, recording slots 2 and 3 on the host should carry the
 build results across with the transport that exists. The guest's own edits
 would be recorded at `receive` and replayed into the host's `receive`.
 
+The addresses above are also in `mappings/1.129.39.1030.json`; a file like
+it describes any other build, and the launcher hands the mod the one for
+the installed game version (`native.load_mappings`).
+
 `tsmp/native.py` recognises the build and checks these tables, read-only;
 its result is in `status.json` and in the `tsmp.status` cheat. Confirmed in
 the game: `_ctypes` loads, the build is recognised, the tables match and the

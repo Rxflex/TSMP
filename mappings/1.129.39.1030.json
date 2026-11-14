@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "game_version": "1.129.39.1030",
+  "build": "6acff6c2-10e1000",
+  "area_global": "0xFE8010",
+  "area_table": "0xBFCCE0",
+  "area_slots": 22,
+  "area_interface": "0xB8",
+  "zone_map": ["0x268", "0x270"],
+  "zone_table": "0xC0BD18",
+  "zone_slots": 32,
+  "stream_new": "0x606D00",
+  "slots": {
+    "zone.receive": ["0xC0BD18", 7, "0x95D40"],
+    "zone.build_op": ["0xC0BE40", 6, "0x96E50"],
+    "area.broadcast": ["0xBFCCE0", 2, "0x37620"],
+    "area.send": ["0xBFCCE0", 3, "0x3E3A0"]
+  }
+}

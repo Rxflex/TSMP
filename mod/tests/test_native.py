@@ -1,4 +1,8 @@
+import json
+import os
+import shutil
 import struct
+import tempfile
 import unittest
 
 from tsmp import native
@@ -22,6 +26,51 @@ def image(build=BUILD, area=True):
         struct.pack_into("<Q", data, LAYOUT.area_global, BASE + AREA_OBJECT)
         struct.pack_into("<Q", data, AREA_OBJECT, BASE + LAYOUT.area_table)
     return data
+
+
+MAPPINGS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "mappings")
+
+
+class MappingFiles(unittest.TestCase):
+    def setUp(self):
+        self.known = dict(native.KNOWN_BUILDS)
+        self.directory = tempfile.mkdtemp()
+
+    def tearDown(self):
+        native.KNOWN_BUILDS.clear()
+        native.KNOWN_BUILDS.update(self.known)
+        shutil.rmtree(self.directory)
+
+    def test_every_file_in_the_repository_parses_and_is_named_by_its_version(self):
+        names = [name for name in os.listdir(MAPPINGS) if name.endswith(".json")]
+        self.assertTrue(names)
+        for name in names:
+            with open(os.path.join(MAPPINGS, name)) as source:
+                _, layout = native.parse_mapping(json.load(source))
+            self.assertEqual(name, layout.game_version + ".json")
+
+    def test_the_file_of_the_built_in_build_says_the_same(self):
+        with open(os.path.join(MAPPINGS, LAYOUT.game_version + ".json")) as source:
+            build, layout = native.parse_mapping(json.load(source))
+        self.assertEqual(build, BUILD)
+        self.assertEqual(layout, LAYOUT)
+
+    def test_a_new_build_is_added_and_a_broken_file_is_reported(self):
+        with open(os.path.join(MAPPINGS, LAYOUT.game_version + ".json")) as source:
+            data = json.load(source)
+        data.update(game_version="9.9.9.9", build="1234abcd-2000000")
+        with open(os.path.join(self.directory, "9.9.9.9.json"), "w") as target:
+            json.dump(data, target)
+        del data["slots"]
+        with open(os.path.join(self.directory, "broken.json"), "w") as target:
+            json.dump(data, target)
+        lines = native.load_mappings(self.directory)
+        self.assertEqual(native.KNOWN_BUILDS[(0x1234ABCD, 0x2000000)].game_version, "9.9.9.9")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("broken.json ignored", lines[1])
+
+    def test_a_missing_folder_is_not_an_error(self):
+        self.assertEqual(native.load_mappings(os.path.join(self.directory, "none")), [])
 
 
 def probe(data):
