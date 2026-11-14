@@ -19,7 +19,7 @@ use rust_embed::RustEmbed;
 #[derive(RustEmbed)]
 #[folder = "assets/"]
 #[include = "icons/*.svg"]
-#[include = "art/*.svg"]
+#[include = "art/*.jpg"]
 #[include = "fonts/*.ttf"]
 struct Assets;
 

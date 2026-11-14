@@ -1048,7 +1048,7 @@ fn avatar(name: &str) -> Div {
 
 /// One of the launcher's own drawings.
 fn art(name: &str) -> Img {
-    img(format!("art/{name}.svg"))
+    img(format!("art/{name}.jpg"))
 }
 
 /// A picture the size of a save's portrait.
