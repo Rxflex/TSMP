@@ -13,6 +13,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::mappings::{self, Support};
+use crate::update;
 use tsmp_core::game::GameInstall;
 use tsmp_core::manifest::{Diff, Manifest, hash_file};
 use gpui::{Image, ImageFormat};
@@ -267,6 +269,10 @@ impl Drop for BridgeFile {
 
 enum Event {
     Detected(Result<Env, String>),
+    /// Whether building together knows the installed game version.
+    Mapped(Support),
+    /// A newer launcher is in place and runs after a restart.
+    Updated(String),
     /// What is inside the save at this index of the host screen's list.
     Previewed(usize, Option<Arc<Preview>>),
     HostStarted(Result<Running, String>),
@@ -280,6 +286,10 @@ pub struct Model {
     sender: Sender<Event>,
     events: Receiver<Event>,
     pub env: Option<Arc<Env>>,
+    /// Not known until the mappings have been looked up.
+    pub building: Option<Support>,
+    /// The version waiting for a restart, once an update is in place.
+    pub update: Option<String>,
     pub screen: Screen,
     pub game: GameState,
     /// The live session, while hosting or after joining.
@@ -300,7 +310,27 @@ impl Model {
         thread::spawn(move || {
             let _ = sender.send(Event::Detected(Env::detect()));
         });
+        // `TSMP_NO_UPDATE` keeps the file as it is; so does a debug build.
+        if !cfg!(debug_assertions) && std::env::var_os("TSMP_NO_UPDATE").is_none() {
+            let sender = model.sender.clone();
+            thread::spawn(move || {
+                let Ok(exe) = std::env::current_exe() else { return };
+                update::clean_up(&exe);
+                let agent = update::agent();
+                if let Ok(Some(release)) = update::newer_release(&agent)
+                    && update::install(&agent, &release, &exe).is_ok()
+                {
+                    let _ = sender.send(Event::Updated(release.version));
+                }
+            });
+        }
         model
+    }
+
+    /// Whether restarting now would interrupt nothing.
+    pub fn can_restart(&self) -> bool {
+        matches!(self.screen, Screen::Loading | Screen::Home | Screen::Fatal(_))
+            && matches!(self.game, GameState::NotStarted | GameState::Failed(_))
     }
 
     #[cfg(test)]
@@ -314,6 +344,8 @@ impl Model {
             sender,
             events,
             env,
+            building: None,
+            update: None,
             screen,
             game: GameState::NotStarted,
             live: None,
@@ -523,9 +555,18 @@ impl Model {
     fn apply(&mut self, event: Event) {
         match event {
             Event::Detected(Ok(env)) => {
+                let (sender, data_dir, version) =
+                    (self.sender.clone(), env.game.user_dir.join("tsmp"), env.game.version.clone());
+                thread::spawn(move || {
+                    let agent = update::agent();
+                    let fetch = |version: &str| update::repository_file(&agent, &format!("mappings/{version}.json"));
+                    let _ = sender.send(Event::Mapped(mappings::install(&data_dir, version.as_deref(), fetch)));
+                });
                 self.env = Some(Arc::new(env));
                 self.screen = Screen::Home;
             }
+            Event::Mapped(support) => self.building = Some(support),
+            Event::Updated(version) => self.update = Some(version),
             Event::Detected(Err(message)) => self.screen = Screen::Fatal(message),
             Event::Previewed(index, preview) => {
                 if let Screen::Host(screen) = &mut self.screen {

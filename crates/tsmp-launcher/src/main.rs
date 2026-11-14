@@ -4,8 +4,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod i18n;
+mod mappings;
 mod model;
 mod ui;
+mod update;
 
 use std::borrow::Cow;
 

@@ -149,3 +149,11 @@ ago-days =
     { $n ->
        *[other] { $n } 天前
     }
+
+fact-building = 一起建造
+building-checking = 正在检查…
+building-ready = 已支持此游戏版本
+building-missing = 还没有人描述游戏 { $version }，所以一起建造已关闭。其他功能正常。
+building-unknown = 游戏版本未知，所以一起建造已关闭。其他功能正常。
+update-ready = 版本 { $version } 已安装，重启后生效
+update-restart = 重启并使用版本 { $version }

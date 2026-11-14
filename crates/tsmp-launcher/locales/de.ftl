@@ -154,3 +154,11 @@ ago-days =
         [one] vor { $n } Tag
        *[other] vor { $n } Tagen
     }
+
+fact-building = Gemeinsam bauen
+building-checking = Wird geprüft…
+building-ready = Bereit für diese Spielversion
+building-missing = Spielversion { $version } hat noch niemand beschrieben, deshalb ist gemeinsames Bauen aus. Alles andere funktioniert.
+building-unknown = Die Spielversion ist unbekannt, deshalb ist gemeinsames Bauen aus. Alles andere funktioniert.
+update-ready = Version { $version } ist installiert und läuft nach einem Neustart
+update-restart = Neu starten mit Version { $version }

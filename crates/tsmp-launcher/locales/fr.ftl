@@ -154,3 +154,11 @@ ago-days =
         [one] il y a { $n } jour
        *[other] il y a { $n } jours
     }
+
+fact-building = Construire ensemble
+building-checking = Vérification…
+building-ready = Prêt pour cette version du jeu
+building-missing = Personne n’a encore décrit le jeu { $version }, la construction à deux est donc désactivée. Tout le reste fonctionne.
+building-unknown = La version du jeu est inconnue, la construction à deux est donc désactivée. Tout le reste fonctionne.
+update-ready = La version { $version } est installée et sera utilisée après un redémarrage
+update-restart = Redémarrer avec la version { $version }

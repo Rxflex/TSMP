@@ -126,6 +126,29 @@ to use. The part most likely to break is build mode sync, because it depends
 on addresses inside `Simulation_x64.dll`. The mod checks the build before it
 touches anything and leaves an unknown one alone.
 
+Those addresses are data, not code: one file per game version in
+[`mappings/`](mappings). The launcher carries the files known when it was
+built. When the installed game is a version it has no file for, it asks this
+repository for `mappings/<version>.json`, so a game update whose addresses
+have been found needs a new file here and nothing else. The home screen says
+whether building together is ready for the installed version. A file names
+the build it describes and the function each hooked slot must point to, and
+the mod compares both with the running game before it uses anything.
+
+## Updates
+
+When it starts, the launcher asks GitHub for the latest release of this
+repository. A newer `tsmp.exe` is downloaded, checked against the checksum
+GitHub publishes for it and put in place of the running file; the top bar
+then offers to restart. The mod is inside the launcher, so it is updated by
+the same step. The requests carry the program's name and version and nothing
+about you or your computer. Set the environment variable `TSMP_NO_UPDATE` to
+switch this off.
+
+A release is made by pushing a tag `v<version>` that matches the version in
+`crates/tsmp-launcher/Cargo.toml`; `.github/workflows/release.yml` builds and
+publishes it.
+
 ## Building
 
     cargo test                               # everything except the UI itself
@@ -148,13 +171,14 @@ touches anything and leaves an unknown one alone.
 | `crates/tsmp-net` | LAN discovery, the launcher-to-launcher protocol for mods and saves, the relay between the two games |
 | `crates/tsmp-launcher` | The launcher (Rust + [gpui](https://www.gpui.rs)) |
 | `crates/tsmp-cli` | A diagnostic command line over the core |
+| `mappings/` | Addresses inside the game's simulation library, one file per game version |
 | `docs/internals.md` | What is known about the game's internals and how it was learned |
 
 ## Translations
 
 The launcher speaks Deutsch, English, Español, Français, Italiano, Polski,
 Português (Brasil), Русский, Українська and 简体中文. It starts in the system
-language and remembers the one picked from the list in the bottom-left corner.
+language and remembers the one picked from the list in the top bar.
 
 Each language is one [Fluent](https://projectfluent.org) file in
 `crates/tsmp-launcher/locales/`, named by its language code (`de.ftl`,

@@ -14,10 +14,16 @@ fluent-bundle = "0.16"
 fluent-syntax = "0.12"
 gpui = "0.2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
+serde_json = "1.0.154"
+sha2 = "0.10"
 sys-locale = "0.3"
 unic-langid = "0.9"
 tsmp-core = { path = "../tsmp-core" }
 tsmp-net = { path = "../tsmp-net" }
+ureq = { version = "3", features = ["json"] }
+
+[build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

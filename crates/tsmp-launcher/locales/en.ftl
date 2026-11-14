@@ -166,3 +166,11 @@ ago-days =
         [one] { $n } day ago
        *[other] { $n } days ago
     }
+
+fact-building = Building together
+building-checking = Checking…
+building-ready = Ready for this game version
+building-missing = Nobody has described game { $version } yet, so building together is off. Everything else works.
+building-unknown = The game version is unknown, so building together is off. Everything else works.
+update-ready = Version { $version } is installed and runs after a restart
+update-restart = Restart into version { $version }

@@ -19,4 +19,15 @@ fn main() {
     });
     let target = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("tsmp.ts4script");
     fs::write(target, bytes).unwrap();
+
+    // The window takes its icon from resource 1 of the program, and so does
+    // Explorer.
+    println!("cargo:rerun-if-changed=assets/app.ico");
+    if env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        let mut resources = winresource::WindowsResource::new();
+        resources.set_icon_with_id("assets/app.ico", "1");
+        resources.set("ProductName", "TSMP");
+        resources.set("FileDescription", "TSMP launcher");
+        resources.compile().expect("the program's icon is compiled in");
+    }
 }

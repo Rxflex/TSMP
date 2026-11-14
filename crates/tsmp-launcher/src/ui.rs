@@ -17,6 +17,7 @@ use tsmp_net::live::LiveStatus;
 use tsmp_net::protocol::GuestStatus;
 
 use crate::i18n::{I18n, tr};
+use crate::mappings::Support;
 use crate::model::{
     Env, GameState, HostScreen, HostStage, JoinScreen, JoinStage, JoinStep, Model, Plan, Preview, Running, Screen,
     Synced,
@@ -400,6 +401,38 @@ impl Launcher {
                     .text_color(rgb(LAMP))
                     .child("TSMP"),
             )
+            .children(self.model.update.as_ref().map(|version| {
+                let restart = self.model.can_restart();
+                div().h_full().flex().items_center().pr_2().child(
+                    div()
+                        .id("update")
+                        .h(px(36.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(rgb(LAMP))
+                        .text_size(px(15.))
+                        .text_color(rgb(LAMP))
+                        .child(icon("download", 18., LAMP))
+                        .child(if restart {
+                            tr!(self.i18n, "update-restart", version = version.as_str())
+                        } else {
+                            tr!(self.i18n, "update-ready", version = version.as_str())
+                        })
+                        .when(restart, |this| {
+                            this.cursor_pointer().hover(|style| style.bg(rgb(PANEL))).on_click(cx.listener(
+                                |_, _, _, cx| {
+                                    if crate::update::restart().is_ok() {
+                                        cx.quit();
+                                    }
+                                },
+                            ))
+                        }),
+                )
+            }))
             .child(
                 div().h_full().flex().items_center().pr_2().child(
                     div()
@@ -469,6 +502,17 @@ impl Launcher {
                                 .child(small(env.game.install_dir.display().to_string())),
                         ))
                         .child(fact(tr!(t, "fact-mods"), env.game.mods_dir().display().to_string()))
+                        .child(fact_with(
+                            tr!(t, "fact-building"),
+                            match (self.model.building, &env.game.version) {
+                                (None, _) => status_line(MUTED, tr!(t, "building-checking")),
+                                (Some(Support::Ready), _) => status_line(GOOD, tr!(t, "building-ready")),
+                                (Some(Support::Missing), Some(version)) => {
+                                    status_line(WARNING, tr!(t, "building-missing", version = version.as_str()))
+                                }
+                                _ => status_line(WARNING, tr!(t, "building-unknown")),
+                            },
+                        ))
                         .child(fact_with(tr!(t, "fact-packs"), pack_chips(t, &env.packs))),
                 ),
             )
