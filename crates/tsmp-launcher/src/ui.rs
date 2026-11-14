@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit,
-    Rgba, SharedString, Stateful, Svg, Window, WindowControlArea, div, img, px, relative, rgb, svg,
+    Rgba, ScrollHandle, SharedString, Stateful, Svg, Window, WindowControlArea, div, img, px, relative, rgb, svg,
 };
 use tsmp_core::packs::{PackSet, pack_name};
 use tsmp_net::protocol::DEFAULT_PORT;
@@ -45,10 +45,11 @@ const SKY: u32 = 0x8fb4ff;
 const BODY_FONT: &str = "Golos Text";
 const DISPLAY_FONT: &str = "Unbounded";
 
-const RAIL_WIDTH: f32 = 236.;
-const TITLEBAR_HEIGHT: f32 = 40.;
+const TITLEBAR_HEIGHT: f32 = 52.;
+/// The widest a page gets; wider windows keep it in the middle.
+const PAGE_WIDTH: f32 = 860.;
 /// The left edge shared by the page, the title bar and the bottom bar.
-const GUTTER: f32 = 40.;
+const GUTTER: f32 = 56.;
 
 /// The longest address worth typing: `255.255.255.255:65535`.
 const ADDRESS_LENGTH: usize = 21;
@@ -64,6 +65,9 @@ pub struct Launcher {
     model: Model,
     i18n: I18n,
     choosing_language: bool,
+    /// Where the page is scrolled to, and what the scroll bar last showed.
+    scroll: ScrollHandle,
+    scroll_shown: (f32, f32),
     /// What the player typed as the host's address, when the search finds nobody.
     address: String,
     address_focus: FocusHandle,
@@ -78,7 +82,11 @@ impl Launcher {
             loop {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.model.pump() {
+                    // The page learns its own height only once drawn, so the
+                    // scroll bar follows it from here.
+                    let scroll = this.scroll_position();
+                    if this.model.pump() || scroll != this.scroll_shown {
+                        this.scroll_shown = scroll;
                         cx.notify();
                     }
                 });
@@ -92,11 +100,41 @@ impl Launcher {
             model: Model::start(),
             i18n: I18n::load(),
             choosing_language: false,
+            scroll: ScrollHandle::new(),
+            scroll_shown: (0., 0.),
             address: String::new(),
             address_focus: cx.focus_handle(),
             address_refused: false,
             lan_address: lan_address(),
         }
+    }
+
+    /// How much of the page is out of sight, and how far it is scrolled.
+    fn scroll_position(&self) -> (f32, f32) {
+        (f32::from(self.scroll.max_offset().height), -f32::from(self.scroll.offset().y))
+    }
+
+    /// Shows that the page goes on below, and how far down the player is.
+    fn scrollbar(&self) -> Option<Div> {
+        const EDGE: f32 = 8.;
+        let (hidden, scrolled) = self.scroll_position();
+        let view = f32::from(self.scroll.bounds().size.height);
+        if hidden < 1. || view <= EDGE * 2. {
+            return None;
+        }
+        let track = view - EDGE * 2.;
+        let thumb = (track * view / (view + hidden)).max(48.).min(track);
+        let top = EDGE + (track - thumb) * (scrolled / hidden).clamp(0., 1.);
+        Some(
+            div()
+                .absolute()
+                .top(px(top))
+                .right(px(6.))
+                .w(px(8.))
+                .h(px(thumb))
+                .rounded_full()
+                .bg(Rgba { a: 0.55, ..rgb(MUTED) }),
+        )
     }
 
     /// Typing in the address field: digits, dots and a colon, nothing else.
@@ -154,7 +192,7 @@ impl Launcher {
                 .mt_1()
                 .flex()
                 .flex_col()
-                .children(lines[from..].iter().map(|line| small(line.clone()).text_size(px(12.)).truncate())),
+                .children(lines[from..].iter().map(|line| small(line.clone()).text_size(px(13.)).truncate())),
         )
     }
 
@@ -185,10 +223,11 @@ impl Launcher {
         }
     }
 
-    fn rail(&self, cx: &mut Context<Self>) -> Div {
+    /// Where the player is on the way into a session, as a row over the page.
+    fn steps(&self) -> Div {
         let t = &self.i18n;
         let done = self.steps_done();
-        let mut steps = div().flex().flex_col().px_6().pt_6();
+        let mut row = div().w_full().max_w(px(PAGE_WIDTH)).mx_auto().flex();
         for (index, key) in STEPS.iter().enumerate() {
             let (ring, fill, label) = match index {
                 i if i < done => (GOOD, None, MUTED),
@@ -196,7 +235,7 @@ impl Launcher {
                 _ => (LINE, None, MUTED),
             };
             let marker = div()
-                .size(px(22.))
+                .size(px(30.))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -205,98 +244,51 @@ impl Launcher {
                 .border_1()
                 .border_color(rgb(ring))
                 .when_some(fill, |this, fill| this.bg(rgb(fill)))
-                .text_size(px(11.))
+                .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(if fill.is_some() { INK } else { MUTED }))
                 .child(if index < done {
-                    icon("check", 12., GOOD).into_any_element()
+                    icon("check", 15., GOOD).into_any_element()
                 } else {
                     (index + 1).to_string().into_any_element()
                 });
-            let last = index == STEPS.len() - 1;
-            steps = steps.child(
+            // The line to the step before and to the step after.
+            let link = |shown: bool, walked: bool| {
                 div()
+                    .flex_1()
+                    .h(px(1.))
+                    .when(shown, |this| this.bg(rgb(if walked { GOOD } else { LINE })))
+            };
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .gap_3()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        div().flex().flex_col().items_center().child(marker).when(!last, |this| {
-                            this.child(
-                                div().w(px(1.)).flex_1().min_h(px(18.)).bg(rgb(if index < done { GOOD } else { LINE })),
-                            )
-                        }),
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .child(link(index > 0, index <= done))
+                            .child(marker)
+                            .child(link(index < STEPS.len() - 1, index < done)),
                     )
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .pt(px(1.))
-                            .when(!last, |this| this.pb(px(14.)))
+                            .px_2()
+                            .text_center()
+                            .text_size(px(14.))
+                            .line_height(relative(1.35))
                             .text_color(rgb(label))
                             .when(index == done, |this| this.font_weight(FontWeight::MEDIUM))
                             .child(tr!(t, *key)),
                     ),
             );
         }
-
-        let player = self.model.env.as_ref().map(|env| {
-            div()
-                .px_6()
-                .flex()
-                .flex_col()
-                .child(div().font_weight(FontWeight::MEDIUM).child(env.name.clone()))
-                .child(small(match &env.game.version {
-                    Some(version) => tr!(t, "rail-game", version = version.as_str()),
-                    None => tr!(t, "rail-game-unknown"),
-                }))
-        });
-
-        div()
-            .w(px(RAIL_WIDTH))
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(RAIL))
-            .border_r_1()
-            .border_color(rgb(LINE))
-            .child(
-                drag_area(div())
-                    .h(px(72.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px_6()
-                    .font_family(DISPLAY_FONT)
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(px(22.))
-                    .text_color(rgb(LAMP))
-                    .child("TSMP"),
-            )
-            .children(player)
-            .child(steps)
-            .child(div().flex_1())
-            .child(
-                div().p_3().child(
-                    div()
-                        .id("language")
-                        .h(px(36.))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded(px(8.))
-                        .text_color(rgb(MUTED))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(PANEL)).text_color(rgb(TEXT)))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.choosing_language = true;
-                            cx.notify();
-                        }))
-                        .child(icon("globe", 16., MUTED))
-                        .child(div().flex_1().min_w_0().truncate().child(t.current().name.clone()))
-                        .child(icon("chevron", 14., MUTED)),
-                ),
-            )
+        div().flex_none().px(px(GUTTER)).pt_6().pb_4().child(row)
     }
 
     /// The list of languages, over everything else. A click anywhere closes it.
@@ -317,10 +309,10 @@ impl Launcher {
         let mut list = div()
             .id("languages")
             .absolute()
-            .left(px(12.))
-            .bottom(px(54.))
-            .w(px(RAIL_WIDTH - 24.))
-            .max_h(px(372.))
+            .top(px(TITLEBAR_HEIGHT - 4.))
+            .right(px(152.))
+            .w(px(240.))
+            .max_h(px(460.))
             .overflow_y_scroll()
             .occlude()
             .flex()
@@ -336,7 +328,7 @@ impl Launcher {
                     .px_2()
                     .pt_1()
                     .pb_2()
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .text_color(rgb(MUTED))
                     .child(tr!(self.i18n, "language")),
             );
@@ -347,8 +339,8 @@ impl Launcher {
                 div()
                     .id(("language", index))
                     .flex_none()
-                    .h(px(32.))
-                    .px_2()
+                    .h(px(40.))
+                    .px_3()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -362,14 +354,14 @@ impl Launcher {
                         cx.notify();
                     }))
                     .child(div().min_w_0().truncate().child(language.name.clone()))
-                    .when(chosen, |this| this.child(icon("check", 14., LAMP))),
+                    .when(chosen, |this| this.child(icon("check", 16., LAMP))),
             );
         }
         [backdrop.into_any_element(), list.into_any_element()]
     }
 
     /// The strip the window is dragged by, with the window's own buttons.
-    fn titlebar(&self, window: &Window) -> Div {
+    fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let control = |name: &'static str, area: WindowControlArea, hover: u32, fallback: fn(&mut Window)| {
             div()
                 .id(name)
@@ -392,7 +384,44 @@ impl Launcher {
             .h(px(TITLEBAR_HEIGHT))
             .flex_none()
             .flex()
-            .child(drag_area(div()).flex_1().h_full())
+            .bg(rgb(RAIL))
+            .border_b_1()
+            .border_color(rgb(LINE))
+            .child(
+                drag_area(div())
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .px(px(GUTTER / 2.))
+                    .font_family(DISPLAY_FONT)
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(20.))
+                    .text_color(rgb(LAMP))
+                    .child("TSMP"),
+            )
+            .child(
+                div().h_full().flex().items_center().pr_2().child(
+                    div()
+                        .id("language")
+                        .h(px(36.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(8.))
+                        .text_size(px(15.))
+                        .text_color(rgb(MUTED))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(PANEL)).text_color(rgb(TEXT)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.choosing_language = true;
+                            cx.notify();
+                        }))
+                        .child(icon("globe", 18., MUTED))
+                        .child(self.i18n.current().name.clone()),
+                ),
+            )
             .child(control("minimize", WindowControlArea::Min, PANEL, |window| {
                 window.minimize_window()
             }))
@@ -411,7 +440,7 @@ impl Launcher {
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_5()
                     .child(choice(
                         "host",
                         "host",
@@ -428,9 +457,17 @@ impl Launcher {
                     )),
             )
             .child(
-                section(tr!(t, "home-computer")).child(
+                section(format!("{}: {}", tr!(t, "home-computer"), env.name)).child(
                     sheet()
-                        .child(fact(tr!(t, "fact-game"), env.game.install_dir.display().to_string()))
+                        .child(fact_with(
+                            tr!(t, "fact-game"),
+                            div()
+                                .child(match &env.game.version {
+                                    Some(version) => tr!(t, "rail-game", version = version.as_str()),
+                                    None => tr!(t, "rail-game-unknown"),
+                                })
+                                .child(small(env.game.install_dir.display().to_string())),
+                        ))
                         .child(fact(tr!(t, "fact-mods"), env.game.mods_dir().display().to_string()))
                         .child(fact_with(tr!(t, "fact-packs"), pack_chips(t, &env.packs))),
                 ),
@@ -497,9 +534,9 @@ impl Launcher {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .p_4()
+                    .p_5()
                     .text_color(rgb(MUTED))
-                    .child(icon("people", 20., MUTED))
+                    .child(icon("people", 24., MUTED))
                     .child(div().flex_1().min_w_0().child(tr!(t, "players-empty"))),
             );
         }
@@ -532,7 +569,7 @@ impl Launcher {
                             .child(small(guest.address.ip().to_string()))
                             .child(small(describe_packs(t, &guest.hello.packs))),
                     )
-                    .child(status_line(color, status).flex_none().max_w(px(280.))),
+                    .child(status_line(color, status).flex_none().max_w(px(340.))),
             );
         }
         page(tr!(t, "host-title"), Some(tr!(t, "host-lead")))
@@ -594,7 +631,7 @@ impl Launcher {
                                     })),
                             )
                             .child(small(address.ip().to_string()).flex_none())
-                            .child(icon("arrow", 16., MUTED)),
+                            .child(icon("arrow", 20., MUTED)),
                     );
                 }
                 if screen.hosts.is_empty() {
@@ -607,7 +644,7 @@ impl Launcher {
                             .px_6()
                             .pt_6()
                             .pb_8()
-                            .child(art("search").w(px(240.)).h(px(120.)))
+                            .child(art("search").w(px(360.)).h(px(180.)))
                             .child(div().text_center().text_color(rgb(MUTED)).child(tr!(t, "join-searching"))),
                     );
                 }
@@ -616,12 +653,12 @@ impl Launcher {
                     .id("address")
                     .track_focus(&self.address_focus)
                     .on_key_down(cx.listener(Self::type_address))
-                    .w(px(240.))
-                    .h(px(38.))
-                    .px_3()
+                    .w(px(300.))
+                    .h(px(48.))
+                    .px_4()
                     .flex()
                     .items_center()
-                    .rounded(px(8.))
+                    .rounded(px(10.))
                     .bg(rgb(RAIL))
                     .border_1()
                     .border_color(rgb(if self.address_refused {
@@ -637,7 +674,7 @@ impl Launcher {
                     } else {
                         div().child(self.address.clone())
                     })
-                    .when(focused, |this| this.child(div().w(px(1.)).h(px(18.)).bg(rgb(LAMP))));
+                    .when(focused, |this| this.child(div().w(px(1.)).h(px(22.)).bg(rgb(LAMP))));
                 let by_address = div()
                     .flex()
                     .flex_col()
@@ -678,7 +715,7 @@ impl Launcher {
                 };
                 page(tr!(t, "syncing-title"), None)
                     .child(
-                        div().h(px(6.)).w_full().rounded_full().bg(rgb(PANEL)).child(
+                        div().h(px(10.)).w_full().rounded_full().bg(rgb(PANEL)).child(
                             div()
                                 .h_full()
                                 .w(relative(fraction.clamp(0., 1.)))
@@ -846,16 +883,15 @@ impl Launcher {
             _ => None,
         };
         Some(
-            div()
-                .flex_none()
+            div().flex_none().px(px(GUTTER)).py_5().border_t_1().border_color(rgb(LINE)).child(
+                div()
+                .w_full()
+                .max_w(px(PAGE_WIDTH))
+                .mx_auto()
                 .flex()
                 .items_center()
                 .justify_between()
                 .gap_6()
-                .px(px(GUTTER))
-                .py_4()
-                .border_t_1()
-                .border_color(rgb(LINE))
                 .child(
                     div()
                         .flex_1()
@@ -870,6 +906,7 @@ impl Launcher {
                 .when(can_launch, |this| {
                     this.child(button("launch", tr!(t, "game-start"), true, Self::act(cx, Model::launch_game)))
                 }),
+            ),
         )
     }
 }
@@ -894,30 +931,30 @@ impl Render for Launcher {
             .bg(rgb(PAPER))
             .text_color(rgb(TEXT))
             .font_family(BODY_FONT)
-            .text_size(px(14.))
-            .line_height(relative(1.45))
-            .child(self.rail(cx))
+            .text_size(px(16.))
+            .line_height(relative(1.5))
+            .flex_col()
+            .child(self.titlebar(window, cx))
+            .child(self.steps())
             .child(
                 div()
+                    .relative()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(self.titlebar(window))
+                    .min_h_0()
                     .child(
                         div()
                             .id("body")
-                            .flex_1()
-                            .min_h_0()
+                            .size_full()
                             .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
                             .px(px(GUTTER))
                             .pt_4()
                             .pb_8()
-                            .child(div().max_w(px(620.)).child(body)),
+                            .child(div().w_full().max_w(px(PAGE_WIDTH)).mx_auto().child(body)),
                     )
-                    .children(self.footer(cx)),
+                    .children(self.scrollbar()),
             )
+            .children(self.footer(cx))
             .when(self.choosing_language, |this| this.children(self.language_list(cx)))
     }
 }
@@ -942,20 +979,20 @@ fn icon(name: &str, size: f32, color: u32) -> Svg {
 
 /// A screen: what it is about, then its parts.
 fn page(title: String, lead: Option<String>) -> Div {
-    div().flex().flex_col().gap_6().child(
+    div().flex().flex_col().gap_8().child(
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .child(
                 div()
                     .font_family(DISPLAY_FONT)
                     .font_weight(FontWeight::MEDIUM)
-                    .text_size(px(24.))
-                    .line_height(relative(1.25))
+                    .text_size(px(34.))
+                    .line_height(relative(1.2))
                     .child(title),
             )
-            .children(lead.map(|lead| div().text_size(px(15.)).text_color(rgb(MUTED)).child(lead))),
+            .children(lead.map(|lead| div().max_w(px(660.)).text_size(px(18.)).text_color(rgb(MUTED)).child(lead))),
     )
 }
 
@@ -964,8 +1001,8 @@ fn section(title: String) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_1()
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+        .gap_2()
+        .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(title))
 }
 
 /// Ruled lines, like a list on paper: for facts and changes.
@@ -982,10 +1019,10 @@ fn fact_with(label: String, value: Div) -> Div {
     div()
         .flex()
         .gap_4()
-        .py(px(10.))
+        .py(px(14.))
         .border_b_1()
         .border_color(rgb(LINE))
-        .child(div().w(px(150.)).flex_none().text_color(rgb(MUTED)).child(label))
+        .child(div().w(px(200.)).flex_none().text_color(rgb(MUTED)).child(label))
         .child(value.flex_1().min_w_0())
 }
 
@@ -994,7 +1031,7 @@ fn pack_chips(t: &I18n, packs: &PackSet) -> Div {
     if packs.is_empty() {
         return div().child(tr!(t, "packs-none"));
     }
-    let mut chips = div().flex().flex_wrap().gap(px(6.));
+    let mut chips = div().flex().flex_wrap().gap(px(8.));
     for code in packs {
         let color = match code.get(..2) {
             Some("EP") => LAMP,
@@ -1006,13 +1043,13 @@ fn pack_chips(t: &I18n, packs: &PackSet) -> Div {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .h(px(24.))
-                .px_2()
-                .rounded(px(6.))
+                .gap(px(8.))
+                .h(px(30.))
+                .px_3()
+                .rounded(px(8.))
                 .bg(rgb(PANEL))
-                .text_size(px(13.))
-                .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(color)))
+                .text_size(px(14.))
+                .child(div().size(px(7.)).flex_none().rounded_full().bg(rgb(color)))
                 .child(pack_name(code).map_or_else(|| code.clone(), str::to_string)),
         );
     }
@@ -1021,19 +1058,19 @@ fn pack_chips(t: &I18n, packs: &PackSet) -> Div {
 
 /// A raised block: a player, a host, a save.
 fn card() -> Div {
-    div().p_3().rounded(px(12.)).bg(rgb(PANEL)).border_1().border_color(rgb(LINE))
+    div().p_4().rounded(px(14.)).bg(rgb(PANEL)).border_1().border_color(rgb(LINE))
 }
 
 /// A dashed outline where something is still missing.
 fn hollow() -> Div {
-    div().rounded(px(12.)).border_1().border_dashed().border_color(rgb(LINE))
+    div().rounded(px(14.)).border_1().border_dashed().border_color(rgb(LINE))
 }
 
 /// A player, as the first letter of their computer's name.
 fn avatar(name: &str) -> Div {
     let letter: String = name.trim().chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
     div()
-        .size(px(38.))
+        .size(px(48.))
         .flex_none()
         .flex()
         .items_center()
@@ -1042,6 +1079,7 @@ fn avatar(name: &str) -> Div {
         .bg(Rgba { a: 0.14, ..rgb(LAMP) })
         .font_family(DISPLAY_FONT)
         .font_weight(FontWeight::MEDIUM)
+        .text_size(px(19.))
         .text_color(rgb(LAMP))
         .child(letter)
 }
@@ -1053,7 +1091,7 @@ fn art(name: &str) -> Img {
 
 /// A picture the size of a save's portrait.
 fn picture(image: Img) -> Img {
-    image.w(px(132.)).h(px(88.)).flex_none().rounded(px(8.)).object_fit(ObjectFit::Cover)
+    image.w(px(180.)).h(px(120.)).flex_none().rounded(px(10.)).object_fit(ObjectFit::Cover)
 }
 
 /// The household of a save, or a drawing when the save holds no portrait.
@@ -1073,8 +1111,8 @@ fn save_lines(preview: Option<&Preview>) -> Vec<Div> {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .child(icon(picture, 14., MUTED))
+            .gap(px(8.))
+            .child(icon(picture, 17., MUTED))
             .child(div().flex_1().min_w_0().truncate().child(text))
     };
     let mut lines = Vec::new();
@@ -1141,8 +1179,8 @@ fn save_card(
         .id(id)
         .flex()
         .items_center()
-        .gap_4()
-        .pr_4()
+        .gap_5()
+        .pr_5()
         .border_color(rgb(if chosen { LAMP } else { LINE }))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(PANEL_HOVER)))
@@ -1154,8 +1192,8 @@ fn save_card(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
-                .child(div().truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                .gap(px(5.))
+                .child(div().truncate().text_size(px(19.)).font_weight(FontWeight::SEMIBOLD).child(title))
                 .children(lines)
                 .when(!foot.is_empty(), |this| {
                     this.child(div().flex().gap_3().children(foot.into_iter().map(small)))
@@ -1163,7 +1201,7 @@ fn save_card(
         )
         .child(
             div()
-                .size(px(18.))
+                .size(px(24.))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -1171,7 +1209,7 @@ fn save_card(
                 .rounded_full()
                 .border_1()
                 .border_color(rgb(if chosen { LAMP } else { MUTED }))
-                .when(chosen, |this| this.child(div().size(px(8.)).rounded_full().bg(rgb(LAMP)))),
+                .when(chosen, |this| this.child(div().size(px(12.)).rounded_full().bg(rgb(LAMP)))),
         )
 }
 
@@ -1189,11 +1227,11 @@ fn shared_save(file_name: &str, preview: Option<&Preview>) -> Div {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(px(5.))
                 .child(
                     div()
                         .truncate()
-                        .text_size(px(15.))
+                        .text_size(px(19.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(title.clone().unwrap_or_else(|| file_name.to_string())),
                 )
@@ -1203,7 +1241,7 @@ fn shared_save(file_name: &str, preview: Option<&Preview>) -> Div {
         .children(
             preview
                 .and_then(|preview| preview.lot_picture.clone())
-                .map(|lot| img(lot).size(px(88.)).flex_none().rounded(px(8.)).object_fit(ObjectFit::Cover)),
+                .map(|lot| img(lot).size(px(120.)).flex_none().rounded(px(10.)).object_fit(ObjectFit::Cover)),
         )
 }
 
@@ -1212,19 +1250,19 @@ fn change(picture: &'static str, text: String, detail: Option<Div>) -> Div {
     div()
         .flex()
         .gap_3()
-        .py(px(10.))
+        .py(px(14.))
         .border_b_1()
         .border_color(rgb(LINE))
-        .child(div().pt(px(2.)).child(icon(picture, 16., LAMP)))
+        .child(div().pt(px(3.)).child(icon(picture, 18., LAMP)))
         .child(div().flex_1().min_w_0().flex().flex_col().gap_1().child(text).children(detail))
 }
 
 fn buttons() -> Div {
-    div().flex().gap_3().pt_2()
+    div().flex().gap_4().pt_2()
 }
 
 fn small(text: impl Into<SharedString>) -> Div {
-    div().text_size(px(13.)).text_color(rgb(MUTED)).child(text.into())
+    div().text_size(px(14.)).text_color(rgb(MUTED)).child(text.into())
 }
 
 /// A coloured dot and what it stands for.
@@ -1232,7 +1270,7 @@ fn status_line(color: u32, text: String) -> Div {
     div()
         .flex()
         .gap_2()
-        .child(div().mt(px(7.)).size(px(7.)).flex_none().rounded_full().bg(rgb(color)))
+        .child(div().mt(px(8.)).size(px(9.)).flex_none().rounded_full().bg(rgb(color)))
         .child(div().min_w_0().child(text))
 }
 
@@ -1241,15 +1279,15 @@ fn notice(color: u32, text: String) -> Div {
     div()
         .flex()
         .gap_3()
-        .p_3()
-        .rounded(px(8.))
+        .p_4()
+        .rounded(px(10.))
         .bg(Rgba { a: 0.1, ..rgb(color) })
-        .child(div().pt(px(2.)).child(icon("alert", 16., color)))
+        .child(div().pt(px(3.)).child(icon("alert", 18., color)))
         .child(div().flex_1().min_w_0().child(text))
 }
 
 fn file_list(t: &I18n, paths: &[String]) -> Div {
-    let mut list = div().flex().flex_col().text_size(px(13.)).text_color(rgb(MUTED));
+    let mut list = div().flex().flex_col().text_size(px(14.)).text_color(rgb(MUTED));
     for path in paths.iter().take(LISTED_FILES) {
         list = list.child(path.clone());
     }
@@ -1273,11 +1311,11 @@ fn button(
     div()
         .id(id)
         .flex_none()
-        .h(px(38.))
-        .px_5()
+        .h(px(48.))
+        .px_6()
         .flex()
         .items_center()
-        .rounded(px(8.))
+        .rounded(px(10.))
         .bg(rgb(background))
         .text_color(rgb(text))
         .font_weight(if primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
@@ -1299,33 +1337,52 @@ fn choice(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .group(id)
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
-        .rounded(px(14.))
+        .rounded(px(16.))
         .bg(rgb(PANEL))
         .border_1()
         .border_color(rgb(LINE))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(PANEL_HOVER)).border_color(rgb(LAMP)))
         .on_click(on_click)
+        // The drawings are 5:2, and so is this box while the page is at its
+        // full width, which the smallest window still leaves room for.
         .child(
             art(picture)
                 .w_full()
-                .h(px(124.))
-                .rounded_t(px(13.))
+                .h(px((PAGE_WIDTH - 20.) / 5.))
+                .rounded_t(px(15.))
                 .object_fit(ObjectFit::Cover),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .px_5()
-                .pt_4()
-                .pb_5()
-                .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                .gap_2()
+                .px_6()
+                .pt_5()
+                .pb_6()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .font_family(DISPLAY_FONT)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(19.))
+                                .line_height(relative(1.3))
+                                .child(title),
+                        )
+                        .child(icon("arrow", 22., MUTED).group_hover(id, |style| style.text_color(rgb(LAMP)))),
+                )
                 .child(div().text_color(rgb(MUTED)).child(detail)),
         )
 }

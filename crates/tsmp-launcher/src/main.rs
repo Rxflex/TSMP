@@ -41,10 +41,10 @@ fn main() {
             .collect();
         cx.text_system().add_fonts(fonts).expect("the built-in fonts load");
 
-        let bounds = Bounds::centered(None, size(px(980.), px(660.)), cx);
+        let bounds = Bounds::centered(None, size(px(1120.), px(840.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(860.), px(560.))),
+            window_min_size: Some(size(px(980.), px(700.))),
             // The launcher draws its own title bar and window buttons.
             titlebar: Some(TitlebarOptions {
                 title: Some("TSMP".into()),
