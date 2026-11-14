@@ -1,0 +1,43 @@
+name: release
+
+# Pushing a tag v<version> builds the launcher, with the mod inside it, and
+# publishes both as a release. Running launchers find it and update.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag is the launcher's version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' crates/tsmp-launcher/Cargo.toml | cut -d'"' -f2)
+          test "v$version" = "$GITHUB_REF_NAME"
+
+      # The game loads Python 3.7 bytecode only.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.7"
+
+      - name: Test and build the mod
+        run: |
+          python -m unittest discover -s mod/tests
+          python mod/build.py
+
+      - name: Test and build the launcher
+        run: |
+          cargo test -p tsmp-core -p tsmp-net -p tsmp-launcher
+          cargo build --release -p tsmp-launcher
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" target/release/tsmp.exe dist/tsmp.ts4script --generate-notes
