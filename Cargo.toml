@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tsmp-core", "crates/tsmp-cli"]
+members = ["crates/tsmp-core", "crates/tsmp-cli", "crates/tsmp-net"]
 
 [profile.release]
 lto = "thin"
