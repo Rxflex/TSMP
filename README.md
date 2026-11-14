@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="TSMP: two houses at night, joined by one line" width="100%">
+  <img src="docs/assets/banner.jpg" alt="TSMP: two houses at night, joined by one line" width="100%">
 </p>
 
 <p align="center">
@@ -21,6 +21,10 @@ the other computer, copies the mods and the save, and starts both games with
 the packs both players own.
 
 ## What works
+
+<p align="center">
+  <img src="docs/assets/together.jpg" alt="Two people building in the same house at the same time" width="100%">
+</p>
 
 Tried with two computers and two copies of the game:
 
@@ -63,6 +67,17 @@ computers live in the launcher. [docs/internals.md](docs/internals.md) has the
 details and how each of them was found.
 
 ## Playing
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/host.jpg" alt="A house with its door open and light on the path"></td>
+    <td width="50%"><img src="docs/assets/join.jpg" alt="A figure walking along a dashed path to a lit house"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>One of you hosts.</b> Your save and your mods become the shared ones. You open the door.</td>
+    <td valign="top"><b>The other joins.</b> The launcher finds the host at home and copies what is needed. You walk in.</td>
+  </tr>
+</table>
 
 You need two Windows computers on one local network, each with its own copy
 of the game at the same version, and script mods enabled in the game options.
