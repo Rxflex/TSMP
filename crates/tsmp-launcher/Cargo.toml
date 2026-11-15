@@ -13,6 +13,7 @@ path = "src/main.rs"
 fluent-bundle = "0.16"
 fluent-syntax = "0.12"
 gpui = "0.2.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
 serde_json = "1.0.154"
 sha2 = "0.10"

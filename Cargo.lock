@@ -5867,6 +5867,7 @@ dependencies = [
  "fluent-bundle",
  "fluent-syntax",
  "gpui",
+ "image",
  "rust-embed",
  "serde_json",
  "sha2 0.10.9",

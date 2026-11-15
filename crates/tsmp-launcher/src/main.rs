@@ -6,6 +6,7 @@
 mod i18n;
 mod mappings;
 mod model;
+mod picture;
 mod ui;
 mod update;
 

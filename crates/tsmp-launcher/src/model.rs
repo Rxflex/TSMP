@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::mappings::{self, Support};
+use crate::picture;
 use crate::update;
 use tsmp_core::game::GameInstall;
 use tsmp_core::manifest::{Diff, Manifest, hash_file};
@@ -111,12 +112,16 @@ impl Preview {
                 about.portrait = Some(sharper);
             }
         }
-        let picture = |bytes: Option<Vec<u8>>| bytes.map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)));
-        Some(Arc::new(Self {
-            portrait: picture(about.portrait.take()),
-            lot_picture: picture(about.lot_picture.take()),
-            about,
-        }))
+        // Both pictures are cut-outs; drawn as they are, the smear the game
+        // leaves around them shows.
+        let ready = |made: Option<Vec<u8>>, bytes: Vec<u8>| match made {
+            Some(png) => Arc::new(Image::from_bytes(ImageFormat::Png, png)),
+            None => Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)),
+        };
+        let scene = about.scene.take();
+        let portrait = about.portrait.take().map(|bytes| ready(picture::household(&bytes, scene.as_deref()), bytes));
+        let lot_picture = about.lot_picture.take().map(|bytes| ready(picture::transparent(&bytes), bytes));
+        Some(Arc::new(Self { portrait, lot_picture, about }))
     }
 }
 

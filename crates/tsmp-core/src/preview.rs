@@ -1,11 +1,14 @@
 //! What a save game is about, read straight from the file: its name, the
 //! household being played, and the pictures the game stored with it.
 //!
-//! A save is a DBPF archive. Three kinds of entry matter here:
+//! A save is a DBPF archive. Four kinds of entry matter here:
 //!
 //! - `0x0D`: the save's data, a protobuf message, usually RefPack-compressed;
 //! - `0x14`: a JPEG portrait of the played household;
-//! - `0x0F`: JPEG pictures of lots, keyed by zone id.
+//! - `0x0F`: JPEG pictures of lots, keyed by zone id;
+//! - `0xE88DB35F`: small JPEGs of the game's view when the save was made.
+//!
+//! The portrait and the lots are cut-outs: see [`cutout_mask`].
 //!
 //! Only the handful of fields shown to the player are read. Everything else is
 //! skipped, so a newer game adding fields does not break this.
@@ -20,14 +23,15 @@ const SAVE_DATA: u32 = 0x0D;
 const LOT_PICTURE: u32 = 0x0F;
 const LOT_PICTURE_PACKED: u32 = 0x10;
 const HOUSEHOLD_PORTRAIT: u32 = 0x14;
+const SCENE: u32 = 0xE88D_B35F;
 /// A household's portrait in the game's cache of thumbnails. The lowest byte
 /// of its group is the size it was drawn at.
 const CACHED_PORTRAIT: u32 = 0x3BD4_5407;
 /// The size a save carries: 180 by 120.
 const PORTRAIT_SAVED: u32 = 1;
-/// Sizes worth showing instead, best first: 591 by 394, then 1000 by 667
-/// twice over, then 300 by 200.
-const PORTRAIT_SHARPER: [u32; 4] = [3, 4, 6, 2];
+/// Sizes worth showing instead, best first: 1000 by 667 from the waist up,
+/// 591 by 394 and 1000 by 667 head to toe, then 300 by 200.
+const PORTRAIT_SHARPER: [u32; 4] = [4, 3, 6, 2];
 /// A cache with a larger index than this is not read.
 const MAX_INDEX_SIZE: u64 = 64 << 20;
 
@@ -53,6 +57,8 @@ pub struct SavePreview {
     pub portrait: Option<Vec<u8>>,
     /// JPEG of the home lot.
     pub lot_picture: Option<Vec<u8>>,
+    /// JPEG of what the game was showing when the save was made.
+    pub scene: Option<Vec<u8>>,
 }
 
 pub fn read_preview(path: &Path) -> Result<SavePreview> {
@@ -102,6 +108,33 @@ pub fn sharper_portrait(cache: &Path, portrait: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
+/// The mask the game puts inside its pictures of sims and lots: a PNG, white
+/// where the picture counts and black where it does not.
+///
+/// These pictures are cut-outs. The JPEG has no transparency, so what is
+/// around the sims is filled with smeared colour, and the mask rides along in
+/// a segment of its own, marked `ALFA`. `None` for a picture without one.
+pub fn cutout_mask(jpeg: &[u8]) -> Option<&[u8]> {
+    const START_OF_SCAN: u8 = 0xDA;
+    let mut rest = jpeg.strip_prefix(&[0xFF, 0xD8])?;
+    loop {
+        let (&[0xFF, marker, high, low], after) = rest.split_first_chunk()? else {
+            return None;
+        };
+        if marker == START_OF_SCAN {
+            return None;
+        }
+        // A segment's length counts its own two bytes.
+        let length = usize::from(u16::from_be_bytes([high, low])).checked_sub(2)?;
+        let body = after.get(..length)?;
+        if let Some(mask) = body.strip_prefix(b"ALFA") {
+            let (size, mask) = mask.split_first_chunk()?;
+            return mask.get(..u32::from_be_bytes(*size) as usize);
+        }
+        rest = &after[length..];
+    }
+}
+
 type Parsed<T> = std::result::Result<T, &'static str>;
 
 fn parse_preview(data: &[u8]) -> Parsed<SavePreview> {
@@ -120,6 +153,7 @@ fn parse_preview(data: &[u8]) -> Parsed<SavePreview> {
         })
     };
     preview.portrait = picture(&[HOUSEHOLD_PORTRAIT], None);
+    preview.scene = picture(&[SCENE], None);
     if let Some(zone) = home_zone.filter(|&zone| zone != 0) {
         preview.lot_picture = picture(&[LOT_PICTURE, LOT_PICTURE_PACKED], Some(zone));
     }
@@ -622,6 +656,29 @@ mod tests {
         assert_eq!(preview.sims, ["Bella Stone"]);
         assert_eq!(preview.lot_picture, Some(lot));
         assert_eq!(preview.portrait, None);
+    }
+
+    #[test]
+    fn reads_the_scene_a_save_was_made_in() {
+        let scene = [JPEG, &[7; 12]].concat();
+        let data = archive(&[(SCENE, 2, COMPRESSION_NONE, scene.clone(), scene.len())]);
+        assert_eq!(parse_preview(&data).unwrap().scene, Some(scene));
+    }
+
+    #[test]
+    fn finds_the_mask_inside_a_picture() {
+        let mask = b"mask of the sims";
+        let mut picture = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 7, b'J', b'F', b'I', b'F', 0];
+        picture.extend([0xFF, 0xE0, 0, mask.len() as u8 + 10]);
+        picture.extend(b"ALFA");
+        picture.extend((mask.len() as u32).to_be_bytes());
+        picture.extend(mask);
+        picture.extend([0xFF, 0xDA, 0, 2, 1, 2, 3]);
+        assert_eq!(cutout_mask(&picture), Some(&mask[..]));
+        // Nothing is looked for past the headers, nor in a cut-off file.
+        assert_eq!(cutout_mask(&[0xFF, 0xD8, 0xFF, 0xDA, 0, 2, b'A', b'L', b'F', b'A']), None);
+        assert_eq!(cutout_mask(&picture[..30]), None);
+        assert_eq!(cutout_mask(JPEG), None);
     }
 
     /// A cache of thumbnails holding `(group, instance, picture)`, nothing
