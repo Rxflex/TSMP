@@ -907,6 +907,7 @@ impl Launcher {
                                 .text_color(rgb(MUTED))
                                 .child(tr!(t, "save-none-detail")),
                         ],
+                        Vec::new(),
                         None,
                     )
                 });
@@ -999,39 +1000,39 @@ impl Launcher {
                         variants
                     });
                     let mut lines = Vec::new();
+                    let mut facts = Vec::new();
                     if let Some(about) = preview.map(|preview| &preview.about) {
                         lines.extend(
                             about
                                 .sims
                                 .iter()
                                 .take(NAMED_SIMS)
-                                .map(|sim| div().w(px(PANE_WORDS)).truncate().child(sim.clone())),
+                                .map(|sim| div().w(px(PANE_NAMES)).truncate().child(sim.clone())),
                         );
                         if about.sims.len() > NAMED_SIMS {
                             lines.push(small(format!("+{}", about.sims.len() - NAMED_SIMS)));
                         }
                         let fact = |picture: &'static str, text: String| {
                             div()
-                                .pt_1()
                                 .flex()
                                 .items_center()
                                 .gap(px(8.))
                                 .text_color(rgb(MUTED))
                                 .child(icon(picture, 17., MUTED))
-                                .child(div().w(px(PANE_WORDS - 25.)).truncate().child(text))
+                                .child(div().w(px(PANE_FACTS - 25.)).truncate().child(text))
                         };
-                        lines.extend(about.lot.clone().map(|lot| fact("house", lot)));
-                        lines.extend(about.funds.map(|funds| fact("coins", simoleons(funds))));
+                        facts.extend(about.lot.clone().map(|lot| fact("house", lot)));
+                        facts.extend(about.funds.map(|funds| fact("coins", simoleons(funds))));
                     }
-                    lines.push(
+                    facts.push(
                         div()
-                            .pt_2()
+                            .pt_1()
                             .flex()
                             .gap_4()
                             .child(small(ago(t, save.modified)))
                             .child(small(bytes(t, save.size))),
                     );
-                    pane = Some(save_pane(portrait(preview), title, lines, variants));
+                    pane = Some(save_pane(portrait(preview), title, lines, facts, variants));
                 }
                 let shown = screen.selected.map_or(0, |index| index + 1);
                 page(tr!(t, "host-setup-title"), Some(tr!(t, "host-setup-lead")))
@@ -2028,10 +2029,10 @@ fn section(title: String) -> Div {
 }
 
 /// The lobby: the players on the left, the save they share on the right.
-const ROSTER_WIDTH: f32 = 500.;
+const ROSTER_WIDTH: f32 = 440.;
 const LOBBY_GAP: f32 = 24.;
 const SAVE_WIDTH: f32 = PAGE_WIDTH - ROSTER_WIDTH - LOBBY_GAP;
-const STATE_WIDTH: f32 = 210.;
+const STATE_WIDTH: f32 = 180.;
 const LOT_SIZE: f32 = 84.;
 
 /// A player in the lobby: who they are, and on the right what they are doing.
@@ -2352,9 +2353,12 @@ fn simoleons(funds: u64) -> String {
 const LIST_WIDTH: f32 = 288.;
 const PANE_GAP: f32 = 24.;
 const PANE_WIDTH: f32 = PAGE_WIDTH - LIST_WIDTH - PANE_GAP;
-/// The picture of the chosen save, and the width of the words beside it.
-const PANE_PICTURE: f32 = 312.;
-const PANE_WORDS: f32 = PANE_WIDTH - PANE_PICTURE - 24.;
+/// Under the picture of the chosen save: who is in it on the left, the rest
+/// about it on the right. A save with nothing on the right has the whole
+/// width for its words.
+const PANE_WORDS: f32 = PANE_WIDTH;
+const PANE_FACTS: f32 = 220.;
+const PANE_NAMES: f32 = PANE_WIDTH - PANE_FACTS - 24.;
 
 /// A household in the list of saves: a small picture and who it is.
 fn save_row(
@@ -2426,7 +2430,18 @@ fn save_row(
 }
 
 /// The chosen save: its picture, beside it who is in it, below its other saves.
-fn save_pane(picture: Img, title: String, lines: Vec<Div>, variants: Option<Div>) -> Div {
+fn save_pane(
+    picture: Img,
+    title: String,
+    lines: Vec<Div>,
+    facts: Vec<Div>,
+    variants: Option<Div>,
+) -> Div {
+    let words = if facts.is_empty() {
+        PANE_WORDS
+    } else {
+        PANE_NAMES
+    };
     div()
         .w(px(PANE_WIDTH))
         .flex_none()
@@ -2434,39 +2449,51 @@ fn save_pane(picture: Img, title: String, lines: Vec<Div>, variants: Option<Div>
         .flex_col()
         .gap_4()
         .child(
+            picture
+                .w(px(PANE_WIDTH))
+                .h(px(PANE_WIDTH / 1.5))
+                .flex_none()
+                .rounded(px(14.))
+                .object_fit(ObjectFit::Cover),
+        )
+        .child(
             div()
                 .w(px(PANE_WIDTH))
                 .flex()
                 .items_start()
                 .gap(px(24.))
-                .child(
-                    picture
-                        .w(px(PANE_PICTURE))
-                        .h(px(PANE_PICTURE / 1.5))
-                        .flex_none()
-                        .rounded(px(14.))
-                        .object_fit(ObjectFit::Cover),
-                )
+                .text_size(px(16.))
                 .child(
                     div()
-                        .w(px(PANE_WORDS))
+                        .w(px(words))
                         .flex_none()
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .text_size(px(16.))
                         .child(
                             div()
-                                .w(px(PANE_WORDS))
-                                .pb_2()
+                                .w(px(words))
+                                .pb_1()
                                 .font_family(DISPLAY_FONT)
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_size(px(17.))
+                                .text_size(px(19.))
                                 .line_height(relative(1.3))
                                 .child(title),
                         )
                         .children(lines),
-                ),
+                )
+                .when(!facts.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .w(px(PANE_FACTS))
+                            .pt(px(4.))
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .children(facts),
+                    )
+                }),
         )
         .children(variants)
 }
