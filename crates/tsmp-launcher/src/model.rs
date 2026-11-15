@@ -19,7 +19,7 @@ use tsmp_core::game::GameInstall;
 use tsmp_core::manifest::{Diff, Manifest, hash_file};
 use gpui::{Image, ImageFormat};
 use tsmp_core::packs::{PackSet, common_packs, disable_packs_arg, installed_packs};
-use tsmp_core::preview::{SavePreview, read_preview};
+use tsmp_core::preview::{SavePreview, read_preview, sharper_portrait};
 use tsmp_core::saves::{SaveFile, list_saves};
 use tsmp_core::status::ModStatus;
 use tsmp_net::discovery::{Browser, Found};
@@ -103,6 +103,14 @@ impl Preview {
     /// its file name alone.
     pub fn read(path: &Path) -> Option<Arc<Self>> {
         let mut about = read_preview(path).ok()?;
+        // The save's own portrait is small; the game keeps a larger copy of
+        // it among its thumbnails, beside the folder of saves.
+        let cache = path.parent().and_then(Path::parent).map(|user| user.join("localthumbcache.package"));
+        if let (Some(cache), Some(small)) = (cache, &about.portrait) {
+            if let Some(sharper) = sharper_portrait(&cache, small) {
+                about.portrait = Some(sharper);
+            }
+        }
         let picture = |bytes: Option<Vec<u8>>| bytes.map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)));
         Some(Arc::new(Self {
             portrait: picture(about.portrait.take()),

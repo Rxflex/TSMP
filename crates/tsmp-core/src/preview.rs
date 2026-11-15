@@ -10,7 +10,8 @@
 //! Only the handful of fields shown to the player are read. Everything else is
 //! skipped, so a newer game adding fields does not break this.
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::{Error, Result, io_err};
@@ -19,6 +20,16 @@ const SAVE_DATA: u32 = 0x0D;
 const LOT_PICTURE: u32 = 0x0F;
 const LOT_PICTURE_PACKED: u32 = 0x10;
 const HOUSEHOLD_PORTRAIT: u32 = 0x14;
+/// A household's portrait in the game's cache of thumbnails. The lowest byte
+/// of its group is the size it was drawn at.
+const CACHED_PORTRAIT: u32 = 0x3BD4_5407;
+/// The size a save carries: 180 by 120.
+const PORTRAIT_SAVED: u32 = 1;
+/// Sizes worth showing instead, best first: 591 by 394, then 1000 by 667
+/// twice over, then 300 by 200.
+const PORTRAIT_SHARPER: [u32; 4] = [3, 4, 6, 2];
+/// A cache with a larger index than this is not read.
+const MAX_INDEX_SIZE: u64 = 64 << 20;
 
 const COMPRESSION_NONE: u16 = 0;
 const COMPRESSION_ZLIB: u16 = 0x5A42;
@@ -52,6 +63,45 @@ pub fn read_preview(path: &Path) -> Result<SavePreview> {
     })
 }
 
+/// The portrait of a save as the game drew it at a larger size, found in the
+/// game's cache of thumbnails (`localthumbcache.package`).
+///
+/// A save holds its portrait small. The cache keeps every picture at several
+/// sizes under one key, so the small one is looked up there byte for byte and
+/// its larger sibling returned. `None` when the cache is missing, has been
+/// cleared or never held this picture: the small portrait is then all there is.
+pub fn sharper_portrait(cache: &Path, portrait: &[u8]) -> Option<Vec<u8>> {
+    let mut file = File::open(cache).ok()?;
+    let mut header = [0u8; 96];
+    file.read_exact(&mut header).ok()?;
+    let (count, position) = index_place(&header).ok()?;
+    let length = file.metadata().ok()?.len().checked_sub(position)?;
+    if length > MAX_INDEX_SIZE {
+        return None;
+    }
+    file.seek(SeekFrom::Start(position)).ok()?;
+    let mut table = vec![0u8; length as usize];
+    file.read_exact(&mut table).ok()?;
+    let entries = entries(Reader::new(&table, 0), count).ok()?;
+
+    let mut read = |entry: &Entry| {
+        let mut raw = vec![0u8; entry.size];
+        file.seek(SeekFrom::Start(entry.offset as u64)).ok()?;
+        file.read_exact(&mut raw).ok()?;
+        let plain = Entry { offset: 0, ..*entry }.body(&raw).ok()?;
+        plain.starts_with(&[0xFF, 0xD8]).then_some(plain)
+    };
+    let portraits = || entries.iter().filter(|entry| entry.kind == CACHED_PORTRAIT);
+    let same = portraits()
+        .filter(|entry| entry.group & 0xFF == PORTRAIT_SAVED && entry.plain_size == portrait.len())
+        .find(|entry| read(entry).as_deref() == Some(portrait))?;
+    PORTRAIT_SHARPER.iter().find_map(|size| {
+        let wanted = same.group & !0xFF | size;
+        let entry = portraits().find(|entry| entry.group == wanted && entry.instance == same.instance)?;
+        read(entry)
+    })
+}
+
 type Parsed<T> = std::result::Result<T, &'static str>;
 
 fn parse_preview(data: &[u8]) -> Parsed<SavePreview> {
@@ -76,8 +126,10 @@ fn parse_preview(data: &[u8]) -> Parsed<SavePreview> {
     Ok(preview)
 }
 
+#[derive(Clone, Copy)]
 struct Entry {
     kind: u32,
+    group: u32,
     instance: u64,
     offset: usize,
     size: usize,
@@ -153,15 +205,26 @@ impl<'a> Reader<'a> {
 
 /// The archive's table of contents.
 fn index(data: &[u8]) -> Parsed<Vec<Entry>> {
-    if !data.starts_with(b"DBPF") {
+    let (count, position) = index_place(data)?;
+    let position = usize::try_from(position).map_err(|_| "index out of range")?;
+    entries(Reader::new(data, position), count)
+}
+
+/// How many entries the archive has and where their table starts, from the
+/// archive's header.
+fn index_place(header: &[u8]) -> Parsed<(usize, u64)> {
+    if !header.starts_with(b"DBPF") {
         return Err("not a save file");
     }
-    let count = Reader::new(data, 36).u32()? as usize;
-    let mut position = Reader::new(data, 64).u64()?;
+    let count = Reader::new(header, 36).u32()? as usize;
+    let mut position = Reader::new(header, 64).u64()?;
     if position == 0 {
-        position = u64::from(Reader::new(data, 40).u32()?);
+        position = u64::from(Reader::new(header, 40).u32()?);
     }
-    let mut reader = Reader::new(data, usize::try_from(position).map_err(|_| "index out of range")?);
+    Ok((count, position))
+}
+
+fn entries(mut reader: Reader, count: usize) -> Parsed<Vec<Entry>> {
     // The flags say which of the first three fields are the same for every
     // entry and so are stored once, ahead of the entries.
     let flags = reader.u32()?;
@@ -180,7 +243,7 @@ fn index(data: &[u8]) -> Parsed<Vec<Entry>> {
                 None => reader.u32()?,
             };
         }
-        let [kind, _group, instance_high] = own;
+        let [kind, group, instance_high] = own;
         let instance_low = reader.u32()?;
         let offset = reader.u32()? as usize;
         let size = reader.u32()?;
@@ -194,6 +257,7 @@ fn index(data: &[u8]) -> Parsed<Vec<Entry>> {
         };
         entries.push(Entry {
             kind,
+            group,
             instance: u64::from(instance_high) << 32 | u64::from(instance_low),
             offset,
             size: (size & 0x7FFF_FFFF) as usize,
@@ -558,6 +622,50 @@ mod tests {
         assert_eq!(preview.sims, ["Bella Stone"]);
         assert_eq!(preview.lot_picture, Some(lot));
         assert_eq!(preview.portrait, None);
+    }
+
+    /// A cache of thumbnails holding `(group, instance, picture)`, nothing
+    /// shared between the entries.
+    fn cache(portraits: &[(u32, u64, Vec<u8>)]) -> tempfile::NamedTempFile {
+        let mut data = vec![0u8; 96];
+        data[..4].copy_from_slice(b"DBPF");
+        let mut index = 0u32.to_le_bytes().to_vec();
+        for (group, instance, body) in portraits {
+            index.extend(CACHED_PORTRAIT.to_le_bytes());
+            index.extend(group.to_le_bytes());
+            index.extend(((instance >> 32) as u32).to_le_bytes());
+            index.extend((*instance as u32).to_le_bytes());
+            index.extend((data.len() as u32).to_le_bytes());
+            index.extend((body.len() as u32).to_le_bytes());
+            index.extend((body.len() as u32).to_le_bytes());
+            data.extend(body);
+        }
+        let position = data.len() as u64;
+        data[36..40].copy_from_slice(&(portraits.len() as u32).to_le_bytes());
+        data[64..72].copy_from_slice(&position.to_le_bytes());
+        data.extend(index);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), data).unwrap();
+        file
+    }
+
+    #[test]
+    fn finds_the_larger_copy_of_a_portrait() {
+        let picture = |fill: u8| [JPEG, &[fill; 8]].concat();
+        let file = cache(&[
+            // Another moment of the same household, the same length.
+            (0xAA_0001, 7, picture(1)),
+            (0xAA_0003, 7, picture(2)),
+            (0xBB_0001, 7, picture(3)),
+            (0xBB_0002, 7, picture(4)),
+            (0xBB_0004, 7, picture(5)),
+            // The same key under another household.
+            (0xBB_0003, 8, picture(6)),
+        ]);
+        assert_eq!(sharper_portrait(file.path(), &picture(3)), Some(picture(5)));
+        assert_eq!(sharper_portrait(file.path(), &picture(1)), Some(picture(2)));
+        assert_eq!(sharper_portrait(file.path(), &picture(9)), None);
+        assert_eq!(sharper_portrait(Path::new("no such file"), &picture(3)), None);
     }
 
     #[test]
