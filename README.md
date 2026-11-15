@@ -48,7 +48,7 @@ of their own: it is copied into the host's save, and the guest keeps playing
 it there; the host picks "Each with their own family" in the launcher for
 that, and then no save is copied. All of this is new and not yet proven in two games.
 
-Not handled yet: dialogs meant for one player, the guest following the host into Create-a-Sim (it waits
+Not handled yet: the guest following the host into Create-a-Sim (it waits
 instead). In build mode, furniture
 and household funds have not been checked for double counting.
 

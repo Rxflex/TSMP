@@ -58,6 +58,17 @@ def fields(data):
         raise ValueError("truncated message")
 
 
+def first_varint(data, number):
+    """The first top-level varint field `number` of a message, or 0."""
+    try:
+        for field, wire_type, value in fields(data):
+            if field == number and wire_type == VARINT:
+                return value
+    except ValueError:
+        pass
+    return 0
+
+
 def _put_varint(out, value):
     while value > 0x7F:
         out.append((value & 0x7F) | 0x80)

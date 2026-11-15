@@ -63,7 +63,15 @@ def _consts():
         # guest's client still talks to its own simulation about saving: that
         # save is thrown away, the launcher copies the host's before a session.
         host_only=save + travel,
-        guest_local=save,
+        # The guest's travel picker talks to the guest's own simulation, and
+        # what that answers is the order to travel.
+        guest_local=save + travel[:1],
+        owned={
+            _name(Consts_pb2, "MSG_UI_DIALOG_SHOW", 40): 5,
+            _name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41): 5,
+            _name(Consts_pb2, "MSG_TRAVEL_MENU_CREATE", 14): 1,
+        },
+        shared=[_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41)],
     )
 
 
@@ -190,6 +198,13 @@ class Game:
 
     def welcome(self, sim_id):
         household.welcome(sim_id, _client())
+
+    def same_household(self, a, b):
+        import services
+
+        sims = services.sim_info_manager()
+        first, second = sims.get(a), sims.get(b)
+        return first is not None and second is not None and first.household_id == second.household_id
 
     def pause(self):
         import services

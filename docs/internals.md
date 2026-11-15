@@ -404,9 +404,33 @@ the whole save lives in Python:
   which saves with `PersistenceService.save_to_scratch_slot_gen` and, when
   travelling, first calls `game_services.disable_shutdown()` so that sims and
   households stay in memory.
-- The objects and architecture of a zone are handed to the game client as a
+- The objects of a zone are handed to the game client as a
   `ZoneObjectData` message through `persistence_module.run_persistence_operation`
   with `kPersistenceOpSaveZoneObjects`.
+- The architecture of a lot (walls, floors, roofs, terrain) never reaches
+  Python. In the save file a zone is one resource of type `0x00000006`,
+  compressed with RefPack: field 1 is the zone id, field 2 the architecture
+  (the same `LDNB` block the client sends the simulation in message 708 when
+  a lot loads), field 3 the objects. The client fills field 2 itself when it
+  writes the file and reads it from the file when it loads a zone. So a
+  guest that was started from another save than the host's draws the host's
+  objects inside its own version of the lot: where the host built a house on
+  a lot that is empty in the guest's save, doors and windows stand without
+  walls. Only the host's save file carries the host's architecture.
+
+### Screens of one player
+
+`UiDialogMessage` (`MSG_UI_DIALOG_SHOW`, `MSG_UI_NOTIFICATION_SHOW`) names
+the sim it is for in `owner_id` (field 5), `TravelMenuCreate` in `sim_id`
+(field 1). On the host a message whose sim is played by the guest is sent
+to the guest and kept from the host's client; a dialog for any other sim
+stays with the host. A sim is the guest's when it is the one the guest
+controls, or, when the two play different households, any sim of that
+household. Notifications that are not the guest's go to both, since the
+game addresses general news to the active sim. Messages that name no sim go
+to both as before. The guest's own simulation may send its client
+`MSG_TRAVEL_SIMS_TO_ZONE`, which is how a destination picked in the guest's
+travel picker takes effect. Not yet seen in two games.
 
 The host pauses, saves to the scratch slot and sends both messages in a
 `STATE` frame (`u8[4] "TSS1", u8 flags, u64 zone id, u32 save size, u32
@@ -501,7 +525,7 @@ This has only been run against fakes (`mod/tests/test_session.py`,
 yet.
 
 Known gaps: there is no replay, so the host should stay paused until the
-guest is in; dialogs and notifications go to both players; the guest does not
+guest is in; the guest does not
 follow the host into CAS, it waits; replies to commands that still run
 locally on the guest (hovertips, for one) never arrive.
 

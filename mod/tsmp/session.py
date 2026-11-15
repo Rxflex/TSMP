@@ -53,7 +53,8 @@ class Consts:
     """Message and operation ids the session needs, resolved by the caller
     from the game's protocol modules."""
 
-    def __init__(self, view_update, pie_menu, interactable, set_sim_active, host_only=(), guest_local=()):
+    def __init__(self, view_update, pie_menu, interactable, set_sim_active, host_only=(), guest_local=(),
+                 owned=None, shared=()):
         self.view_update = view_update
         # Replies to a command, wanted only by the client that issued it.
         self.replies = frozenset([pie_menu, interactable])
@@ -63,6 +64,11 @@ class Consts:
         self.host_only = frozenset(host_only)
         # Messages the guest's own simulation may still send to its client.
         self.guest_local = frozenset(guest_local)
+        # Screens that belong to one sim: message id -> number of the field
+        # that holds the sim's id. They are shown to the player of that sim.
+        self.owned = dict(owned or {})
+        # Owned messages the host also sees when they are not the guest's.
+        self.shared = frozenset(shared)
 
 
 class Session:
@@ -81,6 +87,7 @@ class Session:
                                        with the household it plays
         merge(payload)                 host: take that household into its
                                        save; raises on failure
+        same_household(a, b)           True if both sim ids are in one household
         pause()                        host: pause the game
         welcome(sim_id)                host: have the other player's sim on
                                        the lot and controllable
@@ -561,6 +568,13 @@ class Session:
             return data
         consts = self._consts
         if self.role == HOST:
+            if msg_id in consts.owned:
+                owner = wire.first_varint(data, consts.owned[msg_id])
+                if owner and self._guests(owner):
+                    self._relay(msg_id, data)
+                    return None
+                if owner and msg_id not in consts.shared:
+                    return data
             if msg_id in consts.replies:
                 if self._remote_depth:
                     self._relay(msg_id, data)
@@ -588,6 +602,23 @@ class Session:
                 return None
             return selection or None
         return None
+
+    def _guests(self, sim_id):
+        """Whether `sim_id` is played by the guest: the sim it controls, or
+        one of that sim's household when the host plays another household."""
+        theirs = self.remote_sim_id
+        if not theirs:
+            return False
+        if sim_id == theirs:
+            return True
+        ours = self._game.active_sim_id()
+        if sim_id == ours:
+            return False
+        try:
+            same = self._game.same_household
+            return same(sim_id, theirs) and not same(theirs, ours)
+        except Exception:
+            return False
 
     def _relay(self, msg_id, data):
         self.relayed += 1

@@ -11,6 +11,8 @@ PIE_MENU = 6
 INTERACTABLE = 5
 SAVE_COMPLETE = 181
 TRAVEL = 239
+DIALOG = 40
+NOTIFICATION = 41
 SET_SIM_ACTIVE = 21
 OTHER_MSG = 40
 
@@ -53,6 +55,7 @@ class FakeGame:
         self.merge_error = None
         self.welcomed = []
         self.pauses = 0
+        self.households = {}
 
     def in_zone(self):
         return self.zone
@@ -97,6 +100,9 @@ class FakeGame:
     def pause(self):
         self.pauses += 1
 
+    def same_household(self, a, b):
+        return self.households.get(a, 1) == self.households.get(b, 1)
+
 
 class Player:
     """One game with its session; `sent` collects the frames it emits."""
@@ -112,6 +118,8 @@ class Player:
             SET_SIM_ACTIVE,
             host_only=[SAVE_COMPLETE, TRAVEL],
             guest_local=[SAVE_COMPLETE],
+            owned={DIALOG: 5, NOTIFICATION: 5},
+            shared=[NOTIFICATION],
         )
         self.session = session.Session(self.game, consts, self._send, log=self.logged.append)
         self.role = role
@@ -146,6 +154,14 @@ def joined():
     guest.link(1)
     settle(host, guest)
     return host, guest
+
+
+def owned(sim_id):
+    """A message whose field 5 names the sim it belongs to."""
+    out = bytearray()
+    wire.put_field(out, 1, wire.VARINT, 9)
+    wire.put_field(out, 5, wire.VARINT, sim_id)
+    return bytes(out)
 
 
 def settle(host, guest):
@@ -607,6 +623,39 @@ class HouseholdTest(unittest.TestCase):
         settle(host, guest)
         guest.session.tick()
         self.assertEqual(len(guest.game.contributions), 2)
+
+    def test_a_dialog_is_shown_to_the_player_of_its_sim(self):
+        host, guest = joined()
+        host.game.sim_id = 111
+        theirs, ours, nobody = owned(222), owned(111), owned(0)
+
+        self.assertIsNone(host.session.outbound(DIALOG, theirs))
+        self.assertEqual(host.session.outbound(DIALOG, ours), ours)
+        self.assertEqual(host.session.outbound(DIALOG, nobody), nobody)
+        sent = [frame[2] for frame in host.take() if frame[0] == frames.MSG]
+        self.assertEqual(sent, [theirs, nobody])
+
+    def test_a_dialog_of_the_guests_household_is_the_guests(self):
+        host, guest = joined()
+        host.game.sim_id = 111
+        host.game.households = {222: 2, 223: 2}
+        relative, stranger = owned(223), owned(333)
+
+        self.assertIsNone(host.session.outbound(DIALOG, relative))
+        self.assertEqual(host.session.outbound(DIALOG, stranger), stranger)
+        # In one shared household only the sim the guest controls is theirs.
+        host.game.households = {}
+        self.assertEqual(host.session.outbound(DIALOG, relative), relative)
+
+    def test_the_host_sees_notifications_that_are_not_the_guests(self):
+        host, guest = joined()
+        host.game.sim_id = 111
+        theirs, ours = owned(222), owned(111)
+
+        self.assertIsNone(host.session.outbound(NOTIFICATION, theirs))
+        self.assertEqual(host.session.outbound(NOTIFICATION, ours), ours)
+        sent = [frame[2] for frame in host.take() if frame[0] == frames.MSG]
+        self.assertEqual(sent, [theirs, ours])
 
     def test_the_host_pauses_when_a_guest_joins(self):
         host, guest = joined()
