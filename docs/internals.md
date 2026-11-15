@@ -413,7 +413,10 @@ The host pauses, saves to the scratch slot and sends both messages in a
 objects size`, then the two, deflated when flag 1 is set). The guest keeps
 them and asks its client to travel to the host's zone
 (`travel_service.travel_sims_to_zone`). When the client disconnects to do so,
-the guest's save step is replaced by putting the host's messages in place,
+the guest's save step is replaced by putting the host's messages in place
+and giving the save to the client with `kPersistenceOpSave` for the scratch
+slot, as the game's own save ends (without that, a zone the guest's save
+never had loads as a void: interface, no world),
 and `disable_shutdown` is skipped so that everything is read again. After
 its loading screen the guest joins as on a fresh start. If any step fails
 (the host cannot save, nothing arrives in `RESYNC_TICKS`, the snapshot cannot

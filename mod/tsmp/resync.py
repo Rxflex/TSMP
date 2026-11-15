@@ -121,6 +121,7 @@ def install():
             # Our own state is the one being replaced: saving it would only
             # overwrite what the host sent.
             _put_in_place(self)
+            yield from _hand_over_gen(self, timeline)
             return 0
         result = yield from original_save(self, timeline)
         return result
@@ -140,6 +141,25 @@ def install():
 
     game_services.disable_shutdown = disable_shutdown
     _installed = True
+
+
+def _hand_over_gen(persistence, timeline):
+    """Give the save now in place to the game client, as the last step of a
+    save does. The client builds the world around a zone from what it was
+    last given, and a save of the host's can name zones ours never had."""
+    try:
+        import element_utils
+        import persistence_module
+
+        waiting = element_utils.soft_sleep_forever()
+        persistence_module.run_persistence_operation(
+            persistence_module.PersistenceOpType.kPersistenceOpSave,
+            persistence.get_save_game_data_proto(), 0,
+            lambda slot_id, success: waiting.trigger_soft_stop())
+        yield from element_utils.run_child(timeline, waiting)
+        log.info("resync: the game client has the host's save")
+    except Exception:
+        log.exception("resync: could not give the host's save to the game client")
 
 
 def _put_in_place(persistence):
