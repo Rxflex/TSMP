@@ -305,46 +305,43 @@ impl Launcher {
     fn progress(&self, busy: bool) -> Div {
         let t = &self.i18n;
         let done = self.steps_done();
+        // One line: where the players are among the steps, and what this one is.
         let mut row = div()
             .w_full()
             .max_w(px(PAGE_WIDTH))
             .mx_auto()
             .flex()
-            .gap_2();
-        for (index, key) in STEPS.iter().enumerate() {
-            let (bar, label) = match index {
-                i if i < done => (GOOD, MUTED),
-                i if i == done => (LAMP, TEXT),
-                _ => (LINE, MUTED),
+            .items_center()
+            .gap(px(6.));
+        for index in 0..STEPS.len() {
+            let color = match index {
+                i if i < done => GOOD,
+                i if i == done => LAMP,
+                _ => LINE,
             };
-            row = row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(if busy && index == done {
-                        pulse(div().h(px(4.)).rounded_full().bg(rgb(bar)), "step")
-                            .into_any_element()
-                    } else {
-                        div()
-                            .h(px(4.))
-                            .rounded_full()
-                            .bg(rgb(bar))
-                            .into_any_element()
-                    })
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .line_height(relative(1.3))
-                            .text_color(rgb(label))
-                            .when(index == done, |this| this.font_weight(FontWeight::MEDIUM))
-                            .child(tr!(t, *key)),
-                    ),
-            );
+            let bar = div()
+                .w(px(if index == done { 44. } else { 22. }))
+                .h(px(4.))
+                .flex_none()
+                .rounded_full()
+                .bg(rgb(color));
+            row = row.child(if busy && index == done {
+                pulse(bar, "step").into_any_element()
+            } else {
+                bar.into_any_element()
+            });
         }
-        div().flex_none().px(px(GUTTER)).pt_5().pb_2().child(row)
+        let row = row
+            .child(
+                div()
+                    .pl_3()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(tr!(t, STEPS[done.min(STEPS.len() - 1)])),
+            )
+            .child(div().flex_1())
+            .child(small(format!("{} / {}", (done + 1).min(STEPS.len()), STEPS.len())));
+        div().flex_none().px(px(GUTTER)).pt_5().pb_1().child(row)
     }
 
     /// The list of languages, over everything else. A click anywhere closes it.
@@ -1589,14 +1586,14 @@ fn heading(title: String, lead: Option<String>) -> Div {
             div()
                 .font_family(DISPLAY_FONT)
                 .font_weight(FontWeight::MEDIUM)
-                .text_size(px(32.))
+                .text_size(px(28.))
                 .line_height(relative(1.2))
                 .child(title),
         )
         .children(lead.map(|lead| {
             div()
-                .max_w(px(660.))
-                .text_size(px(18.))
+                .max_w(px(760.))
+                .text_size(px(17.))
                 .text_color(rgb(MUTED))
                 .child(lead)
         }))
@@ -2064,8 +2061,8 @@ fn save_pane(picture: Img, title: String, lines: Vec<Div>, variants: Option<Div>
                                 .pb_2()
                                 .font_family(DISPLAY_FONT)
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_size(px(20.))
-                                .line_height(relative(1.25))
+                                .text_size(px(17.))
+                                .line_height(relative(1.3))
                                 .child(title),
                         )
                         .children(lines),
