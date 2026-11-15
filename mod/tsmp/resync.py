@@ -37,10 +37,10 @@ _COMPRESSED = 1
 # Seconds the game client is given to start the reload once asked.
 PENDING_SECONDS = 60
 
-# Bytes of the last ZoneObjectData the simulation gave the game client, and
-# the zone they belong to.
-_objects = None
-_objects_zone = 0
+# Bytes of the last ZoneObjectData the simulation gave the game client for
+# each zone it saved, by zone id. A guest on a lot the host has left needs
+# that lot as the host left it.
+_objects = {}
 # (zone id, save bytes, objects bytes, deadline) waiting for the game client
 # to disconnect.
 _pending = None
@@ -101,11 +101,9 @@ def install():
 
     @functools.wraps(original_run)
     def run_persistence_operation(operation, message, *args, **kwargs):
-        global _objects, _objects_zone
         if operation == save_objects:
             try:
-                _objects = message.SerializeToString()
-                _objects_zone = message.zone_id
+                _objects[message.zone_id] = message.SerializeToString()
             except Exception:
                 log.exception("resync: could not keep the zone's objects")
         return original_run(operation, message, *args, **kwargs)
@@ -161,9 +159,10 @@ def _put_in_place(persistence):
         len(save), len(objects), zone_id))
 
 
-def take(done):
+def take(done, zone_id=0):
     """Host: save, then call `done(payload)`, or `done(None)` on failure.
-    The save runs over several ticks, like any save of the game."""
+    The save runs over several ticks, like any save of the game. The snapshot
+    is for a guest in `zone_id`, or in the host's own zone when that is 0."""
     import services
     from clock import ClockSpeedMode
 
@@ -182,12 +181,12 @@ def take(done):
             if result != 0:
                 log.info("resync: the game refused to save ({})".format(result))
             else:
-                zone_id = services.current_zone_id() or 0
+                target = zone_id or services.current_zone_id() or 0
                 save = persistence.get_save_game_data_proto().SerializeToString()
-                objects = _objects if _objects is not None and _objects_zone == zone_id else b""
-                payload = pack(zone_id, save, objects)
-                log.info("resync: snapshot of zone {:#x} taken, {} bytes ({} to send)".format(
-                    zone_id, len(save) + len(objects), len(payload)))
+                objects = _objects.get(target, b"")
+                payload = pack(target, save, objects)
+                log.info("resync: snapshot for zone {:#x} taken, {} bytes ({} to send)".format(
+                    target, len(save) + len(objects), len(payload)))
         except Exception:
             log.exception("resync: snapshot failed")
         done(payload)
@@ -197,7 +196,7 @@ def take(done):
 
 def adopt(payload, sim_id):
     """Guest: keep the host's snapshot and ask the game client to reload
-    into the host's zone. Raises ValueError for a snapshot that cannot be
+    the zone it was made for, which is the one we are in. Raises ValueError for a snapshot that cannot be
     read."""
     global _pending
     zone_id, save, objects = unpack(payload)
@@ -207,5 +206,5 @@ def adopt(payload, sim_id):
     from world import travel_service
 
     _pending = (zone_id, save, objects, time.time() + PENDING_SECONDS)
-    log.info("resync: reloading into zone {:#x} after the host".format(zone_id))
+    log.info("resync: reloading zone {:#x} from the host's save".format(zone_id))
     travel_service.travel_sims_to_zone([sim_id] if sim_id else [], zone_id)

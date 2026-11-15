@@ -11,6 +11,11 @@ built from the same state as the host's. When the host's zone is loaded again
 asks the host for its state and loads it (see tsmp/resync.py), then joins
 again.
 
+Each game simulates one lot. Two players on different lots are *apart*: both
+are connected, neither is muted, and each plays its own lot by itself. They
+are joined when the guest comes to the lot the host is on, and the guest
+then loads the host's state as after any reload.
+
 Pure logic with no game imports: the game is reached through the `game`
 adapter (see live.Game) so this can be tested outside the game.
 """
@@ -53,10 +58,12 @@ class Consts:
 class Session:
     """`game` provides:
         in_zone()                      True while a zone is loaded and running
+        zone_id()                      id of that zone
         active_sim_id()                id of the locally selected sim, or 0
         deliver(msg_id, data)          hand a message to the local game client
         execute(name, args, sim_id)    run a command as the remote player
-        snapshot(done)                 host: save, then done(bytes or None)
+        snapshot(done, zone_id)        host: save, then done(bytes or None);
+                                       the snapshot is for a guest in that zone
         adopt(payload)                 guest: load the host's snapshot by
                                        reloading the zone; raises on failure
     `send(frame)` queues a packed frame for the launcher.
@@ -72,6 +79,11 @@ class Session:
         self.remote_in_zone = False
         self.remote_sim_id = 0
         self._in_zone = False
+        self._zone = 0
+        self.remote_zone = 0
+        # Guest: the two were on different lots since the host's state was
+        # last loaded, so what we have of the host's lot is not what it has.
+        self._apart = False
         self._reported_sim_id = 0
         self._remote_depth = 0
         self._was_live = False
@@ -97,7 +109,18 @@ class Session:
         """True while the two games are joined: messages flow host -> guest
         and commands guest -> host."""
         return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
-                and not self._stale)
+                and self.same_zone and not self._stale)
+
+    @property
+    def same_zone(self):
+        """False when both are known to be on different lots."""
+        return not self._zone or not self.remote_zone or self._zone == self.remote_zone
+
+    @property
+    def apart(self):
+        """True while both play, each on a lot of its own."""
+        return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
+                and not self.same_zone)
 
     @property
     def stale(self):
@@ -117,6 +140,7 @@ class Session:
         self._fresh()
         self.remotes = 0
         self._in_zone = bool(self._game.in_zone())
+        self._zone = self._zone_id() if self._in_zone else 0
         self._announce(want=True)
         self._log("bridge connected, role {}".format(self.role))
         self._check_live()
@@ -135,9 +159,17 @@ class Session:
         self._adopting = False
         self._left = False
         self._snapshotting = False
+        self._apart = False
+
+    def _zone_id(self):
+        try:
+            return int(self._game.zone_id() or 0)
+        except Exception:
+            return 0
 
     def _forget_remote(self):
         self.remote_in_zone = False
+        self.remote_zone = 0
         self.remote_sim_id = 0
         self._reported_sim_id = 0
 
@@ -148,12 +180,24 @@ class Session:
             return
         # A stale guest is in a zone, but not in one the host can play with.
         in_zone = self._in_zone and not self._stale
+        fields = {"role": self.role, "in_zone": in_zone}
+        if self._in_zone and self._zone:
+            # As text: ids are 64 bits wide.
+            fields["zone"] = str(self._zone)
         if want:
-            self._send(frames.control("state", role=self.role, in_zone=in_zone, want=True))
-        else:
-            self._send(frames.control("state", role=self.role, in_zone=in_zone))
+            fields["want"] = True
+        self._send(frames.control("state", **fields))
 
     def _check_live(self):
+        if self.role == GUEST and not self._stale and self._in_zone and self.remote_in_zone and self.remotes > 0:
+            if not self.same_zone:
+                if not self._apart:
+                    self._apart = True
+                    self._log("the host is on another lot; playing this one by ourselves")
+            elif self._apart:
+                # Our copy of this lot was not played by the host.
+                self._log("on the host's lot again")
+                self._go_stale()
         live = self.live
         if live == self._was_live:
             return
@@ -175,8 +219,10 @@ class Session:
             return
         self._ticks += 1
         in_zone = bool(self._game.in_zone())
-        if in_zone != self._in_zone:
+        zone = self._zone_id() if in_zone else 0
+        if in_zone != self._in_zone or zone != self._zone:
             self._in_zone = in_zone
+            self._zone = zone
             # The host forgets our sim when we leave a zone.
             self._reported_sim_id = 0
             if self._stale:
@@ -206,6 +252,7 @@ class Session:
         self._asked = 0
         self._adopting = False
         self._left = False
+        self._apart = False
         self._announce()
 
     def _settle(self, why):
@@ -239,8 +286,11 @@ class Session:
                 self._settle("the host did not send its state; staying as we are")
         elif self._in_zone and self.remote_in_zone and self.remotes > 0:
             self._asked = self._ticks
-            self._log("the host reloaded its zone; asking for its state")
-            self._send(frames.control("resync"))
+            self._log("asking the host for its state")
+            if self._zone:
+                self._send(frames.control("resync", zone=str(self._zone)))
+            else:
+                self._send(frames.control("resync"))
 
     def _adopt(self, payload):
         if self.role != GUEST or not self._stale or self._adopting or not self._in_zone:
@@ -254,7 +304,7 @@ class Session:
         self._left = False
         self._asked = self._ticks
 
-    def _snapshot(self):
+    def _snapshot(self, zone=0):
         if self.role != HOST or self._snapshotting:
             return
         if not self._in_zone:
@@ -263,7 +313,7 @@ class Session:
         self._snapshotting = True
         self._log("the other player is reloading; saving for them")
         try:
-            self._game.snapshot(self._snapshot_done)
+            self._game.snapshot(self._snapshot_done, zone)
         except Exception as error:
             self._log("could not save for the other player: {}".format(error))
             self._snapshot_done(None)
@@ -316,6 +366,7 @@ class Session:
                 self._announce()
             was_live = self.live
             self.remote_in_zone = bool(message.get("in_zone"))
+            self.remote_zone = _number(message.get("zone"))
             if self.role == GUEST and was_live and not self.remote_in_zone:
                 # Its zone will be built again, and its game client with it.
                 self._log("the host left its zone")
@@ -324,15 +375,12 @@ class Session:
                 self.remote_sim_id = 0
                 self._reported_sim_id = 0
         elif kind == "resync":
-            self._snapshot()
+            self._snapshot(_number(message.get("zone")))
         elif kind == "resync_failed":
             if self.role == GUEST and self._stale and not self._adopting:
                 self._settle("the host could not save; staying as we are")
         elif kind == "active_sim":
-            try:
-                self.remote_sim_id = int(message.get("sim_id") or 0)
-            except (TypeError, ValueError):
-                self.remote_sim_id = 0
+            self.remote_sim_id = _number(message.get("sim_id"))
         self._check_live()
 
     def _execute(self, message):
@@ -407,6 +455,13 @@ class Session:
             self._seen_local.add(name)
             self._log("local command while live: {}".format(name))
         return True
+
+
+def _number(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _forwarded(name):

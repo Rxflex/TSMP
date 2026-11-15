@@ -359,9 +359,9 @@ payload`, little endian.
 
 Control messages: `link {remotes}` (launcher -> its game: how many other
 launchers are connected), `gone` (launcher -> the other side: the game here
-disconnected), `state {role, in_zone, want?}` (game -> game; `want` asks for
+disconnected), `state {role, in_zone, zone?, want?}` (game -> game; `want` asks for
 the other's state in return), `active_sim {sim_id}` (guest -> host),
-`resync` (guest -> host: send your state), `resync_failed` (host -> guest).
+`resync {zone?}` (guest -> host: send your state, for a guest on that lot), `resync_failed` (host -> guest).
 
 The launchers only relay; the guest's launcher opens a second connection to
 the host's with `JoinLive` and after the `Hello` reply the socket carries raw
@@ -416,6 +416,23 @@ its loading screen the guest joins as on a fresh start. If any step fails
 (the host cannot save, nothing arrives in `RESYNC_TICKS`, the snapshot cannot
 be read, the client does not reload) the guest joins as it is, which is what
 happened before. The `tsmp.resync` cheat makes a guest do all this on request.
+
+### Different lots
+
+A game simulates one lot, so two players on different lots cannot share a
+simulation. `state` carries the id of the zone a game is in, and a session is
+only live while both are in the same one. Otherwise the two are *apart*:
+connected, not muted, each playing its lot by itself.
+
+- The host travels: the guest does not follow. It reloads the lot it is on
+  from the host's save (the host keeps the `ZoneObjectData` of every zone it
+  saved, so the lot comes as the host left it) and plays on alone.
+- The guest travels: nothing is loaded; it plays the other lot alone.
+- The guest arrives on the host's lot: it loads the host's state and joins.
+
+What is not there yet is the way back: nothing a guest does while apart
+reaches the host, so it is lost when the guest next loads the host's state.
+That needs the guest's household and lot to be merged into the host's save.
 
 This has only been run against fakes (`mod/tests/test_session.py`,
 `test_relay.py`, `test_resync.py`); it has not been seen working in two games

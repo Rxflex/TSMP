@@ -115,6 +115,14 @@ class Game:
         _loaded_ticks += 1
         return _loaded_ticks > SETTLE_TICKS
 
+    def zone_id(self):
+        try:
+            import services
+
+            return services.current_zone_id() or 0
+        except Exception:
+            return 0
+
     def active_sim_id(self):
         try:
             sim_info = _client().active_sim_info
@@ -156,9 +164,9 @@ class Game:
             client._active_sim_info, client._choice_menu, client._interaction_parameters = saved
 
 
-    def snapshot(self, done):
+    def snapshot(self, done, zone_id=0):
         resync.install()
-        resync.take(done)
+        resync.take(done, zone_id)
 
     def adopt(self, payload):
         resync.adopt(payload, self.active_sim_id())
@@ -306,7 +314,8 @@ def describe():
             _session.role or "-",
             "connected" if _bridge.connected else "not connected",
             "in game" if _session.remote_in_zone else "not in game",
-        ) + (", waiting to reload after the host" if _session.stale else ""),
+        ) + (", waiting to reload after the host" if _session.stale else "")
+          + (", on another lot" if _session.apart else ""),
         "ticks {}, relayed {}, delivered {}, forwarded {}, executed {}".format(
             _ticks, _session.relayed, _session.delivered, _session.forwarded, _session.executed
         ),

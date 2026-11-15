@@ -43,11 +43,16 @@ class FakeGame:
         self.executed = []
         self.during_execute = None
         self.snapshots = []
+        self.snapshot_zones = []
+        self.lot = 7
         self.adopted = []
         self.adopt_error = None
 
     def in_zone(self):
         return self.zone
+
+    def zone_id(self):
+        return self.lot
 
     def active_sim_id(self):
         return self.sim_id
@@ -60,8 +65,9 @@ class FakeGame:
         if self.during_execute is not None:
             self.during_execute()
 
-    def snapshot(self, done):
+    def snapshot(self, done, zone_id=0):
         self.snapshots.append(done)
+        self.snapshot_zones.append(zone_id)
 
     def adopt(self, payload):
         if self.adopt_error is not None:
@@ -160,7 +166,7 @@ class HandshakeTest(unittest.TestCase):
         self.assertEqual(host.take(), [])
         host.game.zone = True
         host.session.tick()
-        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": True}])
+        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": True, "zone": "7"}])
 
     def test_live_once_both_are_in_a_zone(self):
         host, guest = joined()
@@ -380,6 +386,79 @@ def host_reloads(host, guest):
 
 def asked(player):
     return [payload for kind, _, payload in player.sent if kind == frames.CONTROL and b'"resync"' in payload]
+
+
+class LotsTest(unittest.TestCase):
+    def moves(self, player, other, lot):
+        player.game.zone = False
+        player.session.tick()
+        settle(player, other)
+        player.game.lot = lot
+        player.game.zone = True
+        player.session.tick()
+        settle(player, other)
+
+    def test_players_on_different_lots_each_play_their_own(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        self.assertFalse(guest.session.live)
+        self.assertFalse(host.session.live)
+        self.assertTrue(guest.session.apart)
+        self.assertTrue(host.session.apart)
+        self.assertFalse(guest.session.stale)
+        # Nothing is muted and nothing is sent to the other.
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
+        self.assertTrue(guest.session.command("interactions.choices", ["1"]))
+        host.take()
+        self.assertEqual(host.session.outbound(OTHER_MSG, b"local"), b"local")
+        self.assertEqual(host.take(), [])
+
+    def test_a_guest_does_not_follow_a_host_that_travels(self):
+        host, guest = joined()
+        self.moves(host, guest, 8)
+        # The lot the host played is loaded as the host left it.
+        guest.session.tick()
+        settle(host, guest)
+        self.assertEqual(host.game.snapshot_zones, [7])
+        host.game.snapshots[0](b"save")
+        settle(host, guest)
+        guest.game.zone = False
+        guest.session.tick()
+        guest.game.zone = True
+        guest.session.tick()
+        settle(host, guest)
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.apart)
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
+
+    def test_a_guest_coming_to_the_hosts_lot_loads_it_from_the_host(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        self.moves(guest, host, 7)
+        self.assertTrue(guest.session.stale)
+        self.assertFalse(host.session.live)
+        guest.session.tick()
+        settle(host, guest)
+        self.assertEqual(host.game.snapshot_zones, [7])
+
+    def test_starting_on_different_lots(self):
+        host, guest = Player(session.HOST), Player(session.GUEST)
+        guest.game.lot = 8
+        host.session.bridge_up(session.HOST)
+        guest.session.bridge_up(session.GUEST)
+        host.link(1)
+        guest.link(1)
+        host.game.zone = guest.game.zone = True
+        host.session.tick()
+        guest.session.tick()
+        settle(host, guest)
+        self.assertFalse(guest.session.live)
+        self.assertTrue(guest.session.apart)
+
+    def test_a_game_that_does_not_say_its_lot_is_on_ours(self):
+        host, guest = joined()
+        guest.session.frame(frames.CONTROL, 0, b'{"type":"state","role":"host","in_zone":true}')
+        self.assertTrue(guest.session.live)
 
 
 class ResyncTest(unittest.TestCase):
