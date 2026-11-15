@@ -55,7 +55,6 @@ host-failed-title = Hosten wurde nicht gestartet
 host-title = Sitzung läuft
 host-lead = Lass dieses Fenster geöffnet, solange ihr spielt.
 host-address = Adresse
-host-port = Port
 host-mods = Mods
 host-mods-value =
     { $files ->
@@ -107,7 +106,6 @@ version-unknown = unbekannt
 sync = Abgleichen
 syncing-title = Dateien werden vom Host kopiert
 syncing-progress = { $done } von { $total }
-ready-title = Abgeglichen mit { $host }
 ready-matched = Die Mods stimmten bereits überein.
 ready-changed = Heruntergeladene Dateien: { $fetched }. Verschobene Dateien: { $moved }.
 ready-backup = Deine bisherigen Dateien liegen in { $path }
@@ -163,3 +161,18 @@ building-missing = Spielversion { $version } hat noch niemand beschrieben, desha
 building-unknown = Die Spielversion ist unbekannt, deshalb ist gemeinsames Bauen aus. Alles andere funktioniert.
 update-ready = Version { $version } ist installiert und läuft nach einem Neustart
 update-restart = Neu starten mit Version { $version }
+
+## The lobby, the journal and copying errors
+
+copy = Kopieren
+copied = Kopiert
+journal = Protokoll
+journal-empty = Noch ist nichts passiert.
+join-failed-hint = Prüfe, ob der Host die Sitzung nicht geschlossen hat und beide Computer im selben Netzwerk sind.
+guest-title = Du bist in der Sitzung
+player-you = Du
+player-host = Host
+player-you-host = Du, der Host
+player-starting = Startet das Spiel
+player-in-game = Im Spiel
+player-failed = Fehler

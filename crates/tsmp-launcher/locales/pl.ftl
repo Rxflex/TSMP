@@ -56,7 +56,6 @@ host-failed-title = Nie udało się założyć sesji
 host-title = Sesja otwarta
 host-lead = Zostaw to okno otwarte na czas gry.
 host-address = Adres
-host-port = Port
 host-mods = Mody
 host-mods-value =
     { $files ->
@@ -111,7 +110,6 @@ version-unknown = nieznana
 sync = Synchronizuj
 syncing-title = Kopiujemy od hosta
 syncing-progress = { $done } z { $total }
-ready-title = Zsynchronizowano: { $host }
 ready-matched = Mody już się zgadzały.
 ready-changed = Pobrane pliki: { $fetched }. Przeniesione pliki: { $moved }.
 ready-backup = Twoje poprzednie pliki są w { $path }
@@ -167,3 +165,18 @@ building-missing = Gry { $version } nikt jeszcze nie opisał, więc wspólne bud
 building-unknown = Wersja gry jest nieznana, więc wspólne budowanie jest wyłączone. Reszta działa.
 update-ready = Wersja { $version } jest zainstalowana i zadziała po ponownym uruchomieniu
 update-restart = Uruchom ponownie w wersji { $version }
+
+## The lobby, the journal and copying errors
+
+copy = Kopiuj
+copied = Skopiowano
+journal = Dziennik
+journal-empty = Jeszcze nic się nie wydarzyło.
+join-failed-hint = Sprawdź, czy host nie zamknął sesji i czy oba komputery są w tej samej sieci.
+guest-title = Jesteś w sesji
+player-you = Ty
+player-host = Host
+player-you-host = Ty, host
+player-starting = Uruchamia grę
+player-in-game = W grze
+player-failed = Błąd

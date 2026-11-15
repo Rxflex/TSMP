@@ -62,7 +62,6 @@ host-failed-title = Hosting did not start
 host-title = Hosting
 host-lead = Leave this window open while you play.
 host-address = Address
-host-port = Port
 host-mods = Mods
 host-mods-value =
     { $files ->
@@ -117,7 +116,6 @@ version-unknown = unknown
 sync = Sync
 syncing-title = Copying from the host
 syncing-progress = { $done } of { $total }
-ready-title = In sync with { $host }
 ready-matched = Mods already matched.
 ready-changed = Files downloaded: { $fetched }. Files moved aside: { $moved }.
 # { $path } is a folder such as Mods.tsmp-backup\2026-11-13
@@ -175,3 +173,18 @@ building-missing = Nobody has described game { $version } yet, so building toget
 building-unknown = The game version is unknown, so building together is off. Everything else works.
 update-ready = Version { $version } is installed and runs after a restart
 update-restart = Restart into version { $version }
+
+## The lobby, the journal and copying errors
+
+copy = Copy
+copied = Copied
+journal = Journal
+journal-empty = Nothing has happened yet.
+join-failed-hint = Check that the host has not closed the session and that both computers are on the same network.
+guest-title = You are in the session
+player-you = You
+player-host = Host
+player-you-host = You, the host
+player-starting = Starting the game
+player-in-game = In the game
+player-failed = Error

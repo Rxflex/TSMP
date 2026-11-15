@@ -54,7 +54,6 @@ host-failed-title = 会话创建失败
 host-title = 会话已开启
 host-lead = 游玩期间请保持此窗口打开。
 host-address = 地址
-host-port = 端口
 host-mods = 模组
 host-mods-value =
     { $files ->
@@ -103,7 +102,6 @@ version-unknown = 未知
 sync = 同步
 syncing-title = 正在从主机复制
 syncing-progress = { $done } / { $total }
-ready-title = 已与 { $host } 同步
 ready-matched = 模组原本就一致。
 ready-changed = 已下载文件：{ $fetched }。已移走文件：{ $moved }。
 ready-backup = 你原来的文件在 { $path }
@@ -158,3 +156,18 @@ building-missing = 还没有人描述游戏 { $version }，所以一起建造已
 building-unknown = 游戏版本未知，所以一起建造已关闭。其他功能正常。
 update-ready = 版本 { $version } 已安装，重启后生效
 update-restart = 重启并使用版本 { $version }
+
+## The lobby, the journal and copying errors
+
+copy = 复制
+copied = 已复制
+journal = 日志
+journal-empty = 还没有任何记录。
+join-failed-hint = 请检查主机是否已关闭会话，以及两台电脑是否在同一网络中。
+guest-title = 你已在会话中
+player-you = 你
+player-host = 主机
+player-you-host = 你（主机）
+player-starting = 正在启动游戏
+player-in-game = 游戏中
+player-failed = 错误

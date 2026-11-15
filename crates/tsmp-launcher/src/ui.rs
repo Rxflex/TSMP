@@ -2,14 +2,14 @@
 //! only draws the model and forwards clicks to it. Every word on screen comes
 //! from [`crate::i18n`].
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::*;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use gpui::{
-    Animation, AnimationElement, AnimationExt, AnyElement, App, ClickEvent, Context, Div,
-    ElementId, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit, Rgba,
+    Animation, AnimationElement, AnimationExt, AnyElement, App, ClickEvent, ClipboardItem, Context,
+    Div, ElementId, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit, Rgba,
     ScrollHandle, SharedString, Stateful, Svg, Window, WindowControlArea, div, img,
     linear_color_stop, linear_gradient, pulsating_between, px, relative, rgb, svg,
 };
@@ -22,11 +22,14 @@ use crate::i18n::{I18n, tr};
 use crate::mappings::Support;
 use crate::model::{
     Env, GameState, HostScreen, HostStage, JoinScreen, JoinStage, JoinStep, Model, Plan, Preview,
-    Running, Screen, Synced,
+    Running, Screen, Synced, clock,
 };
 
-/// Lines of the mods' log shown under the session status.
-const MOD_LOG_LINES: usize = 8;
+/// How long a button says that it has copied.
+const COPIED_FOR: Duration = Duration::from_millis(2500);
+/// The journal shows this many of its latest lines.
+const JOURNAL_SHOWN: usize = 300;
+const JOURNAL_WIDTH: f32 = 540.;
 
 // A house plan at night: deep blue paper, pale lines, one warm lamp.
 const PAPER: u32 = 0x16223a;
@@ -86,6 +89,9 @@ pub struct Launcher {
     /// The door of the home screen under the pointer, and the one it just left.
     door: Option<&'static str>,
     door_left: Option<&'static str>,
+    journal_open: bool,
+    /// The button that copied last, and when.
+    copied: Option<(&'static str, Instant)>,
 }
 
 impl Launcher {
@@ -99,7 +105,13 @@ impl Launcher {
                     // The page learns its own height only once drawn, so the
                     // scroll bar follows it from here.
                     let scroll = this.scroll_position();
-                    if this.model.pump() || scroll != this.scroll_shown {
+                    let forgotten = this
+                        .copied
+                        .is_some_and(|(_, at)| at.elapsed() >= COPIED_FOR);
+                    if forgotten {
+                        this.copied = None;
+                    }
+                    if this.model.pump() || scroll != this.scroll_shown || forgotten {
                         this.scroll_shown = scroll;
                         cx.notify();
                     }
@@ -122,6 +134,8 @@ impl Launcher {
             lan_address: lan_address(),
             door: None,
             door_left: None,
+            journal_open: false,
+            copied: None,
         }
     }
 
@@ -224,19 +238,163 @@ impl Launcher {
         })
     }
 
-    fn mod_log(&self) -> Option<Div> {
-        let lines = &self.model.live_log;
-        if lines.is_empty() {
-            return None;
+    /// Puts `text` on the clipboard when pressed, and says so for a moment.
+    fn copy_button(&self, id: &'static str, text: String, cx: &mut Context<Self>) -> Stateful<Div> {
+        let done = self.copied.is_some_and(|(copied, _)| copied == id);
+        div()
+            .id(id)
+            .flex_none()
+            .h(px(34.))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(LINE))
+            .text_size(px(14.))
+            .text_color(rgb(if done { GOOD } else { TEXT }))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                this.copied = Some((id, Instant::now()));
+                cx.notify();
+            }))
+            .child(icon(
+                if done { "check" } else { "copy" },
+                16.,
+                if done { GOOD } else { MUTED },
+            ))
+            .child(tr!(self.i18n, if done { "copied" } else { "copy" }))
+    }
+
+    /// Something that went wrong, in the words it came in, with a button
+    /// that copies them together with the versions they happened on.
+    fn error_box(&self, id: &'static str, message: &str, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_start()
+            .gap_3()
+            .p_4()
+            .rounded(px(10.))
+            .bg(Rgba {
+                a: 0.1,
+                ..rgb(DANGER)
+            })
+            .child(div().pt(px(3.)).child(icon("alert", 18., DANGER)))
+            .child(div().flex_1().min_w_0().child(message.to_string()))
+            .child(self.copy_button(id, self.model.report(message), cx))
+    }
+
+    /// Everything the launcher and the mods have done, newest first, over
+    /// the right side of the window. A click beside it closes it.
+    fn journal(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
+        let t = &self.i18n;
+        fn close(this: &mut Launcher, _: &ClickEvent, _: &mut Window, cx: &mut Context<Launcher>) {
+            this.journal_open = false;
+            cx.notify();
         }
-        let from = lines.len().saturating_sub(MOD_LOG_LINES);
-        Some(
-            div().mt_1().flex().flex_col().children(
-                lines[from..]
-                    .iter()
-                    .map(|line| small(line.clone()).text_size(px(13.)).truncate()),
-            ),
-        )
+        let backdrop = div()
+            .id("journal-backdrop")
+            .absolute()
+            .top(px(TITLEBAR_HEIGHT))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(Rgba {
+                a: 0.45,
+                ..rgb(RAIL)
+            })
+            .on_click(cx.listener(close));
+        let words = JOURNAL_WIDTH - 2. * 20. - 46. - 12.;
+        let entries = &self.model.journal;
+        let mut lines = div()
+            .id("journal-lines")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(20.))
+            .pb_5()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .text_size(px(14.))
+            .line_height(relative(1.4));
+        if entries.is_empty() {
+            lines = lines.child(small(tr!(t, "journal-empty")));
+        }
+        for entry in entries.iter().rev().take(JOURNAL_SHOWN) {
+            lines = lines.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .w(px(46.))
+                            .flex_none()
+                            .text_color(rgb(MUTED))
+                            .child(clock(entry.at)),
+                    )
+                    .child(
+                        div()
+                            .w(px(words))
+                            .flex_none()
+                            .when(entry.bad, |this| this.text_color(rgb(DANGER)))
+                            .child(entry.text.clone()),
+                    ),
+            );
+        }
+        let panel = div()
+            .id("journal")
+            .absolute()
+            .top(px(TITLEBAR_HEIGHT))
+            .right_0()
+            .bottom_0()
+            .w(px(JOURNAL_WIDTH))
+            .occlude()
+            .flex()
+            .flex_col()
+            .bg(rgb(PAPER))
+            .border_l_1()
+            .border_color(rgb(LINE))
+            .shadow_lg()
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(20.))
+                    .py_4()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_family(DISPLAY_FONT)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(18.))
+                            .child(tr!(t, "journal")),
+                    )
+                    .child(self.copy_button("copy-journal", self.model.journal_text(), cx))
+                    .child(
+                        div()
+                            .id("journal-close")
+                            .size(px(34.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                            .on_click(cx.listener(close))
+                            .child(icon("close", 16., MUTED)),
+                    ),
+            )
+            .child(lines);
+        [backdrop.into_any_element(), panel.into_any_element()]
     }
 
     /// How many of [`STEPS`] are behind the player.
@@ -340,7 +498,11 @@ impl Launcher {
                     .child(tr!(t, STEPS[done.min(STEPS.len() - 1)])),
             )
             .child(div().flex_1())
-            .child(small(format!("{} / {}", (done + 1).min(STEPS.len()), STEPS.len())));
+            .child(small(format!(
+                "{} / {}",
+                (done + 1).min(STEPS.len()),
+                STEPS.len()
+            )));
         div().flex_none().px(px(GUTTER)).pt_5().pb_1().child(row)
     }
 
@@ -493,6 +655,28 @@ impl Launcher {
                         }),
                 )
             }))
+            .child(
+                div().h_full().flex().items_center().child(
+                    div()
+                        .id("journal-open")
+                        .h(px(36.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(8.))
+                        .text_size(px(15.))
+                        .text_color(rgb(MUTED))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(PANEL)).text_color(rgb(TEXT)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.journal_open = !this.journal_open;
+                            cx.notify();
+                        }))
+                        .child(icon("list", 18., MUTED))
+                        .child(tr!(self.i18n, "journal")),
+                ),
+            )
             .child(
                 div().h_full().flex().items_center().pr_2().child(
                     div()
@@ -799,11 +983,9 @@ impl Launcher {
                                                 )
                                             }),
                                     )
-                                    .child(
-                                        div().w(px(230.)).flex_none().truncate().child(
-                                            name(index).unwrap_or_else(|| save.file_name.clone()),
-                                        ),
-                                    )
+                                    .child(div().w(px(230.)).flex_none().truncate().child(
+                                        name(index).unwrap_or_else(|| save.file_name.clone()),
+                                    ))
                                     .child(
                                         small(save.file_name.clone())
                                             .w(px(150.))
@@ -869,33 +1051,55 @@ impl Launcher {
             )
             .child(waiting_dots())
             .into_any_element(),
-            HostStage::Running(running) => self.hosting(screen, running),
-            HostStage::Failed(message) => self.failure(tr!(t, "host-failed-title"), message),
+            HostStage::Running(running) => self.hosting(screen, running, cx),
+            HostStage::Failed(message) => {
+                self.failure(tr!(t, "host-failed-title"), None, message, cx)
+            }
         }
     }
 
-    fn hosting(&self, screen: &HostScreen, running: &Running) -> AnyElement {
+    /// This player's own line among the players: what their game is doing.
+    fn own_state(&self) -> Div {
         let t = &self.i18n;
-        let mut players = div().flex().flex_col().gap_2().pt_1();
-        if running.guests.is_empty() {
-            players = players.child(
-                hollow()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .p_5()
-                    .text_color(rgb(MUTED))
-                    .child(icon("people", 24., MUTED))
-                    .child(div().flex_1().min_w_0().child(tr!(t, "players-empty"))),
-            );
+        match &self.model.game {
+            GameState::NotStarted => player_state(GOOD, tr!(t, "guest-ready")),
+            GameState::Starting { .. } => player_state(WARNING, tr!(t, "player-starting")),
+            GameState::Running { .. } => player_state(GOOD, tr!(t, "player-in-game")),
+            GameState::Failed(_) => player_state(DANGER, tr!(t, "player-failed")),
         }
+    }
+
+    fn own_name(&self) -> String {
+        self.model
+            .env
+            .as_ref()
+            .map(|env| env.name.clone())
+            .unwrap_or_default()
+    }
+
+    fn hosting(
+        &self,
+        screen: &HostScreen,
+        running: &Running,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = &self.i18n;
+        let mut players = vec![
+            player_row(
+                &self.own_name(),
+                small(tr!(t, "player-you-host")),
+                self.own_state(),
+            )
+            .into_any_element(),
+        ];
         for (index, guest) in running.guests.iter().enumerate() {
-            let (color, status) = match &guest.status {
-                None => (MUTED, tr!(t, "guest-connected")),
+            let mut detail = small(guest.address.ip().to_string());
+            let state = match &guest.status {
+                None => player_state(MUTED, tr!(t, "guest-connected")),
                 Some(GuestStatus::Syncing {
                     done_bytes,
                     total_bytes,
-                }) => (
+                }) => player_state(
                     WARNING,
                     tr!(
                         t,
@@ -904,82 +1108,138 @@ impl Launcher {
                         total = bytes(t, *total_bytes)
                     ),
                 ),
-                Some(GuestStatus::Ready) => (GOOD, tr!(t, "guest-ready")),
+                Some(GuestStatus::Ready) => player_state(GOOD, tr!(t, "guest-ready")),
                 Some(GuestStatus::Failed { message }) => {
-                    (DANGER, tr!(t, "guest-failed", message = message.as_str()))
+                    detail = small(message.clone()).text_color(rgb(DANGER));
+                    div().child(
+                        self.copy_button(
+                            "copy-guest",
+                            self.model
+                                .report(&format!("{}: {message}", guest.hello.name)),
+                            cx,
+                        ),
+                    )
                 }
             };
-            players = players.child(arrive(
-                card()
+            players.push(
+                arrive(
+                    player_row(&guest.hello.name, detail, state),
+                    ("guest", index),
+                    0.,
+                    10.,
+                )
+                .into_any_element(),
+            );
+        }
+        if running.guests.is_empty() {
+            players.push(
+                hollow()
+                    .w(px(ROSTER_WIDTH))
+                    .p_4()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_3()
-                    .child(avatar(&guest.hello.name))
+                    .text_size(px(15.))
+                    .text_color(rgb(MUTED))
+                    .child(div().pt(px(2.)).child(icon("people", 20., MUTED)))
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(guest.hello.name.clone()),
-                            )
-                            .child(small(guest.address.ip().to_string()))
-                            .child(small(describe_packs(t, &guest.hello.packs))),
+                            .w(px(ROSTER_WIDTH - 2. * 16. - 20. - 12. - 2.))
+                            .child(tr!(t, "players-empty")),
                     )
-                    .child(status_line(color, status).flex_none().max_w(px(340.))),
-                ("guest", index),
-                0.,
-                10.,
+                    .into_any_element(),
+            );
+        }
+        let address = self.lan_address.map(|address| match running.port {
+            DEFAULT_PORT => address.to_string(),
+            port => format!("{address}:{port}"),
+        });
+        let notes = vec![
+            brief(tr!(t, "host-address"), address.unwrap_or_default()),
+            brief(
+                tr!(t, "host-mods"),
+                tr!(
+                    t,
+                    "host-mods-value",
+                    files = running.mod_files,
+                    size = bytes(t, running.mod_bytes)
+                ),
+            ),
+        ];
+        let mut warnings = Vec::new();
+        if !running.has_mod {
+            warnings.push(notice(WARNING, tr!(t, "host-mod-missing")));
+        }
+        if !running.set_aside.is_empty() {
+            let names = running.set_aside.join(", ");
+            warnings.push(notice(
+                WARNING,
+                tr!(t, "host-rivals-moved", names = names.as_str()),
             ));
         }
-        scene_page("waiting", tr!(t, "host-title"), Some(tr!(t, "host-lead")))
-            .when(!running.has_mod, |this| {
-                this.child(notice(WARNING, tr!(t, "host-mod-missing")))
-            })
-            .when(!running.set_aside.is_empty(), |this| {
-                let names = running.set_aside.join(", ");
-                this.child(notice(
-                    WARNING,
-                    tr!(t, "host-rivals-moved", names = names.as_str()),
-                ))
-            })
+        self.lobby(
+            tr!(t, "host-title"),
+            warnings,
+            players,
+            notes,
+            running.save.as_deref(),
+            screen.selected_preview().map(|preview| &**preview),
+        )
+    }
+
+    /// Where both players wait for each other before the game: who is here
+    /// and what state they are in, beside the save they are about to load.
+    fn lobby(
+        &self,
+        title: String,
+        warnings: Vec<Div>,
+        players: Vec<AnyElement>,
+        notes: Vec<Div>,
+        save: Option<&str>,
+        preview: Option<&Preview>,
+    ) -> AnyElement {
+        let t = &self.i18n;
+        let label = |text: String| {
+            div()
+                .pb_1()
+                .text_size(px(15.))
+                .text_color(rgb(MUTED))
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(heading(title, Some(tr!(t, "host-lead"))))
+            .children(warnings)
             .child(
-                section(tr!(t, "host-save")).child(
-                    div().pt_1().child(match &running.save {
-                        Some(file_name) => shared_save(
-                            file_name,
-                            screen.selected_preview().map(|preview| &**preview),
-                        ),
-                        None => card()
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(LOBBY_GAP))
+                    .child(
+                        div()
+                            .w(px(ROSTER_WIDTH))
+                            .flex_none()
                             .flex()
-                            .items_center()
-                            .gap_4()
-                            .child(picture(art("new-game")))
-                            .child(div().flex_1().min_w_0().child(tr!(t, "host-save-none"))),
-                    }),
-                ),
-            )
-            .child(section(tr!(t, "players")).child(players))
-            .child(
-                sheet()
-                    .children(
-                        self.lan_address
-                            .map(|address| fact(tr!(t, "host-address"), address.to_string())),
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(label(tr!(t, "players")))
+                            .children(players)
+                            .child(div().pt_3().flex().flex_col().gap(px(6.)).children(notes)),
                     )
-                    .child(fact(tr!(t, "host-port"), running.port.to_string()))
-                    .child(fact(
-                        tr!(t, "host-mods"),
-                        tr!(
-                            t,
-                            "host-mods-value",
-                            files = running.mod_files,
-                            size = bytes(t, running.mod_bytes)
-                        ),
-                    ))
-                    .children(self.session_packs()),
+                    .child(
+                        div()
+                            .w(px(SAVE_WIDTH))
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(label(tr!(t, "host-save")))
+                            .child(lobby_save(t, save, preview)),
+                    ),
             )
+            .child(sheet().children(self.session_packs()))
             .into_any_element()
     }
 
@@ -1175,8 +1435,13 @@ impl Launcher {
                     )
                     .into_any_element()
             }
-            JoinStage::Ready(synced) => self.ready(screen, synced),
-            JoinStage::Failed(message) => self.failure(tr!(t, "join-failed-title"), message),
+            JoinStage::Ready(synced) => self.ready(screen, synced, cx),
+            JoinStage::Failed(message) => self.failure(
+                tr!(t, "join-failed-title"),
+                Some(tr!(t, "join-failed-hint")),
+                message,
+                cx,
+            ),
         }
     }
 
@@ -1251,50 +1516,55 @@ impl Launcher {
         .into_any_element()
     }
 
-    fn ready(&self, screen: &JoinScreen, synced: &Synced) -> AnyElement {
+    fn ready(&self, screen: &JoinScreen, synced: &Synced, _: &mut Context<Self>) -> AnyElement {
         let t = &self.i18n;
-        let changed = synced.fetched + synced.moved > 0;
-        let mut summary = sheet().child(change(
-            "check",
-            if changed {
-                tr!(
-                    t,
-                    "ready-changed",
-                    fetched = synced.fetched,
-                    moved = synced.moved
-                )
-            } else {
-                tr!(t, "ready-matched")
-            },
-            changed.then(|| {
-                small(tr!(
-                    t,
-                    "ready-backup",
-                    path = format!("Mods.tsmp-backup\\{}", synced.backup_stamp)
-                ))
-            }),
-        ));
+        let players = vec![
+            player_row(
+                &self.host_name(screen),
+                small(tr!(t, "player-host")),
+                player_state(GOOD, tr!(t, "host-title")),
+            )
+            .into_any_element(),
+            player_row(
+                &self.own_name(),
+                small(tr!(t, "player-you")),
+                self.own_state(),
+            )
+            .into_any_element(),
+        ];
+        let line = |text: String| small(text).w(px(ROSTER_WIDTH));
+        let mut notes = Vec::new();
+        if synced.fetched + synced.moved > 0 {
+            notes.push(line(tr!(
+                t,
+                "ready-changed",
+                fetched = synced.fetched,
+                moved = synced.moved
+            )));
+            notes.push(line(tr!(
+                t,
+                "ready-backup",
+                path = format!("Mods.tsmp-backup\\{}", synced.backup_stamp)
+            )));
+        } else {
+            notes.push(line(tr!(t, "ready-matched")));
+        }
         if let Some(save) = &synced.save {
             let key = if synced.save_updated {
                 "ready-save-downloaded"
             } else {
                 "ready-save-matched"
             };
-            summary = summary.child(change("file", tr!(t, key, name = save.as_str()), None));
+            notes.push(line(tr!(t, key, name = save.as_str())));
         }
-        scene_page(
-            "ready",
-            tr!(t, "ready-title", host = self.host_name(screen)),
-            None,
+        self.lobby(
+            tr!(t, "guest-title"),
+            Vec::new(),
+            players,
+            notes,
+            synced.save.as_deref(),
+            synced.save_preview.as_deref(),
         )
-        .children(
-            synced
-                .save
-                .as_ref()
-                .map(|file_name| shared_save(file_name, synced.save_preview.as_deref())),
-        )
-        .child(summary.children(self.session_packs()))
-        .into_any_element()
     }
 
     /// Which packs the session uses and which of ours get switched off.
@@ -1315,14 +1585,20 @@ impl Launcher {
         facts
     }
 
-    fn failure(&self, title: String, message: &str) -> AnyElement {
-        scene_page("trouble", title, None)
-            .child(notice(DANGER, message.to_string()))
+    fn failure(
+        &self,
+        title: String,
+        hint: Option<String>,
+        message: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        scene_page("trouble", title, hint)
+            .child(self.error_box("copy-error", message, cx))
             .into_any_element()
     }
 
     /// What the game is doing, once it can be started.
-    fn game_status(&self) -> Option<Div> {
+    fn game_status(&self, cx: &mut Context<Self>) -> Option<Div> {
         let t = &self.i18n;
         let (color, text) = match &self.model.game {
             GameState::NotStarted if !self.model.can_launch() => return None,
@@ -1357,6 +1633,13 @@ impl Launcher {
                 .gap_2()
                 .child(pulse(dot(color), "game-starting"))
                 .child(div().min_w_0().child(text))
+        } else if color == DANGER {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(status_line(color, text.clone()).flex_1().min_w_0())
+                .child(self.copy_button("copy-game", self.model.report(&text), cx))
         } else {
             status_line(color, text)
         };
@@ -1366,8 +1649,7 @@ impl Launcher {
                 .flex_col()
                 .gap_1()
                 .child(state)
-                .children(live.map(|(color, key)| status_line(color, tr!(t, key))))
-                .children(live.is_some().then(|| self.mod_log()).flatten()),
+                .children(live.map(|(color, key)| status_line(color, tr!(t, key)))),
         )
     }
 
@@ -1422,7 +1704,7 @@ impl Launcher {
             },
             Screen::Home | Screen::Loading | Screen::Fatal(_) => None,
         };
-        let status = self.game_status();
+        let status = self.game_status(cx);
         if primary.is_none() && self.model.can_launch() {
             primary = Some(button(
                 "launch",
@@ -1477,11 +1759,12 @@ impl Render for Launcher {
         let loading =
             || page(tr!(t, "loading-title"), Some(tr!(t, "loading-body"))).into_any_element();
         let body = match (&self.model.screen, &self.model.env) {
-            (Screen::Fatal(message), _) => {
-                scene_page("trouble", tr!(t, "fatal-title"), Some(tr!(t, "fatal-hint")))
-                    .child(notice(DANGER, message.clone()))
-                    .into_any_element()
-            }
+            (Screen::Fatal(message), _) => self.failure(
+                tr!(t, "fatal-title"),
+                Some(tr!(t, "fatal-hint")),
+                message,
+                cx,
+            ),
             (Screen::Host(screen), _) => self.host(screen, cx),
             (Screen::Join(screen), _) => self.join(screen, window, cx),
             (Screen::Home | Screen::Loading, _) => loading(),
@@ -1529,6 +1812,7 @@ impl Render for Launcher {
             ),
         }
         .children(self.bottom(cx))
+        .when(self.journal_open, |this| this.children(self.journal(cx)))
         .when(self.choosing_language, |this| {
             this.children(self.language_list(cx))
         })
@@ -1743,16 +2027,184 @@ fn section(title: String) -> Div {
     )
 }
 
+/// The lobby: the players on the left, the save they share on the right.
+const ROSTER_WIDTH: f32 = 500.;
+const LOBBY_GAP: f32 = 24.;
+const SAVE_WIDTH: f32 = PAGE_WIDTH - ROSTER_WIDTH - LOBBY_GAP;
+const STATE_WIDTH: f32 = 210.;
+const LOT_SIZE: f32 = 84.;
+
+/// A player in the lobby: who they are, and on the right what they are doing.
+fn player_row(name: &str, detail: Div, state: Div) -> Div {
+    let words = ROSTER_WIDTH - 2. * 14. - 48. - 2. * 12. - STATE_WIDTH;
+    div()
+        .w(px(ROSTER_WIDTH))
+        .h(px(72.))
+        .px(px(14.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .rounded(px(12.))
+        .bg(rgb(PANEL))
+        .child(avatar(name))
+        .child(
+            div()
+                .w(px(words))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w(px(words))
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(name.to_string()),
+                )
+                .child(detail.w(px(words)).truncate()),
+        )
+        .child(
+            div()
+                .w(px(STATE_WIDTH))
+                .flex_none()
+                .flex()
+                .justify_end()
+                .child(state),
+        )
+}
+
+/// What a player is doing, as a coloured dot and a word or two.
+fn player_state(color: u32, text: String) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(15.))
+        .child(div().size(px(9.)).flex_none().rounded_full().bg(rgb(color)))
+        .child(text)
+}
+
+/// A fact under the players: a quiet label and its value.
+fn brief(label: String, value: String) -> Div {
+    div()
+        .flex()
+        .gap_3()
+        .text_size(px(15.))
+        .child(
+            div()
+                .w(px(96.))
+                .flex_none()
+                .text_color(rgb(MUTED))
+                .child(label),
+        )
+        .child(div().w(px(ROSTER_WIDTH - 96. - 12.)).child(value))
+}
+
+/// The save both players load: its picture, who is in it and where they live.
+fn lobby_save(t: &I18n, file_name: Option<&str>, preview: Option<&Preview>) -> Div {
+    let about = preview.map(|preview| &preview.about);
+    let picture = match file_name {
+        Some(_) => portrait(preview),
+        None => art("new-game"),
+    };
+    let title = match file_name {
+        Some(file_name) => about
+            .and_then(|about| about.name.clone())
+            .unwrap_or_else(|| file_name.to_string()),
+        None => tr!(t, "host-save-none"),
+    };
+    let lot = preview.and_then(|preview| preview.lot_picture.clone());
+    let words = match lot {
+        Some(_) => SAVE_WIDTH - LOT_SIZE - 12.,
+        None => SAVE_WIDTH,
+    };
+    let fact = |picture: &'static str, text: String| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_color(rgb(MUTED))
+            .child(icon(picture, 17., MUTED))
+            .child(div().w(px(words - 25.)).truncate().child(text))
+    };
+    let mut lines = Vec::new();
+    if let Some(about) = about {
+        if !about.sims.is_empty() {
+            let mut names = about
+                .sims
+                .iter()
+                .take(NAMED_SIMS)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if about.sims.len() > NAMED_SIMS {
+                names.push_str(&format!(" +{}", about.sims.len() - NAMED_SIMS));
+            }
+            lines.push(div().w(px(words)).child(names));
+        }
+        lines.extend(about.lot.clone().map(|lot| fact("house", lot)));
+        lines.extend(about.funds.map(|funds| fact("coins", simoleons(funds))));
+        if about.name.is_some() {
+            lines.extend(file_name.map(|file_name| small(file_name.to_string()).pt_1()));
+        }
+    }
+    div()
+        .w(px(SAVE_WIDTH))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .text_size(px(15.))
+        .child(
+            // An image keeps its own shape, and these are all 3:2.
+            picture
+                .w(px(SAVE_WIDTH))
+                .h(px(SAVE_WIDTH / 1.5))
+                .flex_none()
+                .rounded(px(14.))
+                .object_fit(ObjectFit::Cover),
+        )
+        .child(
+            div()
+                .w(px(SAVE_WIDTH))
+                .pt_2()
+                .flex()
+                .items_start()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .w(px(words))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .w(px(words))
+                                .pb_1()
+                                .font_family(DISPLAY_FONT)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(17.))
+                                .line_height(relative(1.25))
+                                .child(title),
+                        )
+                        .children(lines),
+                )
+                .children(lot.map(|lot| {
+                    img(lot)
+                        .size(px(LOT_SIZE))
+                        .flex_none()
+                        .rounded(px(10.))
+                        .object_fit(ObjectFit::Cover)
+                })),
+        )
+}
+
 /// Ruled lines, like a list on paper: for facts and changes.
 fn sheet() -> Div {
     div().flex().flex_col().border_t_1().border_color(rgb(LINE))
 }
 
 /// A label and its value on one line of a [`sheet`].
-fn fact(label: String, value: String) -> Div {
-    fact_with(label, div().child(value))
-}
-
 fn fact_with(label: String, value: Div) -> Div {
     div()
         .flex()
@@ -1850,63 +2302,11 @@ fn art(name: &str) -> Img {
     img(format!("art/{name}.jpg"))
 }
 
-/// A picture the size of a save's portrait.
-fn picture(image: Img) -> Img {
-    image
-        .w(px(180.))
-        .h(px(120.))
-        .flex_none()
-        .rounded(px(10.))
-        .object_fit(ObjectFit::Cover)
-}
-
-/// The household of a save, or a drawing when the save holds no portrait.
-fn save_picture(preview: Option<&Preview>) -> Img {
-    picture(portrait(preview))
-}
-
 fn portrait(preview: Option<&Preview>) -> Img {
     match preview.and_then(|preview| preview.portrait.clone()) {
         Some(portrait) => img(portrait),
         None => art("no-picture"),
     }
-}
-
-/// Who lives in a save and where, one line each.
-fn save_lines(preview: Option<&Preview>) -> Vec<Div> {
-    let Some(about) = preview.map(|preview| &preview.about) else {
-        return Vec::new();
-    };
-    let line = |picture: &'static str, text: String| {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(icon(picture, 17., MUTED))
-            .child(div().flex_1().min_w_0().truncate().child(text))
-    };
-    let mut lines = Vec::new();
-    if !about.sims.is_empty() {
-        let mut names = about
-            .sims
-            .iter()
-            .take(NAMED_SIMS)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        if about.sims.len() > NAMED_SIMS {
-            names.push_str(&format!(" +{}", about.sims.len() - NAMED_SIMS));
-        }
-        lines.push(line("people", names));
-    }
-    let place = match (&about.lot, about.funds) {
-        (Some(lot), Some(funds)) => Some(format!("{lot}, {}", simoleons(funds))),
-        (Some(lot), None) => Some(lot.clone()),
-        (None, Some(funds)) => Some(simoleons(funds)),
-        (None, None) => None,
-    };
-    lines.extend(place.map(|place| line("house", place).text_color(rgb(MUTED))));
-    lines
 }
 
 /// An address as a player types it: with the port, or without for the usual one.
@@ -2069,46 +2469,6 @@ fn save_pane(picture: Img, title: String, lines: Vec<Div>, variants: Option<Div>
                 ),
         )
         .children(variants)
-}
-
-/// The save both players load: who is in it and where they live.
-fn shared_save(file_name: &str, preview: Option<&Preview>) -> Div {
-    let title = preview.and_then(|preview| preview.about.name.clone());
-    card()
-        .flex()
-        .items_center()
-        .gap_4()
-        .child(save_picture(preview))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(px(19.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title.clone().unwrap_or_else(|| file_name.to_string())),
-                )
-                .children(save_lines(preview))
-                .when(title.is_some(), |this| {
-                    this.child(small(file_name.to_string()))
-                }),
-        )
-        .children(
-            preview
-                .and_then(|preview| preview.lot_picture.clone())
-                .map(|lot| {
-                    img(lot)
-                        .size(px(120.))
-                        .flex_none()
-                        .rounded(px(10.))
-                        .object_fit(ObjectFit::Cover)
-                }),
-        )
 }
 
 /// One thing that will change or has changed, on a [`sheet`].

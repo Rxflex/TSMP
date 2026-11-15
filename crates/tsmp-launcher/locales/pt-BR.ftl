@@ -55,7 +55,6 @@ host-failed-title = A hospedagem não começou
 host-title = Sessão aberta
 host-lead = Deixe esta janela aberta enquanto vocês jogam.
 host-address = Endereço
-host-port = Porta
 host-mods = Mods
 host-mods-value =
     { $files ->
@@ -107,7 +106,6 @@ version-unknown = desconhecida
 sync = Sincronizar
 syncing-title = Copiando do anfitrião
 syncing-progress = { $done } de { $total }
-ready-title = Sincronizado com { $host }
 ready-matched = Os mods já eram iguais.
 ready-changed = Arquivos baixados: { $fetched }. Arquivos movidos: { $moved }.
 ready-backup = Seus arquivos anteriores estão em { $path }
@@ -163,3 +161,18 @@ building-missing = Ninguém descreveu o jogo { $version } ainda, então construi
 building-unknown = A versão do jogo é desconhecida, então construir juntos está desligado. O resto funciona.
 update-ready = A versão { $version } está instalada e vale depois de reiniciar
 update-restart = Reiniciar na versão { $version }
+
+## The lobby, the journal and copying errors
+
+copy = Copiar
+copied = Copiado
+journal = Registro
+journal-empty = Nada aconteceu ainda.
+join-failed-hint = Verifique se o anfitrião não fechou a sessão e se os dois computadores estão na mesma rede.
+guest-title = Você está na sessão
+player-you = Você
+player-host = Anfitrião
+player-you-host = Você, o anfitrião
+player-starting = Iniciando o jogo
+player-in-game = No jogo
+player-failed = Erro

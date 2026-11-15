@@ -56,7 +56,6 @@ host-failed-title = Сессия не создана
 host-title = Сессия открыта
 host-lead = Не закрывайте это окно, пока играете.
 host-address = Адрес
-host-port = Порт
 host-mods = Моды
 host-mods-value =
     { $files ->
@@ -111,7 +110,6 @@ version-unknown = неизвестна
 sync = Синхронизировать
 syncing-title = Копируем с хоста
 syncing-progress = { $done } из { $total }
-ready-title = Всё совпадает с { $host }
 ready-matched = Моды уже совпадали.
 ready-changed = Скачано файлов: { $fetched }. Перенесено файлов: { $moved }.
 ready-backup = Ваши прежние файлы лежат в { $path }
@@ -168,3 +166,18 @@ building-missing = Игру { $version } ещё никто не описал, п
 building-unknown = Версия игры неизвестна, поэтому совместная стройка выключена. Остальное работает.
 update-ready = Версия { $version } установлена и заработает после перезапуска
 update-restart = Перезапустить в версии { $version }
+
+## The lobby, the journal and copying errors
+
+copy = Копировать
+copied = Скопировано
+journal = Журнал
+journal-empty = Пока ничего не произошло.
+join-failed-hint = Проверьте, что хост не закрыл сессию и что оба компьютера в одной сети.
+guest-title = Вы в сессии
+player-you = Вы
+player-host = Хост
+player-you-host = Вы, хост
+player-starting = Запускает игру
+player-in-game = В игре
+player-failed = Ошибка

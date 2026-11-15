@@ -282,7 +282,21 @@ enum Event {
     Synced(Result<Synced, String>),
 }
 
+/// One line of the journal: what happened, and how long after the launcher
+/// was opened.
+pub struct Entry {
+    pub at: Duration,
+    pub text: String,
+    pub bad: bool,
+}
+
+/// The journal keeps this many of its latest lines.
+const JOURNAL_LINES: usize = 2000;
+
 pub struct Model {
+    opened: Instant,
+    /// What the launcher and the mods of both games did, oldest first.
+    pub journal: Vec<Entry>,
     sender: Sender<Event>,
     events: Receiver<Event>,
     pub env: Option<Arc<Env>>,
@@ -294,8 +308,6 @@ pub struct Model {
     pub game: GameState,
     /// The live session, while hosting or after joining.
     pub live: Option<LiveStatus>,
-    /// What the mods of both games logged lately, oldest first.
-    pub live_log: Vec<String>,
     live_logged: u64,
     /// Whether a host broadcasts itself on the network.
     announce: bool,
@@ -341,6 +353,8 @@ impl Model {
     fn empty(screen: Screen, env: Option<Arc<Env>>, announce: bool) -> Self {
         let (sender, events) = mpsc::channel();
         Self {
+            opened: Instant::now(),
+            journal: Vec::new(),
             sender,
             events,
             env,
@@ -349,11 +363,51 @@ impl Model {
             screen,
             game: GameState::NotStarted,
             live: None,
-            live_log: Vec::new(),
             live_logged: 0,
             announce,
             last_status_check: Instant::now(),
         }
+    }
+
+    fn write(&mut self, text: String, bad: bool) {
+        if self.journal.len() >= JOURNAL_LINES {
+            self.journal.drain(..JOURNAL_LINES / 4);
+        }
+        self.journal.push(Entry {
+            at: self.opened.elapsed(),
+            text,
+            bad,
+        });
+    }
+
+    fn note(&mut self, text: impl Into<String>) {
+        self.write(text.into(), false);
+    }
+
+    fn trouble(&mut self, text: impl Into<String>) {
+        self.write(text.into(), true);
+    }
+
+    /// Which launcher and game this is: the first lines of anything copied
+    /// out to be shown to somebody else.
+    fn versions(&self) -> String {
+        let game = self.env.as_ref().and_then(|env| env.game.version.as_deref()).unwrap_or("unknown");
+        let packs = self.env.as_ref().map_or(0, |env| env.packs.len());
+        format!("TSMP {}, The Sims 4 {game}, packs: {packs}", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// An error with enough around it to be understood elsewhere.
+    pub fn report(&self, message: &str) -> String {
+        format!("{}\n{message}", self.versions())
+    }
+
+    /// The whole journal as text.
+    pub fn journal_text(&self) -> String {
+        let mut text = self.versions();
+        for entry in &self.journal {
+            text.push_str(&format!("\n{} {}", clock(entry.at), entry.text));
+        }
+        text
     }
 
     /// Back to the home screen, abandoning whatever was in progress. Workers
@@ -366,6 +420,11 @@ impl Model {
         self.sender = sender;
         self.events = events;
         self.screen = Screen::Home;
+        // A game that did not start belongs to the session just left.
+        if matches!(self.game, GameState::Failed(_)) {
+            self.game = GameState::NotStarted;
+        }
+        self.note("Back to the first screen");
     }
 
     pub fn open_host(&mut self) {
@@ -405,10 +464,12 @@ impl Model {
         }
         screen.stage = HostStage::Starting;
         let save = screen.selected.map(|index| screen.saves[index].clone());
+        let chosen = save.as_ref().map_or("no save".to_string(), |save| save.file_name.clone());
         let (env, sender, announce) = (env.clone(), self.sender.clone(), self.announce);
         thread::spawn(move || {
             let _ = sender.send(Event::HostStarted(start_host(&env, save, announce)));
         });
+        self.note(format!("Opening a session: {chosen}"));
     }
 
     pub fn open_join(&mut self) {
@@ -419,6 +480,10 @@ impl Model {
             Ok(browser) => (Some(browser), JoinStage::Browsing),
             Err(e) => (None, JoinStage::Failed(format!("Cannot listen for hosts: {e}"))),
         };
+        if let JoinStage::Failed(message) = &stage {
+            let message = message.clone();
+            self.trouble(message);
+        }
         self.screen = Screen::Join(JoinScreen {
             browser,
             hosts: Vec::new(),
@@ -449,6 +514,7 @@ impl Model {
             let plan = make_plan(&env, address, &sender);
             let _ = sender.send(Event::Planned(plan));
         });
+        self.note(format!("Connecting to {address}"));
     }
 
     /// Apply the reviewed plan: move displaced files aside and download.
@@ -467,6 +533,7 @@ impl Model {
             let synced = run_sync(&env, plan, &sender);
             let _ = sender.send(Event::Synced(synced));
         });
+        self.note("Copying from the host");
     }
 
     /// The packs this session is played with: those every player owns.
@@ -513,6 +580,10 @@ impl Model {
             },
             Err(e) => GameState::Failed(format!("Cannot start {}: {e}", plan.program.display())),
         };
+        match self.game.clone() {
+            GameState::Failed(message) => self.trouble(message),
+            _ => self.note(format!("Starting the game: {}", plan.program.display())),
+        }
     }
 
     /// Take in whatever happened since the last call. Returns whether
@@ -539,20 +610,66 @@ impl Model {
             }) => Some((synced.live.status(), synced.live.logged(), synced.live.log())),
             _ => None,
         };
-        let live = live.map(|(status, logged, log)| {
-            if logged != self.live_logged {
-                self.live_logged = logged;
-                self.live_log = log;
-                changed = true;
+        let live = match live {
+            Some((status, logged, log)) => {
+                if logged != self.live_logged {
+                    // The counter starts over with every session.
+                    let fresh = logged.checked_sub(self.live_logged).unwrap_or(logged) as usize;
+                    for line in &log[log.len().saturating_sub(fresh)..] {
+                        self.note(format!("mod: {line}"));
+                    }
+                    self.live_logged = logged;
+                    changed = true;
+                }
+                Some(status)
             }
-            status
-        });
-        changed |= live != self.live;
+            None => None,
+        };
+        if live != self.live {
+            if let Some(status) = live {
+                let yes = |on: bool| if on { "yes" } else { "no" };
+                self.note(format!(
+                    "Session: mod connected: {}, in a lot: {}, other launchers: {}, their game in a lot: {}",
+                    yes(status.game_connected),
+                    yes(status.game_in_zone),
+                    status.remotes,
+                    yes(status.remote_in_zone)
+                ));
+            }
+            changed = true;
+        }
         self.live = live;
         changed
     }
 
     fn apply(&mut self, event: Event) {
+        match &event {
+            Event::Detected(Ok(env)) => self.note(format!(
+                "Found the game {} at {}, user folder {}",
+                env.game.version.as_deref().unwrap_or("of unknown version"),
+                env.game.install_dir.display(),
+                env.game.user_dir.display()
+            )),
+            Event::Updated(version) => self.note(format!("Launcher {version} is in place")),
+            Event::HostStarted(Ok(running)) => self.note(format!(
+                "Session open on port {}: {} mod files, {} bytes",
+                running.port, running.mod_files, running.mod_bytes
+            )),
+            Event::Planned(Ok(plan)) => self.note(format!(
+                "Host {} answered: {} files to download, {} to move aside",
+                plan.connection.host.name,
+                plan.diff.fetch.len(),
+                plan.diff.extra.len()
+            )),
+            Event::Synced(Ok(synced)) => {
+                self.note(format!("In step with the host: {} downloaded, {} moved aside", synced.fetched, synced.moved))
+            }
+            Event::Detected(Err(message))
+            | Event::HostStarted(Err(message))
+            | Event::Planned(Err(message))
+            | Event::Synced(Err(message)) => self.trouble(message.clone()),
+            Event::Mapped(_) | Event::Previewed(..) | Event::JoinStep(_) | Event::Progress(_) => {}
+        }
         match event {
             Event::Detected(Ok(env)) => {
                 let (sender, data_dir, version) =
@@ -633,21 +750,40 @@ impl Model {
                 ..
             }) => {
                 let events = running.host.poll();
+                let mut notes = Vec::new();
                 for event in &events {
                     match event.clone() {
-                        HostEvent::GuestJoined { id, address, hello } => running.guests.push(Guest {
-                            id,
-                            address,
-                            hello,
-                            status: None,
-                        }),
+                        HostEvent::GuestJoined { id, address, hello } => {
+                            notes.push((format!("{} joined from {address}", hello.name), false));
+                            running.guests.push(Guest {
+                                id,
+                                address,
+                                hello,
+                                status: None,
+                            })
+                        }
                         HostEvent::GuestStatus { id, status } => {
                             if let Some(guest) = running.guests.iter_mut().find(|g| g.id == id) {
+                                match &status {
+                                    GuestStatus::Syncing { .. } => {}
+                                    GuestStatus::Ready => notes.push((format!("{} is ready", guest.hello.name), false)),
+                                    GuestStatus::Failed { message } => {
+                                        notes.push((format!("{}: {message}", guest.hello.name), true))
+                                    }
+                                }
                                 guest.status = Some(status);
                             }
                         }
-                        HostEvent::GuestLeft { id } => running.guests.retain(|g| g.id != id),
+                        HostEvent::GuestLeft { id } => {
+                            if let Some(guest) = running.guests.iter().find(|g| g.id == id) {
+                                notes.push((format!("{} left", guest.hello.name), false));
+                            }
+                            running.guests.retain(|g| g.id != id)
+                        }
                     }
+                }
+                for (text, bad) in notes {
+                    self.write(text, bad);
                 }
                 !events.is_empty()
             }
@@ -688,12 +824,22 @@ impl Model {
         };
         match game_started(&status, *launched_at, expected) {
             Some(state) => {
+                if let GameState::Running { loaded, .. } = &state {
+                    let packs = loaded.iter().cloned().collect::<Vec<_>>().join(", ");
+                    let right = state.packs_match() == Some(true);
+                    self.write(format!("The game is running with packs: {packs}"), !right);
+                }
                 self.game = state;
                 true
             }
             None => false,
         }
     }
+}
+
+/// A time since the launcher was opened, as minutes and seconds.
+pub fn clock(at: Duration) -> String {
+    format!("{:02}:{:02}", at.as_secs() / 60, at.as_secs() % 60)
 }
 
 /// The state to move to once the mod has reported from a game started at or
