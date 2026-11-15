@@ -41,6 +41,9 @@ PENDING_SECONDS = 60
 # each zone it saved, by zone id. A guest on a lot the host has left needs
 # that lot as the host left it.
 _objects = {}
+# Host: zones of a guest's own save, by id, and the zone of ours it loads
+# in their place.
+_leads = {}
 # (zone id, save bytes, objects bytes, deadline) waiting for the game client
 # to disconnect.
 _pending = None
@@ -153,6 +156,29 @@ def _put_in_place(persistence):
         len(save), len(objects), zone_id))
 
 
+def lead(zone_id, ours):
+    """Host: a guest that asks for `zone_id`, which is a zone of its own save
+    and not of ours, is to load our zone `ours` instead."""
+    if zone_id and ours and zone_id != ours:
+        _leads[zone_id] = ours
+
+
+def _zone_for(persistence, zone_id):
+    """The zone of our save a guest in `zone_id` is to load. Zone ids are
+    made up anew by every new game, so a guest that comes from a save of its
+    own names a zone we do not have."""
+    import services
+
+    if zone_id and persistence.get_zone_proto_buff(zone_id) is None:
+        led = _leads.get(zone_id, 0)
+        if led and persistence.get_zone_proto_buff(led) is None:
+            led = 0
+        log.info("resync: zone {:#x} is not in this save; the guest loads {} instead".format(
+            zone_id, "{:#x}".format(led) if led else "our zone"))
+        zone_id = led
+    return zone_id or services.current_zone_id() or 0
+
+
 def objects_of(zone_id):
     """Bytes of the objects of a zone as this game last saved them."""
     return _objects.get(zone_id, b"")
@@ -215,7 +241,7 @@ def take(done, zone_id=0):
         payload = None
         try:
             if persistence is not None:
-                target = zone_id or services.current_zone_id() or 0
+                target = _zone_for(persistence, zone_id)
                 save = persistence.get_save_game_data_proto().SerializeToString()
                 objects = _objects.get(target, b"")
                 payload = pack(target, save, objects)
@@ -229,9 +255,10 @@ def take(done, zone_id=0):
 
 
 def adopt(payload, sim_id):
-    """Guest: keep the host's snapshot and ask the game client to reload
-    the zone it was made for, which is the one we are in. Raises ValueError
-    for a snapshot that cannot be read."""
+    """Guest: keep the host's snapshot and ask the game client to load the
+    zone it was made for: the one we are in, or the host's choice when its
+    save does not have ours. Raises ValueError for a snapshot that cannot be
+    read."""
     global _pending
     zone_id, save, objects = unpack(payload)
     if not zone_id or not save:

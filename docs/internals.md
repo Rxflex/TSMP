@@ -453,6 +453,13 @@ saves. Instead:
    place) and calls `HouseholdManager.load_household`, which is what the game
    does for a household it meets in a save. For a household already in
    memory that call reads every sim that is not on the current lot again.
+   Zone ids are made up by every new game, so the guest's home is looked
+   up in the host's save by `ZoneData.lot_description_id` (and
+   `active_plex`), which name the lot of the world; the contents are copied
+   under the host's ids. Sims that stand in zones the host's save does not
+   have are put on that lot, or on the host's lot when the household gets
+   no home, and the host remembers to send a guest asking for such a zone
+   there (the snapshot names the zone the guest loads).
    The lot is only handed over when it has no owner in the host's save and
    the host is not standing on it; ownership is written both to
    `ZoneData.household_id` and to the lot's `lot_owner` in its neighbourhood.

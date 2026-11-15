@@ -74,11 +74,13 @@ def take_in(payload):
 
     persistence = services.get_persistence_service()
     account = persistence.get_account_proto_buff().nucleus_id
+    sims = []
     for sim in part.sims:
         ours = persistence.get_sim_proto_buff(sim.sim_id)
         if ours is None:
             ours = persistence.add_sim_proto_buff(sim.sim_id)
         ours.CopyFrom(sim)
+        sims.append(ours)
     ours = persistence.get_household_proto_buff(household_id)
     known = ours is not None
     if not known:
@@ -87,6 +89,7 @@ def take_in(payload):
     # Households of an account the game does not know get a made-up one.
     ours.account_id = account
     ours.home_zone = _settle_home(persistence, ours, account, part, home, objects)
+    _place(persistence, sims, home, ours.home_zone)
 
     manager = services.household_manager()
     loaded = manager.get(household_id)
@@ -115,25 +118,84 @@ def _settle_home(persistence, household, account, part, home, objects):
             _set_owner(persistence, zone, None, account)
     if not home:
         return 0
-    zone = persistence.get_zone_proto_buff(home)
+    given = part.zones[0] if len(part.zones) == 1 and part.zones[0].zone_id == home else None
+    zone = _same_lot(persistence, home, given)
     if zone is None:
         log.info("household: its home {:#x} is not in this save; it has no home here".format(home))
         return 0
+    ours = zone.zone_id
+    if ours != home:
+        log.info("household: its home {:#x} is the lot {:#x} here".format(home, ours))
     if zone.household_id not in (0, household_id):
         log.info("household: its home {:#x} belongs to household {:#x} here; it has no home here".format(
-            home, zone.household_id))
+            ours, zone.household_id))
         return 0
-    given = part.zones[0] if len(part.zones) == 1 and part.zones[0].zone_id == home else None
     if given is None or not objects:
-        log.info("household: the lot {:#x} came without its contents; ours are kept".format(home))
-    elif home == services.current_zone_id():
-        log.info("household: we are on the lot {:#x}; ours is kept as it is".format(home))
+        log.info("household: the lot {:#x} came without its contents; ours are kept".format(ours))
+    elif ours == services.current_zone_id():
+        log.info("household: we are on the lot {:#x}; ours is kept as it is".format(ours))
     else:
-        zone.CopyFrom(given)
-        resync.keep_objects(home, objects)
+        _copy_lot(zone, given)
+        resync.keep_objects(ours, _objects_for(ours, objects))
     zone.household_id = household_id
     _set_owner(persistence, zone, household, account)
-    return home
+    return ours
+
+
+# What says where a lot is in a save. A new game makes these up, so they are
+# ours to keep when the contents of a lot come from another save.
+_PLACE = ("zone_id", "neighborhood_id", "world_id", "lot_id")
+
+
+def _same_lot(persistence, home, given):
+    """Our zone for the guest's home: the one with its id, or, for a guest
+    from a save of its own, the one on the same lot of the world."""
+    zone = persistence.get_zone_proto_buff(home)
+    if zone is not None or given is None or not given.lot_description_id:
+        return zone
+    for zone in persistence.zone_proto_buffs_gen():
+        if zone.lot_description_id == given.lot_description_id and zone.active_plex == given.active_plex:
+            return zone
+    return None
+
+
+def _copy_lot(zone, given):
+    kept = type(zone)()
+    kept.CopyFrom(zone)
+    zone.CopyFrom(given)
+    for name in _PLACE:
+        if name in zone.DESCRIPTOR.fields_by_name:
+            setattr(zone, name, getattr(kept, name))
+
+
+def _objects_for(zone_id, objects):
+    """`objects` (bytes of a ZoneObjectData) as the objects of our zone."""
+    from protocolbuffers import FileSerialization_pb2 as serialization
+
+    message = serialization.ZoneObjectData()
+    message.MergeFromString(objects)
+    if message.zone_id == zone_id:
+        return objects
+    message.zone_id = zone_id
+    return message.SerializeToString()
+
+
+def _place(persistence, sims, home, ours):
+    """Sims from a save of the guest's own stand in zones we do not have.
+    Put them where the guest will load: on their lot here, or with us."""
+    import services
+
+    landing = ours or services.current_zone_id() or 0
+    zone = persistence.get_zone_proto_buff(landing) if landing else None
+    if zone is None:
+        return
+    if home:
+        resync.lead(home, landing)
+    for sim in sims:
+        if sim.zone_id and persistence.get_zone_proto_buff(sim.zone_id) is None:
+            resync.lead(sim.zone_id, landing)
+            sim.zone_id = landing
+            sim.world_id = zone.world_id
 
 
 def _set_owner(persistence, zone, household, account):
