@@ -242,7 +242,7 @@ class Session:
         if self.role == GUEST and not self._stale and self._in_zone and self.remote_in_zone and self.remotes > 0:
             if not self.same_save:
                 if self._glued != self.remote_save:
-                    # Once for a save: if it does not work, each plays alone.
+                    # Once for a load: if it does not work, each plays alone.
                     self._glued = self.remote_save
                     self._log("the host plays another save; bringing our household into it")
                     self._go_stale(give=True)
@@ -293,6 +293,10 @@ class Session:
             self._reported_sim_id = 0
             if self._stale:
                 self._zone_changed_while_stale()
+            elif in_zone:
+                # The player loaded something by hand. If that is a save of
+                # their own again, its household is brought over again.
+                self._glued = 0
             self._announce()
             self._check_live()
         if self.role == GUEST and self._stale:

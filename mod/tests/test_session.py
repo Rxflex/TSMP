@@ -589,6 +589,21 @@ class HouseholdTest(unittest.TestCase):
         self.assertEqual(len(guest.game.contributions), 1)
         self.assertEqual(host.game.snapshots, [])
 
+    def test_a_save_loaded_by_hand_is_brought_over_again(self):
+        host, guest = strangers()
+        host.game.merge_error = ValueError("no")
+        gives(host, guest)
+        self.assertEqual(len(guest.game.contributions), 1)
+        host.game.merge_error = None
+        # The player goes to the menu and loads their save again.
+        guest.game.zone = False
+        guest.session.tick()
+        guest.game.zone = True
+        guest.session.tick()
+        settle(host, guest)
+        guest.session.tick()
+        self.assertEqual(len(guest.game.contributions), 2)
+
     def test_each_plays_their_own_save_when_the_guest_cannot_save(self):
         host, guest = strangers()
         gives(host, guest, None)
