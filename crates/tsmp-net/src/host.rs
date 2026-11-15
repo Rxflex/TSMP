@@ -27,6 +27,8 @@ pub struct HostConfig {
     pub mods: Manifest,
     /// The shared save file, if one has been chosen.
     pub save: Option<PathBuf>,
+    /// Every player loads a save of their own; see [`Session::own_families`].
+    pub own_families: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +94,7 @@ impl Host {
             session: Session {
                 mods: config.mods,
                 save: save_info,
+                own_families: config.own_families,
             },
             save: config.save,
             live: Relay::start()?,

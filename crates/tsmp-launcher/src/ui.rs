@@ -495,7 +495,13 @@ impl Launcher {
                     .pl_3()
                     .text_size(px(14.))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(tr!(t, STEPS[done.min(STEPS.len() - 1)])),
+                    .child(tr!(
+                        t,
+                        match STEPS[done.min(STEPS.len() - 1)] {
+                            "step-load" if self.model.own_families() => "step-load-own",
+                            step => step,
+                        }
+                    )),
             )
             .child(div().flex_1())
             .child(small(format!(
@@ -1035,15 +1041,64 @@ impl Launcher {
                     pane = Some(save_pane(portrait(preview), title, lines, facts, variants));
                 }
                 let shown = screen.selected.map_or(0, |index| index + 1);
-                page(tr!(t, "host-setup-title"), Some(tr!(t, "host-setup-lead")))
-                    .child(
-                        div()
-                            .flex()
-                            .items_start()
-                            .gap(px(PANE_GAP))
-                            .child(list)
-                            .children(pane.map(|pane| arrive(pane, ("pane", shown), 0., 10.))),
-                    )
+                let own = screen.own_families;
+                let modes = div()
+                    .flex()
+                    .gap(px(MODE_GAP))
+                    .child(mode_tile(
+                        "mode-shared",
+                        !own,
+                        "house",
+                        tr!(t, "mode-shared"),
+                        tr!(t, "mode-shared-detail"),
+                        Self::act(cx, |model| model.choose_own_families(false)),
+                    ))
+                    .child(mode_tile(
+                        "mode-own",
+                        own,
+                        "people",
+                        tr!(t, "mode-own"),
+                        tr!(t, "mode-own-detail"),
+                        Self::act(cx, |model| model.choose_own_families(true)),
+                    ));
+                let body = if own {
+                    arrive(own_families_guide(t), "own-guide", 0., 10.).into_any_element()
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_5()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_family(DISPLAY_FONT)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_size(px(19.))
+                                        .child(tr!(t, "host-setup-title")),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(rgb(MUTED))
+                                        .child(tr!(t, "host-setup-lead")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(PANE_GAP))
+                                .child(list)
+                                .children(pane.map(|pane| arrive(pane, ("pane", shown), 0., 10.))),
+                        )
+                        .into_any_element()
+                };
+                page(tr!(t, "host-mode-title"), None)
+                    .child(modes)
+                    .child(body)
                     .into_any_element()
             }
             HostStage::Starting => page(
@@ -1200,6 +1255,8 @@ impl Launcher {
         preview: Option<&Preview>,
     ) -> AnyElement {
         let t = &self.i18n;
+        let own = self.model.own_families();
+        let hosting = matches!(self.model.screen, Screen::Host(_));
         let label = |text: String| {
             div()
                 .pb_1()
@@ -1236,8 +1293,12 @@ impl Launcher {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
-                            .child(label(tr!(t, "host-save")))
-                            .child(lobby_save(t, save, preview)),
+                            .child(label(tr!(t, if own { "mode-label" } else { "host-save" })))
+                            .child(if own {
+                                lobby_own(t, hosting)
+                            } else {
+                                lobby_save(t, save, preview)
+                            }),
                     ),
             )
             .child(sheet().children(self.session_packs()))
@@ -1497,6 +1558,9 @@ impl Launcher {
                 None,
             ));
         }
+        if plan.session.own_families {
+            changes = changes.child(change("people", tr!(t, "review-own"), None));
+        }
         page(
             tr!(t, "review-title", host = self.host_name(screen)),
             Some(tr!(t, "review-keep")),
@@ -1625,7 +1689,9 @@ impl Launcher {
             }
         };
         let live = match (&self.model.game, self.model.live) {
-            (GameState::Running { .. }, Some(status)) => Some(describe_live(&status)),
+            (GameState::Running { .. }, Some(status)) => {
+                Some(describe_live(&status, self.model.own_families()))
+            }
             _ => None,
         };
         let state = if matches!(self.model.game, GameState::Starting { .. }) {
@@ -1673,8 +1739,10 @@ impl Launcher {
                     note = Some(
                         match screen
                             .selected
+                            .filter(|_| !screen.own_families)
                             .and_then(|index| Some((index, screen.saves.get(index)?)))
                         {
+                            _ if screen.own_families => tr!(t, "mode-own"),
                             Some((index, save)) => screen.previews[index]
                                 .as_deref()
                                 .and_then(|preview| preview.about.name.clone())
@@ -2360,6 +2428,180 @@ const PANE_WORDS: f32 = PANE_WIDTH;
 const PANE_FACTS: f32 = 220.;
 const PANE_NAMES: f32 = PANE_WIDTH - PANE_FACTS - 24.;
 
+const MODE_GAP: f32 = 16.;
+const MODE_WIDTH: f32 = (PAGE_WIDTH - MODE_GAP) / 2.;
+const MODE_WORDS: f32 = MODE_WIDTH - 2. * 18. - 2. - 40. - 14.;
+const GUIDE_PICTURE: f32 = 360.;
+const GUIDE_WORDS: f32 = PAGE_WIDTH - GUIDE_PICTURE - 32. - 34. - 14.;
+
+/// One of the two ways to play, on the host's first screen.
+fn mode_tile(
+    id: &'static str,
+    chosen: bool,
+    picture: &'static str,
+    title: String,
+    detail: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(MODE_WIDTH))
+        .p(px(18.))
+        .flex_none()
+        .flex()
+        .items_start()
+        .gap(px(14.))
+        .rounded(px(14.))
+        .border_1()
+        .border_color(rgb(if chosen { LAMP } else { LINE }))
+        .when(chosen, |this| this.bg(rgb(PANEL)))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(PANEL_HOVER)))
+        .on_click(on_click)
+        .child(
+            div()
+                .size(px(40.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(rgb(if chosen { LAMP } else { RAIL }))
+                .child(icon(picture, 21., if chosen { INK } else { MUTED })),
+        )
+        .child(
+            div()
+                .w(px(MODE_WORDS))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .w(px(MODE_WORDS))
+                        .font_family(DISPLAY_FONT)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(17.))
+                        .line_height(relative(1.3))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .w(px(MODE_WORDS))
+                        .text_size(px(15.))
+                        .text_color(rgb(MUTED))
+                        .child(detail),
+                ),
+        )
+}
+
+/// What happens when everyone brings a family of their own, step by step.
+fn own_families_guide(t: &I18n) -> Div {
+    let step = |number: usize, text: String| {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(14.))
+            .child(
+                div()
+                    .size(px(34.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(LAMP))
+                    .font_family(DISPLAY_FONT)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(15.))
+                    .text_color(rgb(LAMP))
+                    .child(number.to_string()),
+            )
+            .child(
+                div()
+                    .w(px(GUIDE_WORDS))
+                    .pt(px(4.))
+                    .flex_none()
+                    .text_size(px(16.))
+                    .child(text),
+            )
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_6()
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(32.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_5()
+                        .child(step(1, tr!(t, "own-step-1")))
+                        .child(step(2, tr!(t, "own-step-2")))
+                        .child(step(3, tr!(t, "own-step-3"))),
+                )
+                .child(
+                    // The drawings are 2:1, and so is the box.
+                    art("knock")
+                        .w(px(GUIDE_PICTURE))
+                        .h(px(GUIDE_PICTURE / 2.))
+                        .flex_none()
+                        .rounded(px(14.))
+                        .object_fit(ObjectFit::Cover),
+                ),
+        )
+        .child(notice(SKY, tr!(t, "own-world")))
+        .child(notice(WARNING, tr!(t, "own-new")))
+}
+
+/// In the lobby, in place of the shared save: everyone loads their own.
+fn lobby_own(t: &I18n, hosting: bool) -> Div {
+    div()
+        .w(px(SAVE_WIDTH))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .text_size(px(15.))
+        .child(
+            art("knock")
+                .w(px(SAVE_WIDTH))
+                .h(px(SAVE_WIDTH / 2.))
+                .flex_none()
+                .rounded(px(14.))
+                .object_fit(ObjectFit::Cover),
+        )
+        .child(
+            div()
+                .w(px(SAVE_WIDTH))
+                .pt_2()
+                .pb_1()
+                .font_family(DISPLAY_FONT)
+                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(17.))
+                .line_height(relative(1.25))
+                .child(tr!(t, "mode-own")),
+        )
+        .child(
+            div()
+                .w(px(SAVE_WIDTH))
+                .text_color(rgb(MUTED))
+                .child(tr!(t, if hosting { "lobby-own-host" } else { "lobby-own-guest" })),
+        )
+        .when(!hosting, |this| {
+            this.child(
+                div()
+                    .w(px(SAVE_WIDTH))
+                    .pt_3()
+                    .child(notice(WARNING, tr!(t, "lobby-own-keep"))),
+            )
+        })
+}
+
 /// A household in the list of saves: a small picture and who it is.
 fn save_row(
     index: usize,
@@ -2742,15 +2984,22 @@ fn describe_packs(t: &I18n, packs: &PackSet) -> String {
 }
 
 /// Where the multiplayer session stands, as the first thing still missing.
-fn describe_live(status: &LiveStatus) -> (u32, &'static str) {
+fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str) {
     if !status.game_connected {
         (WARNING, "live-no-mod")
     } else if status.remotes == 0 {
         (WARNING, "live-no-remote")
     } else if !status.game_in_zone {
-        (WARNING, "live-load-save")
+        (WARNING, if own_families { "live-load-own" } else { "live-load-save" })
     } else if !status.remote_in_zone {
-        (WARNING, "live-wait-remote")
+        (
+            WARNING,
+            if own_families {
+                "live-wait-remote-own"
+            } else {
+                "live-wait-remote"
+            },
+        )
     } else {
         (GOOD, "live-on")
     }
@@ -2799,15 +3048,17 @@ mod tests {
     #[test]
     fn live_status_names_the_first_missing_step() {
         let mut status = LiveStatus::default();
-        assert_eq!(describe_live(&status).1, "live-no-mod");
+        assert_eq!(describe_live(&status, false).1, "live-no-mod");
         status.game_connected = true;
-        assert_eq!(describe_live(&status).1, "live-no-remote");
+        assert_eq!(describe_live(&status, false).1, "live-no-remote");
         status.remotes = 1;
-        assert_eq!(describe_live(&status).1, "live-load-save");
+        assert_eq!(describe_live(&status, false).1, "live-load-save");
+        assert_eq!(describe_live(&status, true).1, "live-load-own");
         status.game_in_zone = true;
-        assert_eq!(describe_live(&status).1, "live-wait-remote");
+        assert_eq!(describe_live(&status, false).1, "live-wait-remote");
+        assert_eq!(describe_live(&status, true).1, "live-wait-remote-own");
         status.remote_in_zone = true;
-        assert_eq!(describe_live(&status), (GOOD, "live-on"));
+        assert_eq!(describe_live(&status, true), (GOOD, "live-on"));
     }
 
     #[test]

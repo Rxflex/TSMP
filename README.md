@@ -45,7 +45,8 @@ When the host's lot is loaded again (after Create-a-Sim or travel), the guest
 loads the host's world again and rejoins. Players can be on different lots,
 each playing their own. A guest can also come with a household made in a save
 of their own: it is copied into the host's save, and the guest keeps playing
-it there. All of this is new and not yet proven in two games.
+it there; the host picks "Each with their own family" in the launcher for
+that, and then no save is copied. All of this is new and not yet proven in two games.
 
 Not handled yet: dialogs meant for one player, a guest joining after the host
 has unpaused, the guest following the host into Create-a-Sim (it waits

@@ -180,3 +180,24 @@ player-you-host = Ty, host
 player-starting = Uruchamia grę
 player-in-game = W grze
 player-failed = Błąd
+
+## Two ways to play: one shared save, or everyone brings a family of their own
+
+step-load-own = Wczytaj własny zapis
+host-mode-title = Jak chcecie grać?
+mode-shared = Jedna rodzina razem
+mode-shared-detail = Wybierasz zapis. Druga osoba dostaje kopię i gracie w niego razem.
+mode-own = Każdy ze swoją rodziną
+mode-own-detail = Każdy tworzy rodzinę u siebie. Potem wszystkie mieszkają w twoim świecie.
+own-step-1 = Każdy tworzy rodzinę we własnej grze, jak zwykle, i zapisuje.
+own-step-2 = Kliknij „Załóż sesję”. Potem oboje uruchamiacie grę z TSMP i wczytujecie własne zapisy.
+own-step-3 = Rodzina drugiej osoby wprowadza się do twojego świata, razem z domem, jeśli ta parcela jest wolna. Od tej chwili gracie razem.
+own-world = Twój zapis staje się wspólnym światem. Zapisuj go jak zawsze.
+own-new = Ten sposób gry jest nowy. Zapisz grę, zanim go wypróbujesz.
+mode-label = Jak gracie
+lobby-own-host = Wczytaj swój zapis w grze. Druga osoba wczyta swój, a jej rodzina wprowadzi się do twojego świata.
+lobby-own-guest = Wczytaj własny zapis w grze. Twoja rodzina wprowadzi się do świata hosta i dalej będziesz nią tam grać.
+lobby-own-keep = Potem w twojej grze będzie świat hosta. Aby twój zapis został taki, jaki był, wybierz w grze „Zapisz jako”, a nie „Zapisz”.
+review-own = Żaden zapis nie jest kopiowany. Wczytujesz własny, a twoja rodzina wprowadza się do świata hosta.
+live-load-own = Wczytaj własny zapis, aby wejść do sesji.
+live-wait-remote-own = Czekamy, aż druga osoba wczyta swój zapis.

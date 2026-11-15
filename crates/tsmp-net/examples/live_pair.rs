@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mods_dir: dir.path().to_path_buf(),
         mods: Manifest::default(),
         save: None,
+        own_families: false,
     };
     let host = Host::start(config, 0, false)?;
     let link = LiveLink::start((Ipv4Addr::LOCALHOST, host.port()).into(), hello("guest"))?;

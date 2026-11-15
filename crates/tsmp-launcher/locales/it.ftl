@@ -176,3 +176,24 @@ player-you-host = Tu, l'host
 player-starting = Avvia il gioco
 player-in-game = In gioco
 player-failed = Errore
+
+## Two ways to play: one shared save, or everyone brings a family of their own
+
+step-load-own = Carica il tuo salvataggio
+host-mode-title = Come volete giocare?
+mode-shared = Una famiglia insieme
+mode-shared-detail = Scegli un salvataggio. L’altro giocatore ne riceve una copia e ci giocate insieme.
+mode-own = Ognuno con la sua famiglia
+mode-own-detail = Ognuno crea una famiglia nel proprio gioco. Poi vivono tutte nel tuo mondo.
+own-step-1 = Ognuno crea una famiglia nel proprio gioco, come sempre, e salva.
+own-step-2 = Premi “Avvia la sessione”. Poi entrambi avviate il gioco da TSMP e caricate ciascuno il proprio salvataggio.
+own-step-3 = La famiglia dell’altro giocatore si trasferisce nel tuo mondo, con la sua casa se quel lotto è libero. Da lì in poi giocate insieme.
+own-world = Il tuo salvataggio diventa il mondo condiviso. Continua a salvarlo come sempre.
+own-new = Questo modo di giocare è nuovo. Salva la partita prima di provarlo.
+mode-label = Come giocate
+lobby-own-host = Carica il tuo salvataggio nel gioco. L’altro giocatore carica il suo e la sua famiglia si trasferisce nel tuo mondo.
+lobby-own-guest = Carica il tuo salvataggio nel gioco. La tua famiglia si trasferisce nel mondo dell’host e continui a giocarla lì.
+lobby-own-keep = Dopo, il tuo gioco contiene il mondo dell’host. Per conservare il tuo salvataggio com’era, scegli “Salva con nome” nel gioco, non “Salva”.
+review-own = Nessun salvataggio viene copiato. Carichi il tuo e la tua famiglia si trasferisce nel mondo dell’host.
+live-load-own = Carica il tuo salvataggio per entrare nella sessione.
+live-wait-remote-own = In attesa che l’altro giocatore carichi il suo salvataggio.

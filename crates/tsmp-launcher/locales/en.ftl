@@ -188,3 +188,24 @@ player-you-host = You, the host
 player-starting = Starting the game
 player-in-game = In the game
 player-failed = Error
+
+## Two ways to play: one shared save, or everyone brings a family of their own
+
+step-load-own = Load your own save
+host-mode-title = How do you want to play?
+mode-shared = One family together
+mode-shared-detail = You pick a save. The other player gets a copy and you both play it.
+mode-own = Each with their own family
+mode-own-detail = Everyone makes a family at home. Then they all live in your world.
+own-step-1 = Each of you makes a family in your own game, the usual way, and saves.
+own-step-2 = Press “Start hosting”. Then both of you start the game from TSMP and load your own saves.
+own-step-3 = The other player’s family moves into your world, with its home if that lot is free. From then on you play together.
+own-world = Your save becomes the shared world. Keep saving it as you always do.
+own-new = This way of playing is new. Save your game before you try it.
+mode-label = How you play
+lobby-own-host = Load your save in the game. The other player loads theirs, and their family moves into your world.
+lobby-own-guest = Load your own save in the game. Your family moves into the host’s world, and you go on playing it there.
+lobby-own-keep = After that your game holds the host’s world. To keep your own save as it was, choose “Save As” in the game, not “Save”.
+review-own = No save is copied. You load your own save, and your family moves into the host’s world.
+live-load-own = Load your own save to join the session.
+live-wait-remote-own = Waiting for the other player to load their save.

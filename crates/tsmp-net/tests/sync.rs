@@ -38,6 +38,7 @@ fn start_host(mods_dir: &Path, save: Option<&Path>) -> (Host, SocketAddr) {
             mods_dir: mods_dir.to_path_buf(),
             mods: Manifest::scan(mods_dir, None).unwrap(),
             save: save.map(Path::to_path_buf),
+            own_families: false,
         },
         0,
         false,

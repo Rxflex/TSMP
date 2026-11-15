@@ -54,6 +54,10 @@ pub struct SaveInfo {
 pub struct Session {
     pub mods: Manifest,
     pub save: Option<SaveInfo>,
+    /// Every player loads a save of their own, and the games bring the
+    /// households together in the host's. No save is shared then.
+    #[serde(default)]
+    pub own_families: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +144,12 @@ mod tests {
     }
 
     #[test]
+    fn a_session_from_an_older_host_shares_its_save() {
+        let session: Session = serde_json::from_str(r#"{"mods":{"files":{}},"save":null}"#).unwrap();
+        assert!(!session.own_families);
+    }
+
+    #[test]
     fn every_message_survives_a_round_trip() {
         round_trip(Message::Hello(Hello {
             protocol: PROTOCOL_VERSION,
@@ -161,6 +171,12 @@ mod tests {
                 size: 5,
                 hash: "abc".into(),
             }),
+            own_families: false,
+        }));
+        round_trip(Message::Session(Session {
+            mods: Manifest::default(),
+            save: None,
+            own_families: true,
         }));
         round_trip(Message::GetFile {
             root: Root::Mods,

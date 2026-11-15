@@ -171,3 +171,24 @@ player-you-host = 你（主机）
 player-starting = 正在启动游戏
 player-in-game = 游戏中
 player-failed = 错误
+
+## Two ways to play: one shared save, or everyone brings a family of their own
+
+step-load-own = 载入自己的存档
+host-mode-title = 想怎么玩？
+mode-shared = 一起玩同一个家庭
+mode-shared-detail = 由你选择一个存档。另一位玩家会得到一份副本，你们一起玩。
+mode-own = 各玩各的家庭
+mode-own-detail = 每个人在自己的游戏里创建家庭，然后都住进你的世界。
+own-step-1 = 每个人像平常一样在自己的游戏里创建家庭并保存。
+own-step-2 = 点击“开始创建”。然后双方都从 TSMP 启动游戏，并载入各自的存档。
+own-step-3 = 另一位玩家的家庭会搬进你的世界；如果那块地皮空着，房子也一起搬来。之后你们就一起玩。
+own-world = 你的存档会成为共同的世界。照常保存即可。
+own-new = 这种玩法是新功能。尝试之前请先保存游戏。
+mode-label = 玩法
+lobby-own-host = 在游戏里载入你的存档。另一位玩家载入自己的存档后，对方的家庭会搬进你的世界。
+lobby-own-guest = 在游戏里载入你自己的存档。你的家庭会搬进主机的世界，你可以在那里继续玩。
+lobby-own-keep = 之后你的游戏里是主机的世界。想让自己的存档保持原样，请在游戏里选择“另存为”，不要选“保存”。
+review-own = 不会复制存档。你载入自己的存档，你的家庭会搬进主机的世界。
+live-load-own = 载入自己的存档以加入会话。
+live-wait-remote-own = 正在等待另一位玩家载入对方的存档。

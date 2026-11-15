@@ -588,6 +588,7 @@ mod tests {
             mods_dir: dir.path().to_path_buf(),
             mods: Manifest::default(),
             save: None,
+            own_families: false,
         };
         (Host::start(config, port, false).unwrap(), dir)
     }

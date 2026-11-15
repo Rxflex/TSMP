@@ -131,6 +131,8 @@ pub struct HostScreen {
     pub previews: Vec<Option<Arc<Preview>>>,
     /// Index into `saves`, or `None` to host without a shared save.
     pub selected: Option<usize>,
+    /// Every player loads a save of their own instead of sharing one.
+    pub own_families: bool,
     pub stage: HostStage,
 }
 
@@ -153,6 +155,7 @@ pub struct Running {
     /// Other multiplayer mods that were moved out of the Mods folder.
     pub set_aside: Vec<String>,
     pub save: Option<String>,
+    pub own_families: bool,
     pub guests: Vec<Guest>,
 }
 
@@ -227,6 +230,7 @@ pub struct Synced {
     pub save: Option<String>,
     pub save_preview: Option<Arc<Preview>>,
     pub save_updated: bool,
+    pub own_families: bool,
     /// Folder name under the user folder holding displaced mods, if any.
     pub backup_stamp: String,
 }
@@ -446,6 +450,7 @@ impl Model {
         let paths: Vec<PathBuf> = saves.iter().map(|save| save.path.clone()).collect();
         self.screen = Screen::Host(HostScreen {
             selected: None,
+            own_families: false,
             previews: vec![None; saves.len()],
             saves,
             stage: HostStage::Setup,
@@ -468,6 +473,29 @@ impl Model {
         }
     }
 
+    /// Choose between sharing one save and everyone loading their own.
+    pub fn choose_own_families(&mut self, own_families: bool) {
+        if let Screen::Host(screen) = &mut self.screen {
+            if matches!(screen.stage, HostStage::Setup) {
+                screen.own_families = own_families;
+            }
+        }
+    }
+
+    /// Whether the session on screen is one where everyone loads their own
+    /// save.
+    pub fn own_families(&self) -> bool {
+        match &self.screen {
+            Screen::Host(screen) => screen.own_families,
+            Screen::Join(screen) => match &screen.stage {
+                JoinStage::Review(plan) => plan.session.own_families,
+                JoinStage::Ready(synced) => synced.own_families,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     pub fn start_hosting(&mut self) {
         let (Some(env), Screen::Host(screen)) = (&self.env, &mut self.screen) else {
             return;
@@ -476,11 +504,19 @@ impl Model {
             return;
         }
         screen.stage = HostStage::Starting;
-        let save = screen.selected.map(|index| screen.saves[index].clone());
-        let chosen = save.as_ref().map_or("no save".to_string(), |save| save.file_name.clone());
+        let own_families = screen.own_families;
+        let save = match own_families {
+            true => None,
+            false => screen.selected.map(|index| screen.saves[index].clone()),
+        };
+        let chosen = match (&save, own_families) {
+            (_, true) => "everyone loads their own save".to_string(),
+            (Some(save), _) => save.file_name.clone(),
+            (None, _) => "no save".to_string(),
+        };
         let (env, sender, announce) = (env.clone(), self.sender.clone(), self.announce);
         thread::spawn(move || {
-            let _ = sender.send(Event::HostStarted(start_host(&env, save, announce)));
+            let _ = sender.send(Event::HostStarted(start_host(&env, save, own_families, announce)));
         });
         self.note(format!("Opening a session: {chosen}"));
     }
@@ -965,7 +1001,12 @@ fn set_rivals_aside(env: &Env) -> Result<Vec<String>, String> {
     Ok(moved)
 }
 
-fn start_host(env: &Env, save: Option<SaveFile>, announce: bool) -> Result<Running, String> {
+fn start_host(
+    env: &Env,
+    save: Option<SaveFile>,
+    own_families: bool,
+    announce: bool,
+) -> Result<Running, String> {
     if let Some(source) = bundled_mod() {
         install_mod(&source, &env.game.mods_dir())?;
     }
@@ -982,6 +1023,7 @@ fn start_host(env: &Env, save: Option<SaveFile>, announce: bool) -> Result<Runni
         mods_dir: env.game.mods_dir(),
         mods: mods.clone(),
         save: save.as_ref().map(|save| save.path.clone()),
+        own_families,
     };
     // The usual port may be taken, e.g. by another launcher on this machine.
     // Guests find the host by its beacon, so any port will do.
@@ -998,6 +1040,7 @@ fn start_host(env: &Env, save: Option<SaveFile>, announce: bool) -> Result<Runni
         has_mod,
         set_aside,
         save: save.map(|save| save.file_name),
+        own_families,
         guests: Vec::new(),
     })
 }
@@ -1075,6 +1118,7 @@ fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, Str
                     .and_then(|save| Preview::read(&env.game.saves_dir().join(&save.file_name))),
                 save: session.save.map(|save| save.file_name),
                 save_updated,
+                own_families: session.own_families,
                 backup_stamp,
             })
         }
@@ -1322,6 +1366,59 @@ mod tests {
         assert_eq!(host.session_packs(), common);
         host.back();
         assert!(!host_user.join("tsmp/bridge.json").exists());
+    }
+
+    #[test]
+    fn players_with_their_own_families_keep_their_saves() {
+        let host_dir = tempfile::tempdir().unwrap();
+        let guest_dir = tempfile::tempdir().unwrap();
+        let host_env = player(host_dir.path(), "host", &["EP01"]);
+        let guest_env = player(guest_dir.path(), "guest", &["EP01"]);
+        let host_user = host_env.game.user_dir.clone();
+        let guest_user = guest_env.game.user_dir.clone();
+        write(&host_user, "Mods/tsmp.ts4script", "the mod");
+        write(&host_user, "saves/Slot_00000002.save", "the host's family");
+        write(&guest_user, "saves/Slot_00000002.save", "the guest's family");
+
+        let mut host = Model::with_env(host_env, false);
+        host.open_host();
+        // A save picked before changing one's mind is not shared.
+        host.select_save(Some(0));
+        host.choose_own_families(true);
+        assert!(host.own_families());
+        host.start_hosting();
+        pump_until(&mut [&mut host], |m| host_running(m[0]).is_some());
+        let running = host_running(&host).unwrap();
+        assert!(running.own_families);
+        assert_eq!(running.save, None);
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, running.port));
+
+        let mut guest = Model::with_env(guest_env, false);
+        guest.connect(address);
+        pump_until(&mut [&mut host, &mut guest], |m| {
+            !matches!(join_stage(m[1]), JoinStage::Working(_))
+        });
+        let JoinStage::Review(plan) = join_stage(&guest) else {
+            panic!("expected a plan to review");
+        };
+        assert!(plan.session.own_families);
+        assert!(!plan.save_needed);
+        assert!(guest.own_families());
+
+        guest.confirm_sync();
+        pump_until(&mut [&mut host, &mut guest], |m| {
+            !matches!(join_stage(m[1]), JoinStage::Syncing(_))
+        });
+        let JoinStage::Ready(synced) = join_stage(&guest) else {
+            panic!("expected the guest to be ready");
+        };
+        assert!(synced.own_families);
+        assert_eq!(synced.save, None);
+        assert!(guest.own_families());
+        assert_eq!(
+            fs::read_to_string(guest_user.join("saves/Slot_00000002.save")).unwrap(),
+            "the guest's family"
+        );
     }
 
     #[test]
