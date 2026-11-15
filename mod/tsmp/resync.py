@@ -44,6 +44,8 @@ _objects = {}
 # Host: zones of a guest's own save, by id, and the zone of ours it loads
 # in their place.
 _leads = {}
+# Guest: the host's id of each zone that has another id here, by ours.
+_theirs = {}
 # (zone id, save bytes, objects bytes, deadline) waiting for the game client
 # to disconnect.
 _pending = None
@@ -274,6 +276,71 @@ def take(done, zone_id=0):
     save_then(saved)
 
 
+def rename(message, names):
+    """Replace every 64-bit number in a protobuf message that is a key of
+    `names` with its value. Returns how many were replaced."""
+    count = 0
+    for field, value in message.ListFields():
+        kind = field.cpp_type
+        # `label` is what the game's protobuf has; newer ones say is_repeated.
+        many = field.label == 3 if hasattr(field, "label") else field.is_repeated
+        if kind == 10:
+            for item in (value if many else (value,)):
+                count += rename(item, names)
+        elif kind in (2, 4):
+            if many:
+                for index, item in enumerate(value):
+                    if item in names:
+                        value[index] = names[item]
+                        count += 1
+            elif value in names and not field.is_extension:
+                setattr(message, field.name, names[value])
+                count += 1
+    return count
+
+
+def host_zone(zone_id):
+    """Guest: the id the host has for our zone `zone_id`."""
+    return _theirs.get(zone_id, zone_id)
+
+
+def _as_ours(zone_id, save, objects):
+    """A snapshot of the host's with its zones under the ids they have
+    here. Every new game makes zone ids up, and the game client can only
+    travel to the ones it was started with; what does not change between
+    saves is which lot of the world a zone is."""
+    global _theirs
+    import services
+    from protocolbuffers import FileSerialization_pb2 as serialization
+
+    here = {}
+    for zone in services.get_persistence_service().zone_proto_buffs_gen():
+        if zone.lot_description_id:
+            here[(zone.lot_description_id, zone.active_plex)] = zone.zone_id
+    data = serialization.SaveGameData()
+    data.MergeFromString(save)
+    names = {}
+    for zone in data.zones:
+        ours = here.get((zone.lot_description_id, zone.active_plex))
+        if ours and ours != zone.zone_id:
+            names[zone.zone_id] = ours
+    _theirs = dict((ours, theirs) for theirs, ours in names.items())
+    if not names:
+        return zone_id, save, objects
+    replaced = rename(data, names)
+    save = data.SerializeToString()
+    if objects:
+        contents = serialization.ZoneObjectData()
+        contents.MergeFromString(objects)
+        rename(contents, names)
+        objects = contents.SerializeToString()
+    log.info("resync: the host's save names {} of its {} zones differently; {} ids renamed to ours".format(
+        len(names), len(data.zones), replaced))
+    if zone_id not in names:
+        log.info("resync: the host's zone {:#x} is not a lot of our save".format(zone_id))
+    return names.get(zone_id, zone_id), save, objects
+
+
 def adopt(payload, sim_id):
     """Guest: keep the host's snapshot and ask the game client to load the
     zone it was made for: the one we are in, or the host's choice when its
@@ -284,8 +351,9 @@ def adopt(payload, sim_id):
     if not zone_id or not save:
         raise ValueError("snapshot is empty")
     install()
+    zone_id, save, objects = _as_ours(zone_id, save, objects)
     from world import travel_service
 
     _pending = (zone_id, save, objects, time.time() + PENDING_SECONDS)
-    log.info("resync: reloading zone {:#x} from the host's save".format(zone_id))
+    log.info("resync: loading zone {:#x} from the host's save".format(zone_id))
     travel_service.travel_sims_to_zone([sim_id] if sim_id else [], zone_id)

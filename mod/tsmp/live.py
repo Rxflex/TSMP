@@ -119,7 +119,8 @@ class Game:
         try:
             import services
 
-            return services.current_zone_id() or 0
+            # Named as the host names it, so that the two can be compared.
+            return resync.host_zone(services.current_zone_id() or 0)
         except Exception:
             return 0
 

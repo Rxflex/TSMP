@@ -469,7 +469,13 @@ saves. Instead:
    A household whose lot is taken arrives homeless. The household the host
    itself plays is never replaced.
 3. The host answers `merged`, and the guest asks for the host's state as
-   after any reload. The game client reconnects with the household it was
+   after any reload. The game client only travels to zones it was started
+   with: asked for an id from the host's save it drops the world and shows
+   the interface over a void. So before the guest keeps a snapshot it
+   matches the host's zones to its own by `lot_description_id` and
+   `active_plex` and renames every 64-bit field of the snapshot that holds
+   a host zone id to the guest's id for that lot. From then on the guest
+   reports its zone to the host under the host's id. The game client reconnects with the household it was
    playing, which the host's save now has, so the guest goes on playing its
    own household in the host's world.
 
