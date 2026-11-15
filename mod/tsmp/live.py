@@ -9,7 +9,7 @@ import json
 import os
 
 from tsmp import bridge as bridge_module
-from tsmp import frames, hooks, household, log, native, resync, session as session_module
+from tsmp import driver, frames, hooks, household, log, native, resync, session as session_module
 
 _bridge = None
 _session = None
@@ -312,6 +312,8 @@ def _tick():
         elif kind == bridge_module.DOWN:
             _session.bridge_down(event[1])
     _session.tick()
+    client = _client()
+    driver.tick(client.id if client is not None else None)
     try:
         _native_tick()
     except Exception:
@@ -336,6 +338,10 @@ def start(directory, native_sync=True):
         log.exception("resync is not available")
     hooks.install_tick(_tick)
     log.info("live mode ready")
+
+
+def client():
+    return _client()
 
 
 def reload_from_host():

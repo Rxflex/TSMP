@@ -6,7 +6,7 @@ import sys
 import time
 
 import tsmp
-from tsmp import capture, hooks, live, log, native, paths
+from tsmp import capture, driver, hooks, live, log, native, paths
 
 # A long play session produces a lot of traffic; stop rather than fill the disk.
 CAPTURE_MAX_BYTES = 256 * 1024 * 1024
@@ -120,6 +120,14 @@ def _register_commands():
         for line in native.recorder_lines(samples=True):
             log.info(line)
 
+    @sims4.commands.Command("tsmp.selftest", command_type=sims4.commands.CommandType.Live)
+    def tsmp_selftest(_connection=None):
+        """Write what this game holds to the log, to compare with the other."""
+        output = sims4.commands.CheatOutput(_connection)
+        for line in live.describe()[:1] + driver.state(live.client()):
+            output(line)
+            log.info("state: " + line)
+
     @sims4.commands.Command("tsmp.resync", command_type=sims4.commands.CommandType.Live)
     def tsmp_resync(_connection=None):
         """Guest: load the host's world again, when the two have drifted apart."""
@@ -162,6 +170,8 @@ def start():
             _start_capture(directory)
         if config.get("live"):
             live.start(directory, native_sync=bool(config.get("native")))
+            if config.get("driver"):
+                driver.start(directory)
     except Exception as exc:
         _problem = repr(exc)
         raise

@@ -121,6 +121,10 @@ Good to know:
   games.
 - Build mode sync is on by default. To switch it off, put
   `{"native": false}` in `<user dir>/tsmp/config.json`.
+- For testing without a player at the keyboard, `{"driver": true}` in the
+  same file makes the mod run every line written to `<user dir>/tsmp/run.txt`
+  as a console command. `tsmp.selftest` writes what the game holds (lot,
+  households, sims, clock) to the log, so two games can be compared there.
 
 ## Game versions and branches
 
