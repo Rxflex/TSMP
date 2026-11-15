@@ -15,6 +15,8 @@ CONTROL  any direction  UTF-8 JSON {"type": ..., ...}
 NATIVE   any direction  a call a game client made into its simulation without
                         passing through Python, to be repeated in the other
                         simulation; id is the call's hash (see tsmp/native.py)
+STATE    host -> guest  the host's save as it is now, for the guest to load
+                        (see tsmp/resync.py)
 
 Pure Python, no game imports. crates/tsmp-net/src/live.rs is the other
 implementation of this format.
@@ -27,6 +29,7 @@ MSG = 1
 COMMAND = 2
 CONTROL = 3
 NATIVE = 4
+STATE = 5
 
 MAX_PAYLOAD = 64 * 1024 * 1024
 

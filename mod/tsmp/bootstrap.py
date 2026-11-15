@@ -120,6 +120,13 @@ def _register_commands():
         for line in native.recorder_lines(samples=True):
             log.info(line)
 
+    @sims4.commands.Command("tsmp.resync", command_type=sims4.commands.CommandType.Live)
+    def tsmp_resync(_connection=None):
+        """Guest: load the host's world again, when the two have drifted apart."""
+        line = live.reload_from_host()
+        sims4.commands.CheatOutput(_connection)(line)
+        log.info("tsmp.resync: " + line)
+
     @sims4.commands.Command("tsmp.native", command_type=sims4.commands.CommandType.Live)
     def tsmp_native(mode="on", _connection=None):
         """Experiment: count the native calls of build mode, or with sync repeat

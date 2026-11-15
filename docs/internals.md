@@ -282,7 +282,10 @@ own table in `native.py`; an unknown build switches the native part off.
 
 Entering CAS for an existing sim is a command (`sims.modify_in_cas`,
 `sims.modify_outfit_in_cas`, `cas.modify_mannequin`, ...). Editing happens in
-the client. How the result returns to the simulation has not been traced yet.
+the client: `sims.exit2cas` is passed on to it with
+`sims4.commands.client_cheat`, and the zone is loaded again from the scratch
+save when the player comes back. See "Following the host through a reload"
+for what that means for a session.
 
 ## User data
 
@@ -351,11 +354,14 @@ payload`, little endian.
 | 1 MSG | message id | the bytes the simulation passed to `Client.send_message` |
 | 2 COMMAND | 0 | JSON `{"name": ..., "args": [...]}` |
 | 3 CONTROL | 0 | JSON `{"type": ...}` |
+| 4 NATIVE | hash of the call | a call a game client made into its simulation past Python |
+| 5 STATE | 0 | the host's save as it is now (`tsmp/resync.py`) |
 
 Control messages: `link {remotes}` (launcher -> its game: how many other
 launchers are connected), `gone` (launcher -> the other side: the game here
 disconnected), `state {role, in_zone, want?}` (game -> game; `want` asks for
-the other's state in return), `active_sim {sim_id}` (guest -> host).
+the other's state in return), `active_sim {sim_id}` (guest -> host),
+`resync` (guest -> host: send your state), `resync_failed` (host -> guest).
 
 The launchers only relay; the guest's launcher opens a second connection to
 the host's with `JoinLive` and after the `Hello` reply the socket carries raw
@@ -375,9 +381,51 @@ games have a zone loaded. While live:
   each in `tsmp.log` ("local command while live") as a list of what remains
   to be routed.
 
-Known gaps: there is no replay, so both players must load the same save and
-the host should stay paused until the guest is in; dialogs and notifications
-go to both players; travel is not handled; replies to commands that still run
+### Following the host through a reload
+
+The guest's game client only makes sense of the host's messages while it was
+built from the same state as the host's. Whenever the host's zone is loaded
+again (it edits a sim in CAS, travels, loads a save) its client is rebuilt
+and the guest's is not; joining again as before leaves the guest with a
+broken interface on a world that no longer exists.
+
+So a guest whose host leaves its zone while live becomes *stale*: it reports
+itself as not in a zone, shows its client nothing new, and once the host is
+back asks for its state with `resync`. What makes the rest possible is that
+the whole save lives in Python:
+
+- `services.get_persistence_service()` owns one `SaveGameData` message; the
+  game client reads it through `c_api_get_data_readonly`, and a zone is built
+  from it.
+- Leaving a zone goes through `areaserver.c_api_request_client_disconnect`,
+  which saves with `PersistenceService.save_to_scratch_slot_gen` and, when
+  travelling, first calls `game_services.disable_shutdown()` so that sims and
+  households stay in memory.
+- The objects and architecture of a zone are handed to the game client as a
+  `ZoneObjectData` message through `persistence_module.run_persistence_operation`
+  with `kPersistenceOpSaveZoneObjects`.
+
+The host pauses, saves to the scratch slot and sends both messages in a
+`STATE` frame (`u8[4] "TSS1", u8 flags, u64 zone id, u32 save size, u32
+objects size`, then the two, deflated when flag 1 is set). The guest keeps
+them and asks its client to travel to the host's zone
+(`travel_service.travel_sims_to_zone`). When the client disconnects to do so,
+the guest's save step is replaced by putting the host's messages in place,
+and `disable_shutdown` is skipped so that everything is read again. After
+its loading screen the guest joins as on a fresh start. If any step fails
+(the host cannot save, nothing arrives in `RESYNC_TICKS`, the snapshot cannot
+be read, the client does not reload) the guest joins as it is, which is what
+happened before. The `tsmp.resync` cheat makes a guest do all this on request.
+
+This has only been run against fakes (`mod/tests/test_session.py`,
+`test_relay.py`, `test_resync.py`); it has not been seen working in two games
+yet.
+
+Known gaps: there is no replay, so the host should stay paused until the
+guest is in; a guest that starts from a different save than the host only
+gets the host's world after a reload (`tsmp.resync`, or the host leaving its
+zone once); dialogs and notifications go to both players; the guest does not
+follow the host into CAS, it waits; replies to commands that still run
 locally on the guest (hovertips, for one) never arrive.
 
 ## Open questions

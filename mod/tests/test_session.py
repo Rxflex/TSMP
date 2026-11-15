@@ -42,6 +42,9 @@ class FakeGame:
         self.delivered = []
         self.executed = []
         self.during_execute = None
+        self.snapshots = []
+        self.adopted = []
+        self.adopt_error = None
 
     def in_zone(self):
         return self.zone
@@ -56,6 +59,14 @@ class FakeGame:
         self.executed.append((name, args, sim_id))
         if self.during_execute is not None:
             self.during_execute()
+
+    def snapshot(self, done):
+        self.snapshots.append(done)
+
+    def adopt(self, payload):
+        if self.adopt_error is not None:
+            raise self.adopt_error
+        self.adopted.append(payload)
 
 
 class Player:
@@ -355,6 +366,142 @@ class GuestTest(unittest.TestCase):
         guest.session.bridge_up(session.GUEST)
         guest.session.frame(frames.MSG, OTHER_MSG, b"x")
         self.assertEqual(guest.game.delivered, [])
+
+
+def host_reloads(host, guest):
+    """The host's zone goes away and comes back, as when it edits a sim."""
+    host.game.zone = False
+    host.session.tick()
+    settle(host, guest)
+    host.game.zone = True
+    host.session.tick()
+    settle(host, guest)
+
+
+def asked(player):
+    return [payload for kind, _, payload in player.sent if kind == frames.CONTROL and b'"resync"' in payload]
+
+
+class ResyncTest(unittest.TestCase):
+    def test_a_guest_does_not_rejoin_a_host_that_reloaded(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        self.assertTrue(guest.session.stale)
+        self.assertFalse(guest.session.live)
+        self.assertFalse(host.session.live)
+        # Its own simulation is not shown in the meantime, nor asked anything.
+        self.assertIsNone(guest.session.outbound(OTHER_MSG, b"local"))
+        self.assertFalse(guest.session.command("interactions.choices", ["1"]))
+        self.assertFalse(guest.session.command("clock.pause", []))
+        self.assertTrue(guest.session.command("ui.something_else", []))
+        self.assertEqual(guest.take(), [])
+
+    def test_the_guest_loads_what_the_host_saves(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        guest.session.tick()
+        self.assertEqual(len(asked(guest)), 1)
+        settle(host, guest)
+        self.assertEqual(len(host.game.snapshots), 1)
+
+        host.game.snapshots[0](b"the host's save")
+        settle(host, guest)
+        self.assertEqual(guest.game.adopted, [b"the host's save"])
+        # What its simulation sends while reloading reaches its game client.
+        self.assertEqual(guest.session.outbound(TRAVEL, b"go"), b"go")
+        self.assertFalse(guest.session.live)
+
+        guest.game.zone = False
+        guest.session.tick()
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"loading"), b"loading")
+        guest.game.zone = True
+        guest.session.tick()
+        settle(host, guest)
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+        self.assertEqual(host.session.remote_sim_id, 222)
+
+    def test_asks_only_once(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        for _ in range(5):
+            guest.session.tick()
+        self.assertEqual(len(asked(guest)), 1)
+
+    def test_joins_as_it_is_when_the_host_cannot_save(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        guest.session.tick()
+        settle(host, guest)
+        host.game.snapshots[0](None)
+        settle(host, guest)
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+
+    def test_joins_as_it_is_when_the_host_never_answers(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        for _ in range(session.RESYNC_TICKS + 3):
+            guest.session.tick()
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.live)
+
+    def test_joins_as_it_is_when_the_save_cannot_be_loaded(self):
+        host, guest = joined()
+        guest.game.adopt_error = ValueError("damaged")
+        host_reloads(host, guest)
+        guest.session.tick()
+        settle(host, guest)
+        host.game.snapshots[0](b"x")
+        settle(host, guest)
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.live)
+        self.assertTrue(any("damaged" in line for line in guest.logged))
+
+    def test_joins_as_it_is_when_the_game_does_not_reload(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        guest.session.tick()
+        settle(host, guest)
+        host.game.snapshots[0](b"x")
+        settle(host, guest)
+        for _ in range(session.RESYNC_TICKS + 3):
+            guest.session.tick()
+        self.assertFalse(guest.session.stale)
+
+    def test_a_guest_is_not_left_waiting_for_a_host_that_is_gone(self):
+        host, guest = joined()
+        host.game.zone = False
+        host.session.tick()
+        settle(host, guest)
+        self.assertTrue(guest.session.stale)
+        guest.link(0)
+        self.assertFalse(guest.session.stale)
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
+
+    def test_loading_by_hand_is_a_fresh_start(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        guest.game.zone = False
+        guest.session.tick()
+        self.assertFalse(guest.session.stale)
+
+    def test_a_guest_can_ask_to_reload(self):
+        host, guest = joined()
+        self.assertFalse(host.session.resync())
+        self.assertTrue(guest.session.resync())
+        settle(host, guest)
+        self.assertFalse(host.session.live)
+        guest.session.tick()
+        settle(host, guest)
+        self.assertEqual(len(host.game.snapshots), 1)
+
+    def test_a_snapshot_is_ignored_by_a_guest_that_did_not_ask(self):
+        host, guest = joined()
+        guest.session.frame(frames.STATE, 0, b"x")
+        self.assertEqual(guest.game.adopted, [])
 
 
 if __name__ == "__main__":

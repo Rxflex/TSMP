@@ -9,7 +9,7 @@ import json
 import os
 
 from tsmp import bridge as bridge_module
-from tsmp import frames, hooks, log, native, session as session_module
+from tsmp import frames, hooks, log, native, resync, session as session_module
 
 _bridge = None
 _session = None
@@ -156,6 +156,14 @@ class Game:
             client._active_sim_info, client._choice_menu, client._interaction_parameters = saved
 
 
+    def snapshot(self, done):
+        resync.install()
+        resync.take(done)
+
+    def adopt(self, payload):
+        resync.adopt(payload, self.active_sim_id())
+
+
 def _endpoint(directory):
     """The launcher writes bridge.json while it wants the mod connected."""
 
@@ -271,8 +279,21 @@ def start(directory, native_sync=True):
     hooks.set_outbound_router(lambda client, msg_id, data: _session.outbound(msg_id, data))
     hooks.set_inbound_gate(lambda name, args, session_id: _session.command(name, args))
     _watch_loading_screen()
+    try:
+        # From the start, so that the objects of the zone are known by the
+        # time the other player asks for them.
+        resync.install()
+    except Exception:
+        log.exception("resync is not available")
     hooks.install_tick(_tick)
     log.info("live mode ready")
+
+
+def reload_from_host():
+    """For the tsmp.resync cheat."""
+    if _session is None or not _session.resync():
+        return "only a guest in a live session can reload from the host"
+    return "reloading from the host"
 
 
 def describe():
@@ -285,7 +306,7 @@ def describe():
             _session.role or "-",
             "connected" if _bridge.connected else "not connected",
             "in game" if _session.remote_in_zone else "not in game",
-        ),
+        ) + (", waiting to reload after the host" if _session.stale else ""),
         "ticks {}, relayed {}, delivered {}, forwarded {}, executed {}".format(
             _ticks, _session.relayed, _session.delivered, _session.forwarded, _session.executed
         ),

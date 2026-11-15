@@ -5,6 +5,12 @@ game client and, as MSG frames, to the guest's game client. The guest's
 simulation keeps running but is muted; commands from the guest's game client
 are sent to the host as COMMAND frames and executed there.
 
+The guest's game client only makes sense of the host's messages while it was
+built from the same state as the host's. When the host's zone is loaded again
+(it edited a sim, or travelled) the guest is stale: it stops taking part,
+asks the host for its state and loads it (see tsmp/resync.py), then joins
+again.
+
 Pure logic with no game imports: the game is reached through the `game`
 adapter (see live.Game) so this can be tested outside the game.
 """
@@ -23,6 +29,9 @@ FORWARD_NAMES = frozenset(["clock.setspeed", "clock.toggle_pause_unpause"])
 # the host's own game client already reports it. The rest of `clock.*` would
 # pause the host whenever the guest opens a menu.
 BLOCK_PREFIXES = ("animation.", "clock.")
+# Ticks a stale guest waits for the host's state, or for its own game client
+# to start loading it, before it gives up and joins as it is.
+RESYNC_TICKS = 1800
 
 
 class Consts:
@@ -47,6 +56,9 @@ class Session:
         active_sim_id()                id of the locally selected sim, or 0
         deliver(msg_id, data)          hand a message to the local game client
         execute(name, args, sim_id)    run a command as the remote player
+        snapshot(done)                 host: save, then done(bytes or None)
+        adopt(payload)                 guest: load the host's snapshot by
+                                       reloading the zone; raises on failure
     `send(frame)` queues a packed frame for the launcher.
     """
 
@@ -64,6 +76,17 @@ class Session:
         self._remote_depth = 0
         self._was_live = False
         self._seen_local = set()
+        self._ticks = 0
+        # Guest: the host's zone was loaded again and ours was not.
+        self._stale = False
+        # Guest: tick at which the host was asked for its state, or the game
+        # client for a reload.
+        self._asked = 0
+        # Guest: the host's state arrived and our zone is being loaded again.
+        self._adopting = False
+        self._left = False
+        # Host: a snapshot is being taken.
+        self._snapshotting = False
         self.forwarded = 0
         self.executed = 0
         self.relayed = 0
@@ -73,13 +96,25 @@ class Session:
     def live(self):
         """True while the two games are joined: messages flow host -> guest
         and commands guest -> host."""
-        return self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
+        return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
+                and not self._stale)
+
+    @property
+    def stale(self):
+        return self._stale
+
+    @property
+    def _holding(self):
+        """True while a stale guest waits for the host: its game client is
+        shown nothing new, as its own simulation is not the one that counts."""
+        return self.role == GUEST and self._stale and not self._adopting and self._in_zone
 
     # -- connection to the launcher -------------------------------------
 
     def bridge_up(self, role):
         self.role = role if role in (HOST, GUEST) else None
         self._forget_remote()
+        self._fresh()
         self.remotes = 0
         self._in_zone = bool(self._game.in_zone())
         self._announce(want=True)
@@ -91,7 +126,15 @@ class Session:
         self.role = None
         self.remotes = 0
         self._forget_remote()
+        self._fresh()
         self._check_live()
+
+    def _fresh(self):
+        self._stale = False
+        self._asked = 0
+        self._adopting = False
+        self._left = False
+        self._snapshotting = False
 
     def _forget_remote(self):
         self.remote_in_zone = False
@@ -103,10 +146,12 @@ class Session:
         own, which a game that has just (re)connected needs."""
         if self.role is None:
             return
+        # A stale guest is in a zone, but not in one the host can play with.
+        in_zone = self._in_zone and not self._stale
         if want:
-            self._send(frames.control("state", role=self.role, in_zone=self._in_zone, want=True))
+            self._send(frames.control("state", role=self.role, in_zone=in_zone, want=True))
         else:
-            self._send(frames.control("state", role=self.role, in_zone=self._in_zone))
+            self._send(frames.control("state", role=self.role, in_zone=in_zone))
 
     def _check_live(self):
         live = self.live
@@ -128,15 +173,111 @@ class Session:
     def tick(self):
         if self.role is None:
             return
+        self._ticks += 1
         in_zone = bool(self._game.in_zone())
         if in_zone != self._in_zone:
             self._in_zone = in_zone
             # The host forgets our sim when we leave a zone.
             self._reported_sim_id = 0
+            if self._stale:
+                self._zone_changed_while_stale()
             self._announce()
+            self._check_live()
+        if self.role == GUEST and self._stale:
+            self._catch_up()
             self._check_live()
         if self.role == GUEST and self.live:
             self._report_sim()
+
+    # -- a guest following the host through a reload ---------------------
+
+    def resync(self):
+        """Guest: load the host's state again, as after a reload of its
+        zone. Returns False when there is nobody to load it from."""
+        if self.role != GUEST or not self.live:
+            return False
+        self._log("reloading from the host on request")
+        self._go_stale()
+        self._check_live()
+        return True
+
+    def _go_stale(self):
+        self._stale = True
+        self._asked = 0
+        self._adopting = False
+        self._left = False
+        self._announce()
+
+    def _settle(self, why):
+        """Stop being stale, with or without the host's state."""
+        self._log(why)
+        self._fresh()
+        self._reported_sim_id = 0
+        self._announce()
+
+    def _host_lost(self):
+        if self._stale and not self._adopting:
+            self._settle("the host is gone; staying as we are")
+        self._snapshotting = False
+
+    def _zone_changed_while_stale(self):
+        if not self._adopting:
+            # The player loaded something by hand; that is a fresh start.
+            if not self._in_zone:
+                self._settle("left the zone before the host's state arrived")
+        elif not self._in_zone:
+            self._left = True
+        elif self._left:
+            self._settle("reloaded after the host")
+
+    def _catch_up(self):
+        if self._adopting:
+            if not self._left and self._ticks - self._asked > RESYNC_TICKS:
+                self._settle("the game did not reload after the host; staying as we are")
+        elif self._asked:
+            if self._ticks - self._asked > RESYNC_TICKS:
+                self._settle("the host did not send its state; staying as we are")
+        elif self._in_zone and self.remote_in_zone and self.remotes > 0:
+            self._asked = self._ticks
+            self._log("the host reloaded its zone; asking for its state")
+            self._send(frames.control("resync"))
+
+    def _adopt(self, payload):
+        if self.role != GUEST or not self._stale or self._adopting or not self._in_zone:
+            return
+        try:
+            self._game.adopt(payload)
+        except Exception as error:
+            self._settle("could not load the host's state ({}); staying as we are".format(error))
+            return
+        self._adopting = True
+        self._left = False
+        self._asked = self._ticks
+
+    def _snapshot(self):
+        if self.role != HOST or self._snapshotting:
+            return
+        if not self._in_zone:
+            self._send(frames.control("resync_failed"))
+            return
+        self._snapshotting = True
+        self._log("the other player is reloading; saving for them")
+        try:
+            self._game.snapshot(self._snapshot_done)
+        except Exception as error:
+            self._log("could not save for the other player: {}".format(error))
+            self._snapshot_done(None)
+
+    def _snapshot_done(self, payload):
+        if not self._snapshotting:
+            return
+        self._snapshotting = False
+        if self.role != HOST:
+            return
+        if payload is None:
+            self._send(frames.control("resync_failed"))
+        else:
+            self._send(frames.pack(frames.STATE, 0, payload))
 
     # -- frames from the other side -------------------------------------
 
@@ -150,6 +291,9 @@ class Session:
         elif kind == frames.COMMAND:
             if self.role == HOST and self.live:
                 self._execute(frames.parse_json(payload) or {})
+        elif kind == frames.STATE:
+            self._adopt(payload)
+            self._check_live()
 
     def _control(self, message):
         kind = message.get("type")
@@ -157,21 +301,33 @@ class Session:
             self.remotes = int(message.get("remotes") or 0)
             if self.remotes == 0:
                 self._forget_remote()
+                self._host_lost()
             # Whoever just connected has not heard our state yet, nor we theirs.
             if self.remotes:
                 self._announce(want=True)
         elif kind == "gone":
             self._forget_remote()
+            self._host_lost()
         elif kind == "state":
             if message.get("role") == self.role:
                 self._log("the other game is also a {}; ignoring it".format(self.role))
                 return
             if message.get("want"):
                 self._announce()
+            was_live = self.live
             self.remote_in_zone = bool(message.get("in_zone"))
+            if self.role == GUEST and was_live and not self.remote_in_zone:
+                # Its zone will be built again, and its game client with it.
+                self._log("the host left its zone")
+                self._go_stale()
             if not self.remote_in_zone:
                 self.remote_sim_id = 0
                 self._reported_sim_id = 0
+        elif kind == "resync":
+            self._snapshot()
+        elif kind == "resync_failed":
+            if self.role == GUEST and self._stale and not self._adopting:
+                self._settle("the host could not save; staying as we are")
         elif kind == "active_sim":
             try:
                 self.remote_sim_id = int(message.get("sim_id") or 0)
@@ -197,7 +353,7 @@ class Session:
         """The local simulation is sending `data` to the local game client.
         Returns what the local client should receive instead, or None for
         nothing."""
-        if not self.live:
+        if not self.live and not self._holding:
             return data
         consts = self._consts
         if self.role == HOST:
@@ -236,6 +392,8 @@ class Session:
     def command(self, name, args):
         """The local game client issued a command. Returns False if it must
         not run locally."""
+        if self._holding:
+            return not (_forwarded(name) or name.startswith(BLOCK_PREFIXES))
         if self.role != GUEST or not self.live:
             return True
         if _forwarded(name):

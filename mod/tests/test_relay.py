@@ -96,10 +96,20 @@ class RelayTest(unittest.TestCase):
         self.until("the reply", lambda: len(guest.game.delivered) == 3)
         self.assertEqual(guest.game.delivered[-1], (PIE_MENU, b"menu"))
 
-        # The host leaving its zone ends the session for both.
+        # The host leaving its zone ends the session for both. Once it is
+        # back the guest loads what the host saves and joins again.
         host.game.zone = False
-        self.until("the end", lambda: not guest.session.live)
-        self.assertEqual(guest.session.outbound(40, b"local"), b"local")
+        self.until("the end", lambda: not guest.session.live and guest.session.stale)
+        self.assertIsNone(guest.session.outbound(40, b"local"))
+        host.game.zone = True
+        self.until("the request", lambda: host.game.snapshots)
+        host.game.snapshots[0](big)
+        self.until("the snapshot", lambda: guest.game.adopted)
+        self.assertEqual(guest.game.adopted, [big])
+        guest.game.zone = False
+        self.until("the guest to leave", lambda: not guest.session._in_zone)
+        guest.game.zone = True
+        self.until("the session again", lambda: host.session.live and guest.session.live)
 
     def test_a_game_that_restarts_rejoins(self):
         host, guest = self.host, self.guest

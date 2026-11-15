@@ -41,8 +41,13 @@ Tried with two computers and two copies of the game:
 - **One log for both games.** Each mod sends its log lines to the other side,
   and the launcher shows the latest ones under the session status.
 
-Not handled yet: travel to another lot, dialogs meant for one player, a guest
-joining after the host has unpaused, Create-a-Sim. In build mode, furniture
+When the host's lot is loaded again (after Create-a-Sim or travel), the guest
+loads the host's world again and rejoins; this is new and not yet proven in
+two games.
+
+Not handled yet: dialogs meant for one player, a guest joining after the host
+has unpaused, the guest following the host into Create-a-Sim (it waits
+instead). In build mode, furniture
 and household funds have not been checked for double counting.
 
 ## How it works
