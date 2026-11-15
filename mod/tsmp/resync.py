@@ -143,30 +143,67 @@ def _put_in_place(persistence):
     global _pending
     zone_id, save, objects, _ = _pending
     _pending = None
-    import persistence_module
-    from protocolbuffers import FileSerialization_pb2 as serialization
-
     data = persistence.get_save_game_data_proto()
     data.Clear()
     data.MergeFromString(save)
     persistence.build_caches()
     if objects:
-        message = serialization.ZoneObjectData()
-        message.MergeFromString(objects)
-        persistence_module.run_persistence_operation(
-            persistence_module.PersistenceOpType.kPersistenceOpSaveZoneObjects, message, 0, None)
+        keep_objects(zone_id, objects)
     log.info("resync: the host's save is in place ({} bytes, {} of objects), zone {:#x}".format(
         len(save), len(objects), zone_id))
 
 
+def objects_of(zone_id):
+    """Bytes of the objects of a zone as this game last saved them."""
+    return _objects.get(zone_id, b"")
+
+
+def keep_objects(zone_id, objects):
+    """Make `objects` (bytes of a ZoneObjectData) the saved objects of a
+    zone, here and in the game client, which is what loads them."""
+    import persistence_module
+    from protocolbuffers import FileSerialization_pb2 as serialization
+
+    message = serialization.ZoneObjectData()
+    message.MergeFromString(objects)
+    persistence_module.run_persistence_operation(
+        persistence_module.PersistenceOpType.kPersistenceOpSaveZoneObjects, message, 0, None)
+    _objects[zone_id] = objects
+
+
+def save_then(done):
+    """Save the way the game does before a travel, then call
+    `done(persistence service)`, or `done(None)` when the game refused. The
+    save runs over several ticks."""
+    import services
+
+    persistence = services.get_persistence_service()
+
+    def save_gen(timeline):
+        saved = None
+        try:
+            result = yield from persistence.save_to_scratch_slot_gen(timeline)
+            if result != 0:
+                log.info("resync: the game refused to save ({})".format(result))
+            else:
+                saved = persistence
+        except Exception:
+            log.exception("resync: saving failed")
+        try:
+            done(saved)
+        except Exception:
+            log.exception("resync: could not use the save")
+
+    persistence.save_using(save_gen)
+
+
 def take(done, zone_id=0):
     """Host: save, then call `done(payload)`, or `done(None)` on failure.
-    The save runs over several ticks, like any save of the game. The snapshot
-    is for a guest in `zone_id`, or in the host's own zone when that is 0."""
+    The snapshot is for a guest in `zone_id`, or in the host's own zone when
+    that is 0."""
     import services
     from clock import ClockSpeedMode
 
-    persistence = services.get_persistence_service()
     # What happens between the snapshot and the guest being back is lost on
     # the guest, so nothing should happen. Either player can resume.
     try:
@@ -174,13 +211,10 @@ def take(done, zone_id=0):
     except Exception:
         log.exception("resync: could not pause")
 
-    def save_gen(timeline):
+    def saved(persistence):
         payload = None
         try:
-            result = yield from persistence.save_to_scratch_slot_gen(timeline)
-            if result != 0:
-                log.info("resync: the game refused to save ({})".format(result))
-            else:
+            if persistence is not None:
                 target = zone_id or services.current_zone_id() or 0
                 save = persistence.get_save_game_data_proto().SerializeToString()
                 objects = _objects.get(target, b"")
@@ -191,13 +225,13 @@ def take(done, zone_id=0):
             log.exception("resync: snapshot failed")
         done(payload)
 
-    persistence.save_using(save_gen)
+    save_then(saved)
 
 
 def adopt(payload, sim_id):
     """Guest: keep the host's snapshot and ask the game client to reload
-    the zone it was made for, which is the one we are in. Raises ValueError for a snapshot that cannot be
-    read."""
+    the zone it was made for, which is the one we are in. Raises ValueError
+    for a snapshot that cannot be read."""
     global _pending
     zone_id, save, objects = unpack(payload)
     if not zone_id or not save:

@@ -16,6 +16,13 @@ are connected, neither is muted, and each plays its own lot by itself. They
 are joined when the guest comes to the lot the host is on, and the guest
 then loads the host's state as after any reload.
 
+Each player may come with a save of their own. Two games in different saves
+cannot be joined, so the guest first gives its household to the host, who
+puts it into its save (see tsmp/household.py), and then loads the host's
+state, in which it keeps playing that household. The guest gives its
+household again whenever it has played by itself: every few minutes while
+apart, and before it joins the host on a lot.
+
 Pure logic with no game imports: the game is reached through the `game`
 adapter (see live.Game) so this can be tested outside the game.
 """
@@ -37,6 +44,9 @@ BLOCK_PREFIXES = ("animation.", "clock.")
 # Ticks a stale guest waits for the host's state, or for its own game client
 # to start loading it, before it gives up and joins as it is.
 RESYNC_TICKS = 1800
+# Ticks between two times a guest playing by itself gives its household to
+# the host. Giving takes a save, which the player notices.
+GIVE_TICKS = 9000
 
 
 class Consts:
@@ -66,6 +76,13 @@ class Session:
                                        the snapshot is for a guest in that zone
         adopt(payload)                 guest: load the host's snapshot by
                                        reloading the zone; raises on failure
+        save_id()                      what tells one save from another, or 0
+        contribute(done)               guest: save, then done(bytes or None)
+                                       with the household it plays
+        merge(payload)                 host: take that household into its
+                                       save; raises on failure
+        welcome(sim_id)                host: have the other player's sim on
+                                       the lot and controllable
     `send(frame)` queues a packed frame for the launcher.
     """
 
@@ -81,6 +98,19 @@ class Session:
         self._in_zone = False
         self._zone = 0
         self.remote_zone = 0
+        self._save = 0
+        self.remote_save = 0
+        # Guest: the host's save we last tried to get into.
+        self._glued = 0
+        # Guest: our household is to be given to the host before its state
+        # is loaded, and whether that is under way.
+        self._give = False
+        self._giving = False
+        # Guest: tick of the last time the household was given while apart.
+        self._gave = 0
+        # Guest: we were joined since we last loaded the host's state, so the
+        # host's simulation, not ours, knows how things are.
+        self._behind = False
         # Guest: the two were on different lots since the host's state was
         # last loaded, so what we have of the host's lot is not what it has.
         self._apart = False
@@ -109,7 +139,7 @@ class Session:
         """True while the two games are joined: messages flow host -> guest
         and commands guest -> host."""
         return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
-                and self.same_zone and not self._stale)
+                and self.same_zone and self.same_save and not self._stale)
 
     @property
     def same_zone(self):
@@ -117,10 +147,15 @@ class Session:
         return not self._zone or not self.remote_zone or self._zone == self.remote_zone
 
     @property
+    def same_save(self):
+        """False when both are known to play different saves."""
+        return not self._save or not self.remote_save or self._save == self.remote_save
+
+    @property
     def apart(self):
         """True while both play, each on a lot of its own."""
         return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
-                and not self.same_zone)
+                and not (self.same_zone and self.same_save))
 
     @property
     def stale(self):
@@ -141,6 +176,8 @@ class Session:
         self.remotes = 0
         self._in_zone = bool(self._game.in_zone())
         self._zone = self._zone_id() if self._in_zone else 0
+        self._save = self._save_id() if self._in_zone else 0
+        self._glued = 0
         self._announce(want=True)
         self._log("bridge connected, role {}".format(self.role))
         self._check_live()
@@ -160,6 +197,16 @@ class Session:
         self._left = False
         self._snapshotting = False
         self._apart = False
+        self._behind = False
+        self._give = False
+        self._giving = False
+        self._gave = self._ticks
+
+    def _save_id(self):
+        try:
+            return int(self._game.save_id() or 0)
+        except Exception:
+            return 0
 
     def _zone_id(self):
         try:
@@ -170,6 +217,7 @@ class Session:
     def _forget_remote(self):
         self.remote_in_zone = False
         self.remote_zone = 0
+        self.remote_save = 0
         self.remote_sim_id = 0
         self._reported_sim_id = 0
 
@@ -184,26 +232,42 @@ class Session:
         if self._in_zone and self._zone:
             # As text: ids are 64 bits wide.
             fields["zone"] = str(self._zone)
+        if self._in_zone and self._save:
+            fields["save"] = str(self._save)
         if want:
             fields["want"] = True
         self._send(frames.control("state", **fields))
 
     def _check_live(self):
         if self.role == GUEST and not self._stale and self._in_zone and self.remote_in_zone and self.remotes > 0:
-            if not self.same_zone:
-                if not self._apart:
+            if not self.same_save:
+                if self._glued != self.remote_save:
+                    # Once for a save: if it does not work, each plays alone.
+                    self._glued = self.remote_save
+                    self._log("the host plays another save; bringing our household into it")
+                    self._go_stale(give=True)
+            elif not self.same_zone:
+                if self._behind:
+                    # We were muted on the host's lot: what we have of our
+                    # sims is older than what the host has.
+                    self._log("left the host's lot")
+                    self._go_stale()
+                elif not self._apart:
                     self._apart = True
+                    self._gave = self._ticks
                     self._log("the host is on another lot; playing this one by ourselves")
             elif self._apart:
-                # Our copy of this lot was not played by the host.
+                # Our copy of this lot was not played by the host, and the
+                # host's copy of our household was not played by us.
                 self._log("on the host's lot again")
-                self._go_stale()
+                self._go_stale(give=True)
         live = self.live
         if live == self._was_live:
             return
         self._was_live = live
         self._log("session is live as {}".format(self.role) if live else "session is not live")
         if live and self.role == GUEST:
+            self._behind = True
             self._report_sim()
 
     def _report_sim(self):
@@ -223,6 +287,8 @@ class Session:
         if in_zone != self._in_zone or zone != self._zone:
             self._in_zone = in_zone
             self._zone = zone
+            if in_zone:
+                self._save = self._save_id()
             # The host forgets our sim when we leave a zone.
             self._reported_sim_id = 0
             if self._stale:
@@ -234,26 +300,81 @@ class Session:
             self._check_live()
         if self.role == GUEST and self.live:
             self._report_sim()
+        if self.role == GUEST and self._apart and not self._stale and self.apart and self.same_save:
+            if not self._giving and self._ticks - self._gave > GIVE_TICKS:
+                self._contribute()
 
     # -- a guest following the host through a reload ---------------------
 
     def resync(self):
         """Guest: load the host's state again, as after a reload of its
         zone. Returns False when there is nobody to load it from."""
-        if self.role != GUEST or not self.live:
+        if self.role != GUEST or self._stale or not (self.live or self.apart):
             return False
         self._log("reloading from the host on request")
-        self._go_stale()
+        # Apart, we are the one who knows how our household is.
+        self._go_stale(give=not self.live)
         self._check_live()
         return True
 
-    def _go_stale(self):
+    def _go_stale(self, give=False):
         self._stale = True
         self._asked = 0
         self._adopting = False
         self._left = False
         self._apart = False
+        self._behind = False
+        self._give = give
+        self._giving = False
         self._announce()
+
+    # -- a guest giving its household to the host ------------------------
+
+    def _contribute(self):
+        self._giving = True
+        self._gave = self._ticks
+        try:
+            self._game.contribute(self._contributed)
+        except Exception as error:
+            self._log("could not save our household: {}".format(error))
+            self._contributed(None)
+
+    def _contributed(self, payload):
+        if not self._giving or self.role != GUEST:
+            return
+        if payload is not None and self.remotes > 0:
+            self._send(frames.pack(frames.HOUSEHOLD, 0, payload))
+            if self._stale:
+                # The host answers with `merged`.
+                return
+        self._giving = False
+        if self._stale:
+            self._given(False)
+
+    def _given(self, ok):
+        """The host has our household, or will not have it."""
+        self._give = False
+        self._giving = False
+        self._asked = 0
+        if ok:
+            self._log("the host has our household")
+        elif self.same_save:
+            self._log("the host did not take our household; loading its state as it is")
+        else:
+            self._settle("the host did not take our household; each plays their own save")
+
+    def _merge(self, payload):
+        if self.role != HOST:
+            return
+        try:
+            if not self._in_zone:
+                raise ValueError("no zone is loaded")
+            self._game.merge(payload)
+        except Exception as error:
+            self._log("could not take the other player's household: {}".format(error))
+            self._send(frames.control("merged", ok=False))
+        else:
+            self._send(frames.control("merged", ok=True))
 
     def _settle(self, why):
         """Stop being stale, with or without the host's state."""
@@ -281,10 +402,19 @@ class Session:
         if self._adopting:
             if not self._left and self._ticks - self._asked > RESYNC_TICKS:
                 self._settle("the game did not reload after the host; staying as we are")
+        elif self._giving:
+            if self._ticks - self._asked > RESYNC_TICKS:
+                self._given(False)
         elif self._asked:
             if self._ticks - self._asked > RESYNC_TICKS:
                 self._settle("the host did not send its state; staying as we are")
-        elif self._in_zone and self.remote_in_zone and self.remotes > 0:
+        elif not (self._in_zone and self.remote_in_zone and self.remotes > 0):
+            pass
+        elif self._give:
+            self._asked = self._ticks
+            self._log("giving our household to the host")
+            self._contribute()
+        else:
             self._asked = self._ticks
             self._log("asking the host for its state")
             if self._zone:
@@ -344,6 +474,8 @@ class Session:
         elif kind == frames.STATE:
             self._adopt(payload)
             self._check_live()
+        elif kind == frames.HOUSEHOLD:
+            self._merge(payload)
 
     def _control(self, message):
         kind = message.get("type")
@@ -367,6 +499,7 @@ class Session:
             was_live = self.live
             self.remote_in_zone = bool(message.get("in_zone"))
             self.remote_zone = _number(message.get("zone"))
+            self.remote_save = _number(message.get("save"))
             if self.role == GUEST and was_live and not self.remote_in_zone:
                 # Its zone will be built again, and its game client with it.
                 self._log("the host left its zone")
@@ -379,8 +512,16 @@ class Session:
         elif kind == "resync_failed":
             if self.role == GUEST and self._stale and not self._adopting:
                 self._settle("the host could not save; staying as we are")
+        elif kind == "merged":
+            if self.role == GUEST and self._stale and self._giving:
+                self._given(bool(message.get("ok")))
         elif kind == "active_sim":
             self.remote_sim_id = _number(message.get("sim_id"))
+            if self.role == HOST and self.remote_sim_id and self._in_zone:
+                try:
+                    self._game.welcome(self.remote_sim_id)
+                except Exception as error:
+                    self._log("could not bring the other player's sim in: {}".format(error))
         self._check_live()
 
     def _execute(self, message):

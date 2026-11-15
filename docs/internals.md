@@ -356,12 +356,15 @@ payload`, little endian.
 | 3 CONTROL | 0 | JSON `{"type": ...}` |
 | 4 NATIVE | hash of the call | a call a game client made into its simulation past Python |
 | 5 STATE | 0 | the host's save as it is now (`tsmp/resync.py`) |
+| 6 HOUSEHOLD | 0 | the guest's household, sims and home lot (`tsmp/household.py`) |
 
 Control messages: `link {remotes}` (launcher -> its game: how many other
 launchers are connected), `gone` (launcher -> the other side: the game here
 disconnected), `state {role, in_zone, zone?, want?}` (game -> game; `want` asks for
 the other's state in return), `active_sim {sim_id}` (guest -> host),
-`resync {zone?}` (guest -> host: send your state, for a guest on that lot), `resync_failed` (host -> guest).
+`resync {zone?}` (guest -> host: send your state, for a guest on that lot), `resync_failed` (host -> guest), `merged {ok}` (host -> guest: your
+household is, or is not, in my save). `state` also carries `save`, the `guid`
+of the game's `SaveGameData`.
 
 The launchers only relay; the guest's launcher opens a second connection to
 the host's with `JoinLive` and after the `Hello` reply the socket carries raw
@@ -427,21 +430,62 @@ connected, not muted, each playing its lot by itself.
 - The host travels: the guest does not follow. It reloads the lot it is on
   from the host's save (the host keeps the `ZoneObjectData` of every zone it
   saved, so the lot comes as the host left it) and plays on alone.
-- The guest travels: nothing is loaded; it plays the other lot alone.
-- The guest arrives on the host's lot: it loads the host's state and joins.
+- The guest travels away from the host: while joined its own simulation was
+  muted and is behind, so on the new lot it loads the host's state once more
+  and then plays alone.
+- The guest arrives on the host's lot: it gives its household to the host
+  (below), loads the host's state and joins.
 
-What is not there yet is the way back: nothing a guest does while apart
-reaches the host, so it is lost when the guest next loads the host's state.
-That needs the guest's household and lot to be merged into the host's save.
+### Households from different saves
+
+Each player can make a household in a save of their own and bring it along.
+`SaveGameData.guid` is the same in every save and slot that descends from one
+new game and differs between new games, so two games compare it to know
+whether they are in the same world. A session is never live across two
+saves. Instead:
+
+1. The guest saves (the save the game makes before a travel) and sends a
+   partial `SaveGameData`: the `HouseholdData` of the household it plays, the
+   `SimData` of its sims, the `ZoneData` of its home lot, and the
+   `ZoneObjectData` of that lot.
+2. The host copies those into its own save through the persistence service
+   (`add_sim_proto_buff`, `add_household_proto_buff`, the zone's message in
+   place) and calls `HouseholdManager.load_household`, which is what the game
+   does for a household it meets in a save. For a household already in
+   memory that call reads every sim that is not on the current lot again.
+   The lot is only handed over when it has no owner in the host's save and
+   the host is not standing on it; ownership is written both to
+   `ZoneData.household_id` and to the lot's `lot_owner` in its neighbourhood.
+   A household whose lot is taken arrives homeless. The household the host
+   itself plays is never replaced.
+3. The host answers `merged`, and the guest asks for the host's state as
+   after any reload. The game client reconnects with the household it was
+   playing, which the host's save now has, so the guest goes on playing its
+   own household in the host's world.
+
+When the host refuses, or the guest cannot save, both keep playing their own
+saves unjoined, and it is not tried again for that save.
+
+The same message keeps the host up to date afterwards: a guest that plays by
+itself gives its household every `GIVE_TICKS` ticks and before it joins the
+host on a lot. While joined nothing is given, as the host's simulation is the
+one that runs.
+
+When the guest reports the sim it controls and that sim belongs to another
+household than the host's, the host adds it to its client's selectable sims
+and spawns it if it is not on the lot, so that it is simulated as a played
+sim.
+
+Not merged: relationships (they live in a service of the save, not in the
+sims), the clock (each game keeps its own while apart), and whatever happened
+on the guest's lot between its last gift and the host walking onto that lot.
 
 This has only been run against fakes (`mod/tests/test_session.py`,
 `test_relay.py`, `test_resync.py`); it has not been seen working in two games
 yet.
 
 Known gaps: there is no replay, so the host should stay paused until the
-guest is in; a guest that starts from a different save than the host only
-gets the host's world after a reload (`tsmp.resync`, or the host leaving its
-zone once); dialogs and notifications go to both players; the guest does not
+guest is in; dialogs and notifications go to both players; the guest does not
 follow the host into CAS, it waits; replies to commands that still run
 locally on the guest (hovertips, for one) never arrive.
 

@@ -9,7 +9,7 @@ import json
 import os
 
 from tsmp import bridge as bridge_module
-from tsmp import frames, hooks, log, native, resync, session as session_module
+from tsmp import frames, hooks, household, log, native, resync, session as session_module
 
 _bridge = None
 _session = None
@@ -171,6 +171,25 @@ class Game:
     def adopt(self, payload):
         resync.adopt(payload, self.active_sim_id())
 
+    def save_id(self):
+        try:
+            import services
+
+            return services.get_persistence_service().get_save_slot_proto_guid() or 0
+        except Exception:
+            return 0
+
+    def contribute(self, done):
+        resync.install()
+        household.give(done)
+
+    def merge(self, payload):
+        resync.install()
+        household.take_in(payload)
+
+    def welcome(self, sim_id):
+        household.welcome(sim_id, _client())
+
 
 def _endpoint(directory):
     """The launcher writes bridge.json while it wants the mod connected."""
@@ -300,7 +319,7 @@ def start(directory, native_sync=True):
 def reload_from_host():
     """For the tsmp.resync cheat."""
     if _session is None or not _session.resync():
-        return "only a guest in a live session can reload from the host"
+        return "only a guest playing with a host can reload from it"
     return "reloading from the host"
 
 
@@ -315,7 +334,8 @@ def describe():
             "connected" if _bridge.connected else "not connected",
             "in game" if _session.remote_in_zone else "not in game",
         ) + (", waiting to reload after the host" if _session.stale else "")
-          + (", on another lot" if _session.apart else ""),
+          + (", in another save" if not _session.same_save else
+             ", on another lot" if _session.apart else ""),
         "ticks {}, relayed {}, delivered {}, forwarded {}, executed {}".format(
             _ticks, _session.relayed, _session.delivered, _session.forwarded, _session.executed
         ),

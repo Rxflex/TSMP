@@ -42,8 +42,10 @@ Tried with two computers and two copies of the game:
   and the launcher shows the latest ones under the session status.
 
 When the host's lot is loaded again (after Create-a-Sim or travel), the guest
-loads the host's world again and rejoins; this is new and not yet proven in
-two games.
+loads the host's world again and rejoins. Players can be on different lots,
+each playing their own. A guest can also come with a household made in a save
+of their own: it is copied into the host's save, and the guest keeps playing
+it there. All of this is new and not yet proven in two games.
 
 Not handled yet: dialogs meant for one player, a guest joining after the host
 has unpaused, the guest following the host into Create-a-Sim (it waits

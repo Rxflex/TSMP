@@ -47,6 +47,11 @@ class FakeGame:
         self.lot = 7
         self.adopted = []
         self.adopt_error = None
+        self.save = 1
+        self.contributions = []
+        self.merged = []
+        self.merge_error = None
+        self.welcomed = []
 
     def in_zone(self):
         return self.zone
@@ -73,6 +78,20 @@ class FakeGame:
         if self.adopt_error is not None:
             raise self.adopt_error
         self.adopted.append(payload)
+
+    def save_id(self):
+        return self.save
+
+    def contribute(self, done):
+        self.contributions.append(done)
+
+    def merge(self, payload):
+        if self.merge_error is not None:
+            raise self.merge_error
+        self.merged.append(payload)
+
+    def welcome(self, sim_id):
+        self.welcomed.append(sim_id)
 
 
 class Player:
@@ -166,7 +185,7 @@ class HandshakeTest(unittest.TestCase):
         self.assertEqual(host.take(), [])
         host.game.zone = True
         host.session.tick()
-        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": True, "zone": "7"}])
+        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": True, "zone": "7", "save": "1"}])
 
     def test_live_once_both_are_in_a_zone(self):
         host, guest = joined()
@@ -384,6 +403,27 @@ def host_reloads(host, guest):
     settle(host, guest)
 
 
+def reloads_from_host(host, guest):
+    """A stale guest asks for the host's state, gets it and loads it."""
+    guest.session.tick()
+    settle(host, guest)
+    host.game.snapshots[-1](b"save")
+    settle(host, guest)
+    guest.game.zone = False
+    guest.session.tick()
+    guest.game.save = host.game.save
+    guest.game.zone = True
+    guest.session.tick()
+    settle(host, guest)
+
+
+def gives(host, guest, payload=b"household"):
+    """A stale guest saves its household and the host answers."""
+    guest.session.tick()
+    guest.game.contributions[-1](payload)
+    settle(host, guest)
+
+
 def asked(player):
     return [payload for kind, _, payload in player.sent if kind == frames.CONTROL and b'"resync"' in payload]
 
@@ -401,6 +441,11 @@ class LotsTest(unittest.TestCase):
     def test_players_on_different_lots_each_play_their_own(self):
         host, guest = joined()
         self.moves(guest, host, 8)
+        # It was muted until now, so it starts from what the host has.
+        self.assertTrue(guest.session.stale)
+        reloads_from_host(host, guest)
+        self.assertEqual(host.game.snapshot_zones, [8])
+        self.assertEqual(guest.game.contributions, [])
         self.assertFalse(guest.session.live)
         self.assertFalse(host.session.live)
         self.assertTrue(guest.session.apart)
@@ -434,12 +479,46 @@ class LotsTest(unittest.TestCase):
     def test_a_guest_coming_to_the_hosts_lot_loads_it_from_the_host(self):
         host, guest = joined()
         self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
         self.moves(guest, host, 7)
         self.assertTrue(guest.session.stale)
         self.assertFalse(host.session.live)
+        # What it did by itself goes to the host first.
+        gives(host, guest)
+        self.assertEqual(host.game.merged, [b"household"])
+        self.assertEqual(asked(guest), [])
+        reloads_from_host(host, guest)
+        self.assertEqual(host.game.snapshot_zones, [8, 7])
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+
+    def test_a_guest_playing_by_itself_gives_its_household_now_and_then(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        for _ in range(session.GIVE_TICKS):
+            guest.session.tick()
+        self.assertEqual(guest.game.contributions, [])
         guest.session.tick()
+        guest.session.tick()
+        self.assertEqual(len(guest.game.contributions), 1)
+        guest.game.contributions[0](b"household")
         settle(host, guest)
-        self.assertEqual(host.game.snapshot_zones, [7])
+        self.assertEqual(host.game.merged, [b"household"])
+        self.assertFalse(guest.session.stale)
+        self.assertTrue(guest.session.apart)
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
+
+    def test_a_guest_playing_by_itself_can_ask_to_reload(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        self.assertTrue(guest.session.resync())
+        gives(host, guest)
+        reloads_from_host(host, guest)
+        self.assertEqual(host.game.merged, [b"household"])
+        self.assertEqual(host.game.snapshot_zones, [8, 8])
+        self.assertTrue(guest.session.apart)
 
     def test_starting_on_different_lots(self):
         host, guest = Player(session.HOST), Player(session.GUEST)
@@ -459,6 +538,91 @@ class LotsTest(unittest.TestCase):
         host, guest = joined()
         guest.session.frame(frames.CONTROL, 0, b'{"type":"state","role":"host","in_zone":true}')
         self.assertTrue(guest.session.live)
+
+
+def strangers():
+    """A host and a guest on the same lot, each in a save of their own."""
+    host, guest = Player(session.HOST), Player(session.GUEST)
+    host.game.zone = guest.game.zone = True
+    guest.game.sim_id = 222
+    guest.game.save = 2
+    host.session.bridge_up(session.HOST)
+    guest.session.bridge_up(session.GUEST)
+    host.link(1)
+    guest.link(1)
+    settle(host, guest)
+    return host, guest
+
+
+class HouseholdTest(unittest.TestCase):
+    def test_games_in_different_saves_are_not_joined(self):
+        host, guest = strangers()
+        self.assertFalse(host.session.live)
+        self.assertFalse(guest.session.live)
+        self.assertTrue(guest.session.stale)
+        self.assertEqual(host.game.snapshots, [])
+
+    def test_the_guest_brings_its_household_into_the_hosts_save(self):
+        host, guest = strangers()
+        gives(host, guest)
+        self.assertEqual(host.game.merged, [b"household"])
+        reloads_from_host(host, guest)
+        self.assertEqual(host.game.snapshot_zones, [7])
+        self.assertEqual(guest.game.adopted, [b"save"])
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+        self.assertEqual(host.game.welcomed, [222])
+
+    def test_each_plays_their_own_save_when_the_host_cannot_take_the_household(self):
+        host, guest = strangers()
+        host.game.merge_error = ValueError("no")
+        gives(host, guest)
+        self.assertFalse(guest.session.stale)
+        self.assertFalse(guest.session.live)
+        self.assertFalse(host.session.live)
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
+        self.assertTrue(guest.session.command("interactions.choices", ["1"]))
+        # Not tried again and again.
+        for _ in range(5):
+            guest.session.tick()
+            settle(host, guest)
+        self.assertEqual(len(guest.game.contributions), 1)
+        self.assertEqual(host.game.snapshots, [])
+
+    def test_each_plays_their_own_save_when_the_guest_cannot_save(self):
+        host, guest = strangers()
+        gives(host, guest, None)
+        self.assertEqual(host.game.merged, [])
+        self.assertFalse(guest.session.stale)
+        self.assertFalse(guest.session.live)
+
+    def test_each_plays_their_own_save_when_the_host_never_answers(self):
+        host, guest = strangers()
+        guest.session.tick()
+        guest.game.contributions[0](b"household")
+        guest.take()
+        for _ in range(session.RESYNC_TICKS + 2):
+            guest.session.tick()
+        self.assertFalse(guest.session.stale)
+        self.assertFalse(guest.session.live)
+        self.assertEqual(asked(guest), [])
+
+    def test_a_host_outside_a_zone_does_not_take_a_household(self):
+        host = Player(session.HOST)
+        host.session.bridge_up(session.HOST)
+        host.take()
+        host.session.frame(frames.HOUSEHOLD, 0, b"household")
+        self.assertEqual(host.game.merged, [])
+        self.assertEqual(host.controls(), [{"type": "merged", "ok": False}])
+
+    def test_a_guest_does_not_take_households(self):
+        host, guest = joined()
+        guest.session.frame(frames.HOUSEHOLD, 0, b"household")
+        self.assertEqual(guest.game.merged, [])
+
+    def test_the_host_has_the_guests_sim_brought_in(self):
+        host, guest = joined()
+        self.assertEqual(host.game.welcomed, [222])
 
 
 class ResyncTest(unittest.TestCase):
