@@ -81,6 +81,7 @@ class Session:
                                        with the household it plays
         merge(payload)                 host: take that household into its
                                        save; raises on failure
+        pause()                        host: pause the game
         welcome(sim_id)                host: have the other player's sim on
                                        the lot and controllable
     `send(frame)` queues a packed frame for the launcher.
@@ -269,6 +270,16 @@ class Session:
         if live and self.role == GUEST:
             self._behind = True
             self._report_sim()
+        elif live:
+            # The guest's game client comes out of a loading screen paused
+            # and only hears of a speed when it changes. Had we kept
+            # running, it would show a pause that pressing play, which
+            # changes nothing here, never lifts. Paused, both agree, and
+            # either player resumes.
+            try:
+                self._game.pause()
+            except Exception as error:
+                self._log("could not pause for the other player: {}".format(error))
 
     def _report_sim(self):
         sim_id = self._game.active_sim_id() or 0

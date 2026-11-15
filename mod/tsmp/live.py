@@ -191,6 +191,12 @@ class Game:
     def welcome(self, sim_id):
         household.welcome(sim_id, _client())
 
+    def pause(self):
+        import services
+        from clock import ClockSpeedMode
+
+        services.game_clock_service().set_clock_speed(ClockSpeedMode.PAUSED)
+
 
 def _endpoint(directory):
     """The launcher writes bridge.json while it wants the mod connected."""

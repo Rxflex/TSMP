@@ -52,6 +52,7 @@ class FakeGame:
         self.merged = []
         self.merge_error = None
         self.welcomed = []
+        self.pauses = 0
 
     def in_zone(self):
         return self.zone
@@ -92,6 +93,9 @@ class FakeGame:
 
     def welcome(self, sim_id):
         self.welcomed.append(sim_id)
+
+    def pause(self):
+        self.pauses += 1
 
 
 class Player:
@@ -603,6 +607,11 @@ class HouseholdTest(unittest.TestCase):
         settle(host, guest)
         guest.session.tick()
         self.assertEqual(len(guest.game.contributions), 2)
+
+    def test_the_host_pauses_when_a_guest_joins(self):
+        host, guest = joined()
+        self.assertEqual(host.game.pauses, 1)
+        self.assertEqual(guest.game.pauses, 0)
 
     def test_each_plays_their_own_save_when_the_guest_cannot_save(self):
         host, guest = strangers()
