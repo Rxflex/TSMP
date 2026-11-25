@@ -55,7 +55,21 @@ class Changelog:
                           re.M | re.S)
         if match is None:
             return None
-        return (match.group(1) or "").strip(), match.group(2).strip()
+        return (match.group(1) or "").strip(), unwrap(match.group(2).strip())
+
+
+def unwrap(markdown):
+    """Join the lines a paragraph or list item is wrapped over: a release page
+    keeps every line break, where a README would join them."""
+    lines = []
+    for line in markdown.split("\n"):
+        continues = line.startswith("  ") and not line.lstrip().startswith(("- ", "* "))
+        starts = re.match(r"\s*(?:[-*] |\d+\. |#|\||<|>|```)", line)
+        if lines and lines[-1].strip() and line.strip() and (continues or not starts):
+            lines[-1] += " " + line.strip()
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 class Change:
