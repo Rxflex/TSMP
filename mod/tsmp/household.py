@@ -153,8 +153,9 @@ def note_joined(household_ids):
         log.exception("household: could not note the households played here")
 
 
-def give(done):
-    """Guest: save, then call `done(payload)`, or `done(None)` on failure."""
+def give(done, whole=False):
+    """Guest: save, then call `done(payload)`, or `done(None)` on failure.
+    `whole` gives all of the household, for a host that has none of it."""
     import services
     from protocolbuffers import FileSerialization_pb2 as serialization
 
@@ -169,14 +170,15 @@ def give(done):
         part = serialization.SaveGameData()
         part.households.add().CopyFrom(household)
         here = services.current_zone_id() or 0
-        # In the host's save, our simulation only ran what is on our lot;
-        # the rest of what we have is the host's copy as we loaded it, and
-        # older than the host's own.
-        ours_only = resync.playing_adopted()
+        # In the host's save, our simulation only ran the lots we were on
+        # since we loaded the host's state; the rest of what we have is the
+        # host's copy as we loaded it, and older than the host's own.
+        ours_only = resync.playing_adopted() and not whole
+        ran = resync.ran_zones() | frozenset([here])
         stands = []
         for sim_id in household.sims.ids:
             sim = persistence.get_sim_proto_buff(sim_id)
-            if sim is not None and ran_here(sim, ours_only, here):
+            if sim is not None and ran_here(sim, ours_only, ran):
                 part.sims.add().CopyFrom(sim)
                 stands.append(sim.zone_id)
         home = household.home_zone
@@ -190,7 +192,7 @@ def give(done):
         has_home = home and persistence.get_zone_proto_buff(home) is not None
         # What we keep of a lot we are not on is only as new as our last
         # visit, or the host's copy when it came with its save.
-        objects = resync.objects_of(home) if has_home and (not ours_only or home == here) else b""
+        objects = resync.objects_of(home) if has_home and (not ours_only or home in ran) else b""
         home, objects = resync.as_host(part, home, objects)
         save = part.SerializePartialToString()
         payload = resync.pack(home, save, objects)
@@ -201,10 +203,11 @@ def give(done):
     resync.save_then(lambda persistence: done(packed(persistence)))
 
 
-def ran_here(sim, ours_only, here):
+def ran_here(sim, ours_only, ran):
     """Whether to give the SimData `sim`: all of them from a save of our
-    own, only those on our lot `here` from the host's save."""
-    return not ours_only or sim.zone_id == here
+    own, from the host's save only those in a zone of `ran`, the zones our
+    simulation ran."""
+    return not ours_only or sim.zone_id in ran
 
 
 def _unique(zone_ids):

@@ -121,6 +121,11 @@ _save_unknown = False
 # Guest: how many of the host's snapshots were put in place, which tells a
 # reload into the host's state from one of our own.
 _put = 0
+# Guest: zones our own simulation saved since the host's state was last put
+# in place: those it ran, and of which what we have is newer than the
+# host's copy. While objects are put in place of a zone's, they are not ours.
+_ran = set()
+_placing = False
 
 
 def current_save():
@@ -158,6 +163,12 @@ def forget_names():
 def snapshots_put():
     """Guest: how many of the host's snapshots have been put in place."""
     return _put
+
+
+def ran_zones():
+    """Guest: the zones our own simulation ran since we last loaded the
+    host's state."""
+    return frozenset(_ran)
 
 
 def playing_adopted():
@@ -238,6 +249,8 @@ def install():
         if operation == save_objects:
             try:
                 _objects[message.zone_id] = message.SerializeToString()
+                if not _placing:
+                    _ran.add(message.zone_id)
             except Exception:
                 log.exception("resync: could not keep the zone's objects")
         return original_run(operation, message, *args, **kwargs)
@@ -298,6 +311,7 @@ def _put_in_place(persistence):
     zone_id, save, objects, _ = _pending
     _pending = None
     _put += 1
+    _ran.clear()
     data = persistence.get_save_game_data_proto()
     data.Clear()
     data.MergeFromString(save)
@@ -348,10 +362,15 @@ def keep_objects(zone_id, objects):
     import persistence_module
     from protocolbuffers import FileSerialization_pb2 as serialization
 
+    global _placing
     message = serialization.ZoneObjectData()
     message.MergeFromString(objects)
-    persistence_module.run_persistence_operation(
-        persistence_module.PersistenceOpType.kPersistenceOpSaveZoneObjects, message, 0, None)
+    _placing = True
+    try:
+        persistence_module.run_persistence_operation(
+            persistence_module.PersistenceOpType.kPersistenceOpSaveZoneObjects, message, 0, None)
+    finally:
+        _placing = False
     _objects[zone_id] = objects
 
 

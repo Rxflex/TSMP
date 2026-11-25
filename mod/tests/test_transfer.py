@@ -103,6 +103,18 @@ class TransferTest(unittest.TestCase):
         self.assertIsNone(self.receiver.transfers.incoming(5))
         self.assertIn({"type": "drop", "id": 5}, [frames.parse_json(p) for _, _, p in self.receiver.take()])
 
+    def test_parts_of_a_transfer_given_up_here_are_answered_once(self):
+        self.sender.transfers.send("household", 9, b"x" * transfer.WINDOW * 3)
+        offer, *parts = self.sender.take()
+        deliver([offer, parts[0]], self.receiver)
+        self.receiver.take()
+        self.receiver.now = 100.0
+        self.receiver.transfers.expire(45)
+        deliver(parts[1:], self.receiver)
+        self.assertEqual([frames.parse_json(p) for _, _, p in self.receiver.take()], [{"type": "drop", "id": 9}])
+        deliver(parts[1:], self.receiver)
+        self.assertEqual(self.receiver.take(), [])
+
     def test_an_offer_too_large_is_refused(self):
         offer = self.receiver.transfers.receive({"type": "offer", "id": 6, "what": "state",
                                                  "size": transfer.MAX_SIZE + 1})

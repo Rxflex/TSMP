@@ -148,6 +148,8 @@ live-no-remote = O launcher do outro jogador não está conectado.
 live-load-save = Carregue o jogo salvo compartilhado para entrar na sessão.
 live-wait-remote = Aguardando o outro jogador carregar o jogo salvo compartilhado.
 live-on = Ao vivo. Os dois jogos estão conectados.
+live-syncing = Sincronizando os dois jogos. Mantenha os dois abertos; isso pode levar um ou dois minutos.
+live-apart = Os dois jogos estão rodando, cada um no seu próprio lote ou no seu próprio jogo salvo.
 
 ## Sizes and times
 

@@ -31,6 +31,9 @@ WINDOW = 2 * 1024 * 1024
 ACK_BYTES = 256 * 1024
 # Nothing a session sends comes near this.
 MAX_SIZE = 1024 * 1024 * 1024
+# Transfers we answered a part of with `drop`, remembered so that each is
+# answered once.
+REFUSED_KEPT = 64
 
 _OFFSET = struct.Struct("<I")
 
@@ -116,6 +119,7 @@ class Transfers:
         self._clock = clock
         self._out = {}
         self._in = {}
+        self._refused = []
 
     def send(self, what, ident, payload, **fields):
         """Start sending `payload`; the parts follow as the window allows."""
@@ -179,6 +183,11 @@ class Transfers:
         """Take a PART frame. Returns the Incoming once it is whole."""
         incoming = self._in.get(ident)
         if incoming is None:
+            # Given up here, perhaps while the other side could not hear
+            # it: tell it once, so that it stops and may send anew.
+            if ident not in self._refused:
+                self._refused = self._refused[-(REFUSED_KEPT - 1):] + [ident]
+                self._send(frames.control("drop", id=ident))
             return None
         try:
             confirm = incoming.add(payload, self._clock())

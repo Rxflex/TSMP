@@ -220,9 +220,27 @@ class Game:
         except Exception:
             return 0
 
-    def contribute(self, done):
+    def contribute(self, done, whole=False):
         resync.install()
-        household.give(done)
+        household.give(done, whole)
+
+    def household_id(self):
+        import services
+
+        return services.active_household_id() or 0
+
+    def has_household(self, household_id):
+        import services
+
+        return services.get_persistence_service().get_household_proto_buff(household_id) is not None
+
+    def progress(self):
+        """The game's clock and how many objects there are: either changes
+        when the game moves on."""
+        import services
+
+        ticks = services.time_service().sim_now.absolute_ticks()
+        return "{}:{}".format(ticks, len(services.object_manager()))
 
     def merge(self, payload, save_id=0):
         resync.install()

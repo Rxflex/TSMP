@@ -89,17 +89,40 @@ pub struct LiveStatus {
     pub game_connected: bool,
     /// The local game has a zone loaded.
     pub game_in_zone: bool,
+    /// The local game is getting in step with the other: loading its state
+    /// or giving it a household.
+    pub game_syncing: bool,
+    /// The local game says it is joined to the other.
+    pub game_joined: bool,
     /// Launchers on other machines connected to this one.
     pub remotes: usize,
     /// The other game has a zone loaded.
     pub remote_in_zone: bool,
+    pub remote_syncing: bool,
+    pub remote_joined: bool,
 }
 
 impl LiveStatus {
-    /// Both games are in a zone and joined.
+    /// Both games say they are joined.
     pub fn is_live(&self) -> bool {
-        self.game_connected && self.game_in_zone && self.remotes > 0 && self.remote_in_zone
+        self.game_connected && self.remotes > 0 && self.game_joined && self.remote_joined
     }
+
+    fn set_game(&mut self, game: GameState) {
+        (self.game_in_zone, self.game_syncing, self.game_joined) = (game.in_zone, game.syncing, game.joined);
+    }
+
+    fn set_remote(&mut self, game: GameState) {
+        (self.remote_in_zone, self.remote_syncing, self.remote_joined) = (game.in_zone, game.syncing, game.joined);
+    }
+}
+
+/// What a game says of itself in its `state` control frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GameState {
+    in_zone: bool,
+    syncing: bool,
+    joined: bool,
 }
 
 /// Builds a whole frame.
@@ -257,7 +280,7 @@ impl State {
     fn tell_game_about_remotes(&mut self) {
         self.status.remotes = self.remotes.len();
         if self.remotes.is_empty() {
-            self.status.remote_in_zone = false;
+            self.status.set_remote(GameState::default());
         }
         if let Some(game) = &self.game {
             game.send(self.link());
@@ -295,7 +318,7 @@ impl Inner {
                     old.close();
                 }
                 state.status.game_connected = true;
-                state.status.game_in_zone = false;
+                state.status.set_game(GameState::default());
                 let link = state.link();
                 state.game.as_ref().unwrap().send(link);
             }
@@ -305,7 +328,7 @@ impl Inner {
                     old.close();
                 }
                 state.remotes.push(peer);
-                state.status.remote_in_zone = false;
+                state.status.set_remote(GameState::default());
                 state.tell_game_about_remotes();
             }
         }
@@ -339,7 +362,7 @@ impl Inner {
                 None => false,
             };
         }
-        let in_zone = snoop_state(&frame);
+        let game_state = snoop_state(&frame);
         for line in snoop_log(&frame) {
             if state.log.len() == LOG_LINES {
                 state.log.pop_front();
@@ -352,8 +375,8 @@ impl Inner {
                 if state.game.as_ref().map(|game| game.id) != Some(id) {
                     return false;
                 }
-                if let Some(in_zone) = in_zone {
-                    state.status.game_in_zone = in_zone;
+                if let Some(game_state) = game_state {
+                    state.status.set_game(game_state);
                 }
                 let (last, rest) = match state.remotes.split_last() {
                     Some(split) => split,
@@ -368,9 +391,9 @@ impl Inner {
                 if !state.remotes.iter().any(|remote| remote.id == id) {
                     return false;
                 }
-                match in_zone {
-                    Some(in_zone) => state.status.remote_in_zone = in_zone,
-                    None if is_gone(&frame) => state.status.remote_in_zone = false,
+                match game_state {
+                    Some(game_state) => state.status.set_remote(game_state),
+                    None if is_gone(&frame) => state.status.set_remote(GameState::default()),
                     None => {}
                 }
                 if let Some(game) = &state.game {
@@ -390,7 +413,7 @@ impl Inner {
                 }
                 state.game = None;
                 state.status.game_connected = false;
-                state.status.game_in_zone = false;
+                state.status.set_game(GameState::default());
                 for remote in &state.remotes {
                     remote.send(control(serde_json::json!({"type": "gone"})));
                 }
@@ -426,12 +449,20 @@ fn control_type(frame: &[u8]) -> Option<serde_json::Value> {
 }
 
 /// The `in_zone` of a `state` control frame.
-fn snoop_state(frame: &[u8]) -> Option<bool> {
+/// What a `state` control frame says. Mods before the session protocol's
+/// second version only said `in_zone`, which then also meant joined.
+fn snoop_state(frame: &[u8]) -> Option<GameState> {
     let value = control_type(frame)?;
     if value.get("type")?.as_str()? != "state" {
         return None;
     }
-    value.get("in_zone")?.as_bool()
+    let in_zone = value.get("in_zone")?.as_bool()?;
+    let flag = |name: &str| value.get(name).and_then(|flag| flag.as_bool());
+    Some(GameState {
+        in_zone: flag("loaded").unwrap_or(in_zone),
+        syncing: flag("syncing").unwrap_or(false),
+        joined: flag("joined").unwrap_or(in_zone),
+    })
 }
 
 /// The lines of a `log` control frame: what a mod wrote to its log file.
@@ -808,10 +839,38 @@ mod tests {
             LiveStatus {
                 game_connected: true,
                 game_in_zone: true,
-                remotes: 0,
-                remote_in_zone: false
+                game_joined: true,
+                ..LiveStatus::default()
             }
         );
+    }
+
+    #[test]
+    fn a_games_state_says_whether_it_is_loaded_getting_in_step_or_joined() {
+        let state = |value: serde_json::Value| snoop_state(&control(value));
+        let game = |in_zone, syncing, joined| {
+            Some(GameState {
+                in_zone,
+                syncing,
+                joined,
+            })
+        };
+        assert_eq!(
+            state(
+                serde_json::json!({"type": "state", "in_zone": false, "loaded": true, "syncing": true, "joined": false})
+            ),
+            game(true, true, false)
+        );
+        assert_eq!(
+            state(serde_json::json!({"type": "state", "in_zone": true, "loaded": true, "joined": false})),
+            game(true, false, false)
+        );
+        // An older mod says only whether it is in a zone.
+        assert_eq!(
+            state(serde_json::json!({"type": "state", "in_zone": true})),
+            game(true, false, true)
+        );
+        assert_eq!(state(serde_json::json!({"type": "log", "lines": []})), None);
     }
 
     #[test]

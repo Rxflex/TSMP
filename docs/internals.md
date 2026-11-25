@@ -448,15 +448,20 @@ Control messages:
 - `link {remotes}` (launcher -> its game: how many other launchers are
   connected), `gone` (launcher -> the other side: the game here
   disconnected), `beat` (launcher -> launcher, never passed to a game).
-- `state {role, in_zone, v, zone?, lot?, save?, world?, want?}` (game ->
-  game). `v` is the version of this protocol (games that speak another one
-  are not joined), `zone` the zone's id as the host names it, `lot` the lot
-  it is on (`"<lot_description_id>:<active_plex>"`), `save` the `guid` of
-  the game's `SaveGameData`, `world` the world its game client shows (see
-  below), `want` asks for the other's state in return.
+- `state {role, in_zone, v, loaded, syncing, joined, zone?, lot?, save?,
+  world?, want?}` (game -> game). `in_zone` is false for a stale guest
+  even in a zone; `loaded`, `syncing` (stale) and `joined` (live) are for
+  the launchers to show. `v` is the version of this protocol (games that
+  speak another one are not joined), `zone` the zone's id as the host names
+  it, `lot` the lot it is on (`"<lot_description_id>:<active_plex>"`),
+  `save` the `guid` of the game's `SaveGameData`, `world` the world its game
+  client shows (see below), `want` asks for the other's state in return.
 - `active_sim {sim_id}` (guest -> host).
-- `resync {id, zone?, lot?}` (guest -> host: send your state, for a guest on
-  that lot), answered by an `offer` of the state or `resync_failed {id}`.
+- `resync {id, zone?, lot?, household?}` (guest -> host: send your state,
+  for a guest on that lot, playing that household), answered by an `offer`
+  of the state or `resync_failed {id, missing?}`; `missing` when the host's
+  save does not have the household at all (its game was started again from
+  a save without it), and the guest then gives all of it again.
 - `merged {id, ok, final?, outcome?}` (host -> guest: your household is, or
   is not, in my save; `final` when trying again would not help).
 - `offer {id, what, size, ...}`, `got {id, have}`, `drop {id}`: a transfer
@@ -520,7 +525,17 @@ client nothing new, and once the host is there asks for its state with
 - the link between the two is lost: what the host sent meanwhile is gone.
   The guest holds, tells its player, and waits `LINK_SECONDS` (two
   minutes, as long as the session server keeps a session) for the host;
-  once back, it loads the host's state.
+  once back, it loads the host's state. A guest that finished loading the
+  host's state while the link was down joins without loading again if the
+  host still shows that world;
+- the host is connected but in no zone (main menu, CAS, a loading screen):
+  the guest tells its player and waits `AWAY_SECONDS` (ten minutes) before
+  it plays on by itself.
+
+Only a guest whose client shows the host's world is muted while stale; one
+that never joined, or whose client was built from its own simulation since,
+plays on with it until the host's state loads, so its client misses nothing.
+A guest whose launcher goes away while joined loads its own zone again.
 
 What makes the rest possible is that the whole save lives in Python:
 
@@ -587,7 +602,11 @@ own save instead of the snapshot (the client took longer than
 `RELOAD_SECONDS` to start, and the snapshot was dropped) does not join
 either. The host never runs two saves for guests at once; one asked for
 while another runs is taken when it ends, as the first may be older than
-what the guest asks after.
+what the guest asks after. It holds only for a guest that asks for the
+state of the host's own lot; a guest that will be apart is sent its lot's
+state while the host plays on. After a hold runs out, the host only starts
+a new world once its game has actually moved on (its clock or its objects),
+so a guest that was merely slow to load still joins.
 
 Every wait is in seconds and counts from the last sign of progress, not from
 the request: a save gets `SAVE_SECONDS`, a transfer may take as long as it
@@ -703,9 +722,14 @@ itself gives its household every `GIVE_SECONDS` seconds and before it joins
 the host on a lot. While joined nothing is given, as the host's simulation is
 the one that runs. A guest that was joined and gives up does not give its
 household again until it has loaded the host's state: the host's copy is the
-newer one. A guest playing in the host's save gives only the sims on its
-lot, and its home lot's objects only while it stands there: the rest of what
-it has is the host's copy as it loaded it, older than the host's own. A
+newer one. A guest playing in the host's save gives only the sims in zones
+its own simulation ran since it last loaded the host's state (those whose
+objects it saved), and its home lot's objects only if it ran that lot: the
+rest of what it has is the host's copy as it loaded it, older than the
+host's own. A guest saves for only one gift at a time; one wanted while a
+save runs is taken from that save. A gift the host gave up on (the guest's
+game was on a loading screen) is answered with `drop`, and the guest drops
+one that has not moved for `STALL_SECONDS` itself. A
 household given from the host's own save counts as played there, so a copy
 from any other save is older.
 

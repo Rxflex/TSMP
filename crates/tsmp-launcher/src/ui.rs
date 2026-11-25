@@ -3084,6 +3084,8 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
         (WARNING, "live-no-remote")
     } else if !status.game_in_zone {
         (WARNING, if own_families { "live-load-own" } else { "live-load-save" })
+    } else if status.game_syncing || status.remote_syncing {
+        (WARNING, "live-syncing")
     } else if !status.remote_in_zone {
         (
             WARNING,
@@ -3093,6 +3095,8 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
                 "live-wait-remote"
             },
         )
+    } else if !status.is_live() {
+        (WARNING, "live-apart")
     } else {
         (GOOD, "live-on")
     }
@@ -3151,6 +3155,15 @@ mod tests {
         assert_eq!(describe_live(&status, false).1, "live-wait-remote");
         assert_eq!(describe_live(&status, true).1, "live-wait-remote-own");
         status.remote_in_zone = true;
+        assert_eq!(describe_live(&status, true).1, "live-apart");
+        status.game_syncing = true;
+        assert_eq!(describe_live(&status, true).1, "live-syncing");
+        status.game_syncing = false;
+        status.remote_syncing = true;
+        assert_eq!(describe_live(&status, false).1, "live-syncing");
+        status.remote_syncing = false;
+        status.game_joined = true;
+        status.remote_joined = true;
         assert_eq!(describe_live(&status, true), (GOOD, "live-on"));
     }
 

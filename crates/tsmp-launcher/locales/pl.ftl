@@ -152,6 +152,8 @@ live-no-remote = Launcher drugiej osoby nie jest połączony.
 live-load-save = Wczytaj wspólny zapis, aby wejść do sesji.
 live-wait-remote = Czekamy, aż druga osoba wczyta wspólny zapis.
 live-on = Na żywo. Obie gry są połączone.
+live-syncing = Gry są ze sobą zrównywane. Nie zamykaj żadnej; może to potrwać minutę lub dwie.
+live-apart = Obie gry działają, każda na swojej działce lub we własnym zapisie.
 
 ## Sizes and times
 
