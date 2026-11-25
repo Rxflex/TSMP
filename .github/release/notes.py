@@ -169,8 +169,11 @@ class Notes:
             digest = "" if name == "SHA256SUMS.txt" else "<code>{}…</code>".format(sha256(path)[:16])
             rows.append("| [**{}**]({}) | {} | {} | {} |".format(name, link, what, size(path), digest))
         game = self.game_version()
-        needs = ("**Needs** Windows and The Sims 4{} with script mods enabled in the game options. Launchers "
-                 "already installed update themselves to this release.").format(" " + game if game else "")
+        needs = "**Needs** Windows and The Sims 4{} with script mods enabled in the game options.".format(
+            " " + game if game else "")
+        # Before the first release there is no launcher out there to update.
+        if self.history.previous:
+            needs += " Launchers already installed update themselves to this release."
         return "## Download\n\n" + "\n".join(rows) + "\n\n" + needs
 
     def start(self):

@@ -696,6 +696,9 @@ impl Drop for Relay {
 pub struct LiveLink {
     relay: Arc<Relay>,
     stop: Arc<AtomicBool>,
+    /// Set while the redial thread is reaching the host, which it cannot be
+    /// stopped from doing.
+    dialling: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -703,14 +706,26 @@ impl LiveLink {
     pub fn start(host: Route, hello: Hello) -> Result<Self> {
         let relay = Arc::new(Relay::start()?);
         let stop = Arc::new(AtomicBool::new(false));
+        let dialling = Arc::new(AtomicBool::new(false));
         let thread = thread::spawn({
             let relay = relay.clone();
             let stop = stop.clone();
+            let dialling = dialling.clone();
             move || {
                 let mut failures = 0;
-                while !stop.load(Ordering::Relaxed) {
+                while !stop.load(Ordering::SeqCst) {
                     if relay.status().remotes == 0 {
-                        match dial(&host, &hello) {
+                        // Looked at again once the flag is up, so that a drop
+                        // that saw it down always finds this thread done soon.
+                        dialling.store(true, Ordering::SeqCst);
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let dialled = dial(&host, &hello, &stop);
+                        dialling.store(false, Ordering::SeqCst);
+                        match dialled {
+                            // A link dropped meanwhile takes nothing more.
+                            Ok(_) if stop.load(Ordering::SeqCst) => break,
                             Ok(stream) => {
                                 failures = 0;
                                 let _ = relay.add_remote(stream);
@@ -725,6 +740,7 @@ impl LiveLink {
         Ok(Self {
             relay,
             stop,
+            dialling,
             thread: Some(thread),
         })
     }
@@ -747,10 +763,19 @@ impl LiveLink {
 }
 
 impl Drop for LiveLink {
+    /// Closes the session at once. A redial thread that is between dials is
+    /// waited for, which takes a moment at most. One that is reaching the
+    /// host is not: that can take seconds (a refused connection alone takes
+    /// two on Windows), and the link is dropped on the UI thread. It ends on
+    /// its own once the dial does, and attaches nothing. If it was still
+    /// connecting it does not ask the host to join either, so it cannot take
+    /// the host away from a newer link that got there first.
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::SeqCst);
         self.relay.close();
-        if let Some(thread) = self.thread.take() {
+        if let Some(thread) = self.thread.take()
+            && !self.dialling.load(Ordering::SeqCst)
+        {
             let _ = thread.join();
         }
     }
@@ -758,8 +783,17 @@ impl Drop for LiveLink {
 
 /// Connect to a host and ask to join its live session. On success the
 /// stream carries frames from here on.
-fn dial(host: &Route, hello: &Hello) -> Result<TcpStream> {
+///
+/// Connecting can take seconds, and the link may be dropped meanwhile and a
+/// new one started. Once asked, the host takes this connection in place of
+/// whatever it has, so a link that is gone by then must not ask: it would
+/// cut off the newer link's connection. A dial that has asked already is
+/// not a worry: a newer link asks after it and replaces it.
+fn dial(host: &Route, hello: &Hello, stop: &AtomicBool) -> Result<TcpStream> {
     let stream = host.open()?;
+    if stop.load(Ordering::SeqCst) {
+        return Err(Error::Protocol("link closed".into()));
+    }
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     write_message(&mut &stream, &Message::JoinLive(hello.clone()))?;
     // Unbuffered on purpose: nothing past the reply may be consumed here.
@@ -788,6 +822,8 @@ mod tests {
 
     use super::*;
     use crate::host::{Host, HostConfig};
+    use crate::protocol::read_message;
+    use crate::rendezvous::{self, Invite, Reply, Request, ServerAddress, SessionCode};
 
     const WAIT: Duration = Duration::from_secs(10);
     /// Short enough for tests, long enough for a loaded machine to keep up.
@@ -1238,6 +1274,51 @@ mod tests {
 
         drop(host);
         wait_for("the guest to notice the host left", || link.status().remotes == 0);
+    }
+
+    #[test]
+    fn dropping_a_link_does_not_wait_for_a_dial_and_the_dial_attaches_nothing() {
+        // A host that takes the connection and is slow to answer it.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let link = LiveLink::start(Route::Direct(listener.local_addr().unwrap()), hello("guest")).unwrap();
+        let (host, _) = listener.accept().unwrap();
+        host.set_read_timeout(Some(WAIT)).unwrap();
+        assert!(matches!(expect_message(&mut &host).unwrap(), Message::JoinLive(_)));
+        wait_for("the guest to be dialling", || link.dialling.load(Ordering::SeqCst));
+
+        let relay = link.relay.clone();
+        let since = Instant::now();
+        drop(link);
+        assert!(since.elapsed() < HANDSHAKE_TIMEOUT / 2, "the drop waited for the dial");
+
+        // The dial now succeeds, too late to be kept.
+        write_message(&mut &host, &Message::Hello(hello("host"))).unwrap();
+        wait_for("the redial thread to end", || Arc::strong_count(&relay) == 1);
+        assert_eq!(relay.status().remotes, 0);
+        assert!(matches!(read_frame(&mut &host), Ok(None) | Err(_)));
+    }
+
+    #[test]
+    fn a_link_dropped_while_connecting_never_asks_the_host() {
+        // A session server that is slow to put the guest through.
+        let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let invite = Invite {
+            code: SessionCode::random(),
+            server: ServerAddress::new("127.0.0.1", server.local_addr().unwrap().port()),
+        };
+        let link = LiveLink::start(Route::Invite(invite), hello("guest")).unwrap();
+        let (tunnel, _) = server.accept().unwrap();
+        tunnel.set_read_timeout(Some(WAIT)).unwrap();
+        assert!(matches!(rendezvous::expect(&tunnel).unwrap(), Request::Join { .. }));
+        wait_for("the guest to be dialling", || link.dialling.load(Ordering::SeqCst));
+
+        let relay = link.relay.clone();
+        drop(link);
+        // Put through now, the stream reaches the host, which must hear
+        // nothing on it: a join would replace a newer link's connection.
+        rendezvous::send(&tunnel, &Reply::Joined).unwrap();
+        wait_for("the redial thread to end", || Arc::strong_count(&relay) == 1);
+        assert!(matches!(read_message::<Message>(&mut &tunnel), Ok(None) | Err(_)));
     }
 
     #[test]

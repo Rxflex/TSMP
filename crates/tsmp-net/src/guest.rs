@@ -110,10 +110,10 @@ impl Connection {
             self.reader.read_exact(&mut buffer[..want])?;
             remaining -= want as u64;
             hasher.update(&buffer[..want]);
-            if write_error.is_none() {
-                if let Err(e) = file.write_all(&buffer[..want]) {
-                    write_error = Some(e);
-                }
+            if write_error.is_none()
+                && let Err(e) = file.write_all(&buffer[..want])
+            {
+                write_error = Some(e);
             }
             on_bytes(want as u64);
         }

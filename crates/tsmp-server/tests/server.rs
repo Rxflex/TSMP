@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -457,6 +457,84 @@ fn strangers_are_turned_away_without_harm() {
     assert!(message.starts_with("Too many connections"), "{message}");
     drop(held);
     wait_for("the server to let them go", || server.stats().connections == 0);
+}
+
+#[test]
+fn a_launcher_turned_away_after_sending_its_request_reads_why() {
+    let server = Server::start(Config {
+        max_connections_per_address: 1,
+        handshake_timeout: WAIT,
+        ..quick()
+    })
+    .unwrap();
+    let held = TcpStream::connect(server.local_addr()).unwrap();
+    wait_for("the server to count it", || server.stats().connections == 1);
+    // Like a launcher, each sends its request before reading anything, so
+    // that it reaches the server before, while or after it is turned away.
+    // Left unread on a closed socket it would reset the connection, and on
+    // Windows the refusal would be lost with it.
+    for attempt in 0..20 {
+        let crowd = address_of(&server).connect().unwrap();
+        crowd.set_read_timeout(Some(WAIT)).unwrap();
+        if attempt % 2 == 1 {
+            thread::sleep(Duration::from_millis(20));
+        }
+        send(
+            &crowd,
+            &Request::Join {
+                protocol: SERVER_PROTOCOL,
+                code: SessionCode::random(),
+            },
+        )
+        .unwrap();
+        match expect::<Reply>(&crowd) {
+            Ok(Reply::Error { message }) => assert!(message.starts_with("Too many connections"), "{message}"),
+            other => panic!("attempt {attempt}: expected a refusal, got {other:?}"),
+        }
+    }
+    drop(held);
+}
+
+#[test]
+fn a_server_on_ipv6_takes_ipv4_as_well() {
+    let server = match Server::start(Config {
+        listen: (Ipv6Addr::UNSPECIFIED, 0).into(),
+        max_connections_per_address: 1,
+        handshake_timeout: WAIT,
+        ..quick()
+    }) {
+        Ok(server) => server,
+        Err(e) => {
+            eprintln!("no IPv6 here, skipped: {e}");
+            return;
+        }
+    };
+    let port = server.local_addr().port();
+    let v4 = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    wait_for("the server to count it", || server.stats().connections == 1);
+    // Limits hold over IPv4 too, and the refusal gets through.
+    let again = ServerAddress::new("127.0.0.1", port).connect().unwrap();
+    again.set_read_timeout(Some(WAIT)).unwrap();
+    let Reply::Error { message } = expect(&again).unwrap() else {
+        panic!("expected a refusal");
+    };
+    assert!(message.starts_with("Too many connections"), "{message}");
+    drop(v4);
+    if let Ok(v6) = TcpStream::connect((Ipv6Addr::LOCALHOST, port)) {
+        v6.set_read_timeout(Some(WAIT)).unwrap();
+        send(
+            &v6,
+            &Request::Join {
+                protocol: SERVER_PROTOCOL + 1,
+                code: SessionCode::random(),
+            },
+        )
+        .unwrap();
+        let Reply::Error { message } = expect(&v6).unwrap() else {
+            panic!("expected a refusal");
+        };
+        assert!(message.contains("Update"), "{message}");
+    }
 }
 
 #[test]

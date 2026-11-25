@@ -33,6 +33,13 @@ pub struct Release {
     sha256: Option<String>,
 }
 
+/// How long the download of a release may go without receiving anything
+/// before the server is taken for gone.
+const DOWNLOAD_SILENCE: Duration = Duration::from_secs(30);
+
+/// The agent for the launcher's requests. Each is over in two minutes, which
+/// is plenty for the small ones and keeps a hung server from holding up the
+/// start; the download of a release sets its own limits.
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(120)))
@@ -90,7 +97,17 @@ pub fn install(agent: &ureq::Agent, release: &Release, exe: &Path) -> Result<(),
 }
 
 fn download(agent: &ureq::Agent, release: &Release, target: &Path) -> Result<(), String> {
-    let response = agent.get(&release.url).call().map_err(|e| e.to_string())?;
+    // The launcher is tens of megabytes, which a slow connection takes longer
+    // than two minutes to bring, so the download has no limit on its whole
+    // length. It still ends when the server stops sending.
+    let response = agent
+        .get(&release.url)
+        .config()
+        .timeout_global(None)
+        .timeout_per_read(Some(DOWNLOAD_SILENCE))
+        .build()
+        .call()
+        .map_err(|e| e.to_string())?;
     let mut reader = response.into_body().into_with_config().limit(LARGEST_DOWNLOAD).reader();
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).map_err(|e| e.to_string())?;

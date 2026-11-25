@@ -150,7 +150,7 @@ impl ServerAddress {
     /// Connect to the server, trying each address its name resolves to.
     pub fn connect(&self) -> Result<TcpStream> {
         let mut last = None;
-        for address in (self.host.as_str(), self.port).to_socket_addrs()? {
+        for address in ipv4_first((self.host.as_str(), self.port).to_socket_addrs()?.collect()) {
             match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
                 Ok(stream) => {
                     let _ = stream.set_nodelay(true);
@@ -162,6 +162,16 @@ impl ServerAddress {
         }
         Err(last.map_or_else(|| Error::Protocol(format!("{self} has no address")), Error::from))
     }
+}
+
+/// The IPv4 addresses first, then the others, each in the order the system
+/// gave them. A server listens on IPv4 unless told otherwise, while Windows
+/// gives the IPv6 address of `localhost` and of names with both kinds first;
+/// a connection refused there takes it about two seconds to give up on.
+fn ipv4_first(mut addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    // Stable, so the system's preference holds within each kind.
+    addresses.sort_by_key(|address| !address.is_ipv4());
+    addresses
 }
 
 impl fmt::Display for ServerAddress {
@@ -596,6 +606,18 @@ mod tests {
         ] {
             assert_eq!(parse(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn ipv4_addresses_are_tried_first() {
+        let resolved = ["[::1]:9000", "127.0.0.1:9000", "[2001:db8::1]:9000", "203.0.113.5:9000"];
+        let addresses = resolved.iter().map(|address| address.parse().unwrap()).collect();
+        let ordered: Vec<String> = ipv4_first(addresses).iter().map(ToString::to_string).collect();
+        assert_eq!(
+            ordered,
+            ["127.0.0.1:9000", "203.0.113.5:9000", "[::1]:9000", "[2001:db8::1]:9000"]
+        );
+        assert!(ipv4_first(Vec::new()).is_empty());
     }
 
     #[test]

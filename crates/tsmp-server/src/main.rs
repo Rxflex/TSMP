@@ -21,8 +21,8 @@ Lets TSMP launchers that cannot reach each other directly play together:
 a host lists its session here and gets an invite, a guest joins with it.
 
 Options:
-  --listen ADDRESS       where to accept launchers (default 0.0.0.0:47810;
-                         [::]:47810 for IPv6 as well)
+  --listen ADDRESS       where to accept launchers (default 0.0.0.0:47810,
+                         IPv4 only; [::]:47810 takes IPv6 and IPv4)
   --max-sessions N       sessions listed at once (default 1000)
   --max-connections N    connections open at once (default 4000)
   --per-address N        connections from one address (default 32)

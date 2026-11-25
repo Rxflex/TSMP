@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 getrandom = "0.3.4"
+socket2 = "0.6.5"
 tsmp-core = { path = "../tsmp-core" }
 tsmp-net = { path = "../tsmp-net" }
 
