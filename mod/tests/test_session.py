@@ -59,6 +59,8 @@ class FakeGame:
         # The game reloads the zone from its own save instead.
         self.loads_its_own = False
         self.put = 0
+        # The next load is one from the menu, not a travel.
+        self.by_hand = False
         self.save = 1
         self.contributions = []
         self.whole = []
@@ -134,6 +136,14 @@ class FakeGame:
 
     def playing_adopted(self):
         return self.put > 0
+
+    def loaded_by_hand(self):
+        """Once, after the player loaded a save from the menu; a load then
+        forgets what came from the host."""
+        by_hand, self.by_hand = self.by_hand, False
+        if by_hand:
+            self.put = 0
+        return by_hand
 
     def progress(self):
         return str(self.ticks)
@@ -791,6 +801,50 @@ class LinkTest(unittest.TestCase):
             both(host, guest, session.RETRY_SECONDS[-1] + 1)
         self.assertEqual(len(guest.game.contributions), 2)
 
+    def test_a_guest_drops_a_snapshot_of_a_world_the_host_left(self):
+        host, guest = connected()
+        both(host, guest)
+        host.game.snapshots[0](b"x" * (transfer.WINDOW * 2))
+        guest.receive(host.take()[:3])
+        self.assertEqual(guest.session._phase, session.RECEIVING)
+        host_reloads(host, guest)
+        self.assertEqual(guest.game.adopted, [])
+        self.assertIsNone(host.session._transfers.outgoing(1))
+        answers(host, guest, b"new")
+        self.assertEqual(guest.game.adopted, [b"new"])
+
+    def test_a_host_that_restarts_again_without_our_household_is_given_it_again(self):
+        host, guest = strangers()
+        gives(host, guest)
+        reloads_from_host(host, guest)
+        for _ in range(2):
+            # The host's game starts again from a save without our household.
+            host = Player(session.HOST)
+            host.game.zone = True
+            host.game.missing = {5}
+            host.session.bridge_up(session.HOST)
+            host.link(1)
+            guest.control("gone")
+            guest.link(1)
+            settle(host, guest)
+            both(host, guest)
+            host.game.missing = set()
+            guest.game.contributions[-1](b"all of it")
+            settle(host, guest)
+            self.assertEqual(host.game.merged, [(b"all of it", 1)])
+            reloads_from_host(host, guest)
+            self.assertTrue(guest.session.live)
+        self.assertEqual(guest.game.whole[-2:], [True, True])
+
+    def test_a_guest_that_gave_up_for_good_in_the_hosts_save_stays_quiet(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        guest.session._give_up("the host lacks our household although we gave all of it", final=True)
+        asked = len(host.game.snapshots)
+        for _ in range(3):
+            both(host, guest, session.RETRY_SECONDS[-1] + 1)
+        self.assertEqual(len(host.game.snapshots), asked)
+
 class HostTest(unittest.TestCase):
     def test_messages_pass_untouched_while_not_live(self):
         host = Player(session.HOST)
@@ -1063,6 +1117,34 @@ class HoldTest(unittest.TestCase):
         self.assertTrue(guest.session.live)
         self.assertEqual(len(host.game.snapshots), 1)
 
+    def test_a_save_taken_again_after_the_host_reloaded_holds_again(self):
+        host, guest = connected()
+        both(host, guest)
+        host.leave()
+        host.arrive()
+        settle(host, guest)
+        host.game.snapshots[0](b"old")
+        settle(host, guest)
+        self.assertEqual(len(host.game.snapshots), 2)
+        self.assertTrue(host.session.holding)
+        self.assertFalse(host.session.command("clock.setspeed", ["1"]))
+        answers(host, guest, b"new")
+        loads(host, guest)
+        self.assertTrue(guest.session.live)
+
+    def test_a_save_taken_again_on_another_lot_does_not_join_the_guest(self):
+        host, guest = connected()
+        both(host, guest)
+        host.leave()
+        host.arrive(8)
+        settle(host, guest)
+        sent = []
+        host.game.snapshots[0](b"save")
+        sent = [frames.parse_json(p) for kind, _, p in host.sent if kind == frames.CONTROL]
+        offers = [message for message in sent if message.get("type") == "offer"]
+        self.assertTrue(all(not offer.get("world") for offer in offers))
+        self.assertFalse(host.session.holding)
+
 class GuestTest(unittest.TestCase):
     def test_local_simulation_is_muted(self):
         _, guest = joined()
@@ -1136,6 +1218,19 @@ class GuestTest(unittest.TestCase):
         self.assertTrue(guest.session.stale)
         reloads_from_host(host, guest)
         self.assertTrue(guest.session.live)
+
+    def test_a_joined_guest_whose_launcher_returns_still_owes_the_hosts_copy(self):
+        host, guest = joined()
+        guest.session.bridge_down("launcher restarted")
+        guest.leave()
+        guest.arrive(8)
+        guest.session.bridge_up(session.GUEST)
+        guest.link(1)
+        settle(host, guest)
+        both(host, guest, session.GIVE_SECONDS + 1)
+        # It loads the host's copy of its sims before it gives any.
+        self.assertEqual(guest.game.contributions, [])
+        self.assertGreaterEqual(len(host.game.snapshots), 2)
 
     def test_a_guest_whose_own_zone_loaded_again_plays_on_while_it_catches_up(self):
         host, guest = joined()
@@ -1453,6 +1548,7 @@ class HouseholdTest(unittest.TestCase):
         self.assertEqual(len(guest.game.contributions), 1)
         host.game.merge_error = None
         # The player goes to the menu and loads their save again.
+        guest.game.by_hand = True
         guest.leave()
         guest.arrive()
         settle(host, guest)

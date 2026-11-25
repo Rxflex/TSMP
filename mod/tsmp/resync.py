@@ -130,6 +130,11 @@ _placing = False
 # that save. Of any other, what our game client loads is our own older copy.
 _provided = set()
 _provided_save = 0
+# A zone was left by a travel, which saves to the scratch slot first; a save
+# loaded from the menu is not. Our own saves (for a snapshot, a household)
+# save the same way and are not travels.
+_travelled = False
+_saving_ours = False
 
 
 def current_save():
@@ -181,6 +186,23 @@ def _note_provided(zone_id, objects):
 def provided_zones():
     """Guest: the zones whose objects the host gave us in its save."""
     return frozenset(_provided)
+
+
+def _forget_travel():
+    global _travelled
+    travelled, _travelled = _travelled, False
+    return travelled
+
+
+def loaded_by_hand():
+    """Guest, once a zone has loaded: whether it was loaded from the menu
+    rather than reached by a travel. Such a load replaces the save in memory
+    with one from disk, so what came from the host's save is forgotten."""
+    if _forget_travel():
+        return False
+    _names.forget()
+    _ran.clear()
+    return True
 
 
 def ran_zones():
@@ -279,6 +301,9 @@ def install():
 
     @functools.wraps(original_save)
     def save_to_scratch_slot_gen(self, timeline):
+        global _travelled
+        if not _saving_ours:
+            _travelled = True
         if pending():
             # Our own state is the one being replaced: saving it would only
             # overwrite what the host sent.
@@ -330,6 +355,7 @@ def _put_in_place(persistence):
     _pending = None
     _put += 1
     _ran.clear()
+    _forget_travel()
     _note_provided(zone_id, objects)
     data = persistence.get_save_game_data_proto()
     data.Clear()
@@ -411,7 +437,9 @@ def save_then(done):
     persistence = services.get_persistence_service()
 
     def save_gen(timeline):
+        global _saving_ours
         saved = None
+        _saving_ours = True
         try:
             result = yield from persistence.save_to_scratch_slot_gen(timeline)
             if result != 0:
@@ -420,6 +448,8 @@ def save_then(done):
                 saved = persistence
         except Exception:
             log.exception("resync: saving failed")
+        finally:
+            _saving_ours = False
         try:
             done(saved)
         except Exception:

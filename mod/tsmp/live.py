@@ -235,6 +235,9 @@ class Game:
     def playing_adopted(self):
         return resync.playing_adopted()
 
+    def loaded_by_hand(self):
+        return resync.loaded_by_hand()
+
     def has_household(self, household_id):
         import services
 

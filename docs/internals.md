@@ -539,7 +539,15 @@ client nothing new, and once the host is there asks for its state with
 Only a guest whose client shows the host's world is muted while stale; one
 that never joined, or whose client was built from its own simulation since,
 plays on with it until the host's state loads, so its client misses nothing.
-A guest whose launcher goes away while joined loads its own zone again. A
+A guest whose launcher goes away while joined loads its own zone again, and
+still loads the host's copy of its sims before it gives any once the
+launcher is back. A guest that gives up for good in the host's save does not
+ask again until its player loads a save; every give-up waits before the next
+try. A save loaded from the menu (no travel saved to the scratch slot
+before it) forgets what came from the host's save. A household the host
+lacks although it once took all of it is given again when the host's world
+changed since (its game started again); only for the same world is that
+final. A
 guest that loaded the host's state of the host's lot and then finds the host
 gone from it plays on, and gives its household when they meet again. A guest
 that has not loaded the host's state since its game started (its save is
@@ -748,7 +756,11 @@ have those objects in memory), and the host keeps its own. A guest that
 never loaded the host's state in this game gives nothing of the host's save
 after a failed first try; it asks again. A gift on its way when the guest
 gives on arrival is dropped, so an older one is never merged after a newer
-one. A host whose lot loads again while it saves for a guest saves again.
+one. A host whose lot loads again while it saves for a guest saves again, and
+holds again if the guest's snapshot is still of its lot; a save that
+crosses a load of the host's zone only names a world if it was held for
+again. A guest drops a snapshot of the host's lot that is still on its way
+when the host leaves that world, and asks again.
 
 The sims the host sends off are those the guest plays at the time, not
 every sim it once selected: in a shared family that is the one sim it plays.
