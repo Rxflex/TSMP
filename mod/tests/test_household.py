@@ -33,6 +33,9 @@ class Persistence:
     def zone_proto_buffs_gen(self):
         return iter(self.zones)
 
+    def get_sim_proto_buff(self, sim_id):
+        return None
+
 
 class Sim:
     def __init__(self, sim_id, zone_id=0, household_id=0):
@@ -264,6 +267,12 @@ class MergesTest(unittest.TestCase):
         # Kept means nothing came in.
         merges.took(5, 8, 9, household.KEPT)
         self.assertTrue(merges.keeps_ours(5, 8, 9))
+
+    def test_a_household_we_lack_is_not_taken_in_without_all_its_sims(self):
+        self.assertEqual(household.lacking_sims([1, 2, 3], [Sim(1), Sim(3)], Persistence()), [2])
+        self.assertEqual(household.lacking_sims([1], [Sim(1)], Persistence()), [])
+        self.assertTrue(household.Refusal("x", final=False, missing=True).missing)
+        self.assertFalse(household.Refusal("x", final=True).missing)
 
     def test_from_the_hosts_save_only_sims_on_our_lot_are_given(self):
         on_lot, elsewhere = Sim(1, zone_id=7), Sim(2, zone_id=8)

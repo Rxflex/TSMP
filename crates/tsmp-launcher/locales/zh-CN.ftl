@@ -146,6 +146,7 @@ live-wait-remote = 正在等待另一位玩家载入共享存档。
 live-on = 已联机，两边的游戏已连接。
 live-syncing = 正在让两边的游戏保持一致。请保持两边都打开；这可能需要一两分钟。
 live-apart = 两边的游戏都在运行，各自在自己的地块或自己的存档里。
+live-retrying = 两边的游戏暂时各自进行，稍后会重新连接。
 
 ## Sizes and times
 

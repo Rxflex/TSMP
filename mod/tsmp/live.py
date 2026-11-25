@@ -229,6 +229,9 @@ class Game:
 
         return services.active_household_id() or 0
 
+    def playing_adopted(self):
+        return resync.playing_adopted()
+
     def has_household(self, household_id):
         import services
 

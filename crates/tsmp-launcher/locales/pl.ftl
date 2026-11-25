@@ -154,6 +154,7 @@ live-wait-remote = Czekamy, aż druga osoba wczyta wspólny zapis.
 live-on = Na żywo. Obie gry są połączone.
 live-syncing = Gry są ze sobą zrównywane. Nie zamykaj żadnej; może to potrwać minutę lub dwie.
 live-apart = Obie gry działają, każda na swojej działce lub we własnym zapisie.
+live-retrying = Na razie każda gra toczy się osobno; wkrótce znów się połączą.
 
 ## Sizes and times
 

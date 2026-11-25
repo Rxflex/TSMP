@@ -150,6 +150,7 @@ live-wait-remote = En attente que l’autre joueur charge la sauvegarde partagé
 live-on = En direct. Les deux jeux sont reliés.
 live-syncing = Mise en phase des deux jeux. Gardez-les ouverts tous les deux ; cela peut prendre une ou deux minutes.
 live-apart = Les deux jeux tournent, chacun sur son propre terrain ou dans sa propre sauvegarde.
+live-retrying = Pour l’instant, chaque jeu continue de son côté ; ils se relient à nouveau sous peu.
 
 ## Sizes and times
 

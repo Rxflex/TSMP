@@ -94,12 +94,15 @@ pub struct LiveStatus {
     pub game_syncing: bool,
     /// The local game says it is joined to the other.
     pub game_joined: bool,
+    /// The local game says the two play on different lots or saves.
+    pub game_apart: bool,
     /// Launchers on other machines connected to this one.
     pub remotes: usize,
     /// The other game has a zone loaded.
     pub remote_in_zone: bool,
     pub remote_syncing: bool,
     pub remote_joined: bool,
+    pub remote_apart: bool,
 }
 
 impl LiveStatus {
@@ -109,11 +112,13 @@ impl LiveStatus {
     }
 
     fn set_game(&mut self, game: GameState) {
-        (self.game_in_zone, self.game_syncing, self.game_joined) = (game.in_zone, game.syncing, game.joined);
+        (self.game_in_zone, self.game_syncing, self.game_joined, self.game_apart) =
+            (game.in_zone, game.syncing, game.joined, game.apart);
     }
 
     fn set_remote(&mut self, game: GameState) {
-        (self.remote_in_zone, self.remote_syncing, self.remote_joined) = (game.in_zone, game.syncing, game.joined);
+        (self.remote_in_zone, self.remote_syncing, self.remote_joined, self.remote_apart) =
+            (game.in_zone, game.syncing, game.joined, game.apart);
     }
 }
 
@@ -123,6 +128,7 @@ struct GameState {
     in_zone: bool,
     syncing: bool,
     joined: bool,
+    apart: bool,
 }
 
 /// Builds a whole frame.
@@ -462,6 +468,7 @@ fn snoop_state(frame: &[u8]) -> Option<GameState> {
         in_zone: flag("loaded").unwrap_or(in_zone),
         syncing: flag("syncing").unwrap_or(false),
         joined: flag("joined").unwrap_or(in_zone),
+        apart: flag("apart").unwrap_or(false),
     })
 }
 
@@ -853,6 +860,7 @@ mod tests {
                 in_zone,
                 syncing,
                 joined,
+                apart: false,
             })
         };
         assert_eq!(

@@ -404,16 +404,9 @@ def take(done, zone_id=0, lot=""):
     """Host: save, then call `done(payload)`, or `done(None)` on failure.
     The snapshot is for a guest in `zone_id` on the lot `lot` (`lot_key` of
     that zone in the guest's save), or in the host's own zone when neither
-    is known here."""
+    is known here. The session pauses the game for a guest that will join;
+    one that will play another lot does not stop ours."""
     import services
-    from clock import ClockSpeedMode
-
-    # What happens between the snapshot and the guest being back is lost on
-    # the guest, so nothing should happen. Either player can resume.
-    try:
-        services.game_clock_service().set_clock_speed(ClockSpeedMode.PAUSED)
-    except Exception:
-        log.exception("resync: could not pause")
 
     def saved(persistence):
         payload = None

@@ -3082,11 +3082,12 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
         (WARNING, "live-no-mod")
     } else if status.remotes == 0 {
         (WARNING, "live-no-remote")
+    } else if status.game_syncing && !status.game_in_zone {
+        // Loading the other player's game.
+        (WARNING, "live-syncing")
     } else if !status.game_in_zone {
         (WARNING, if own_families { "live-load-own" } else { "live-load-save" })
-    } else if status.game_syncing || status.remote_syncing {
-        (WARNING, "live-syncing")
-    } else if !status.remote_in_zone {
+    } else if !status.remote_in_zone && !status.remote_syncing {
         (
             WARNING,
             if own_families {
@@ -3095,8 +3096,12 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
                 "live-wait-remote"
             },
         )
-    } else if !status.is_live() {
+    } else if status.game_syncing || status.remote_syncing {
+        (WARNING, "live-syncing")
+    } else if status.game_apart || status.remote_apart {
         (WARNING, "live-apart")
+    } else if !status.is_live() {
+        (WARNING, "live-retrying")
     } else {
         (GOOD, "live-on")
     }
@@ -3155,8 +3160,18 @@ mod tests {
         assert_eq!(describe_live(&status, false).1, "live-wait-remote");
         assert_eq!(describe_live(&status, true).1, "live-wait-remote-own");
         status.remote_in_zone = true;
+        assert_eq!(describe_live(&status, true).1, "live-retrying");
+        status.game_apart = true;
         assert_eq!(describe_live(&status, true).1, "live-apart");
+        status.game_apart = false;
+        // Loading the other player's game, or waiting for it to be back.
+        status.game_in_zone = false;
         status.game_syncing = true;
+        assert_eq!(describe_live(&status, false).1, "live-syncing");
+        status.game_in_zone = true;
+        status.remote_in_zone = false;
+        assert_eq!(describe_live(&status, false).1, "live-wait-remote");
+        status.remote_in_zone = true;
         assert_eq!(describe_live(&status, true).1, "live-syncing");
         status.game_syncing = false;
         status.remote_syncing = true;

@@ -149,6 +149,8 @@ class Session:
         save_id()                      what tells one save from another, or 0
         household_id()                 guest: the household we play, or 0
         has_household(household_id)    host: whether our save has it
+        playing_adopted()              guest: whether this game loaded the
+                                       host's state and plays it
         progress()                     host: text that changes whenever the
                                        game moves on (its clock, its
                                        objects), "" when it cannot tell
@@ -232,6 +234,12 @@ class Session:
         # since the host last had it.
         self._behind = False
         self._alone = False
+        # Guest: our game client shows the host's world, not our own
+        # simulation, which it was not built from.
+        self._shows_host = False
+        # Guest: the state we asked for is the one of the host's own lot,
+        # which we will join.
+        self._joining = False
         # Guest: we gave up while behind, so the host's copy of our sims is
         # the one to load, not ours to give.
         self._owes = False
@@ -264,6 +272,8 @@ class Session:
         self._held_at = ""
         self._lapsed = False
         self._looked_at = 0.0
+        # Host: the request we hold for.
+        self._held_for = 0
         # Host: sims made the other player's on our lot.
         self._welcomed = []
         self.forwarded = 0
@@ -322,7 +332,7 @@ class Session:
         when our simulation builds the client anew. A guest whose client
         shows its own simulation plays on with it until the host's state
         loads."""
-        return self.role == GUEST and self._phase not in (IDLE, LOADING) and self._in_zone and self._behind
+        return self.role == GUEST and self._phase not in (IDLE, LOADING) and self._in_zone and self._shows_host
 
     # -- connection to the launcher -------------------------------------
 
@@ -338,7 +348,7 @@ class Session:
 
     def bridge_down(self, reason=""):
         self._log("bridge lost: {}".format(reason))
-        if self.role == GUEST and self._behind and self._in_zone and self._phase != LOADING:
+        if self.role == GUEST and self._shows_host and self._in_zone and self._phase != LOADING:
             # Our game client shows the host's world, which is gone.
             self._reload()
         self._reset(None)
@@ -353,6 +363,7 @@ class Session:
         self._idle()
         self._behind = False
         self._alone = False
+        self._shows_host = False
         self._owes = False
         self._glued = 0
         self._retry_at = 0.0
@@ -415,7 +426,7 @@ class Session:
         in_zone = self._in_zone and not self.stale
         fields = {"role": self.role, "in_zone": in_zone, "v": PROTOCOL,
                   # For the launchers to show.
-                  "loaded": self._in_zone, "syncing": self.stale, "joined": self.live}
+                  "loaded": self._in_zone, "syncing": self.stale, "joined": self.live, "apart": self.apart}
         if self._in_zone and self._zone:
             # As text: ids are 64 bits wide.
             fields["zone"] = str(self._zone)
@@ -452,6 +463,13 @@ class Session:
         if self._phase != IDLE:
             self._catch_up(now)
             return
+        if self._world and not self.live and self._in_zone and not (self.remotes and self.remote_in_zone):
+            # We loaded the host's state, and the host left it before we
+            # joined: what we play from now on is ours to give.
+            self._world = ""
+            if not self._alone and not self._owes:
+                self._alone = True
+                self._gave = now
         if not (self.remotes and self._in_zone and self.remote_in_zone and self.speaks_our_version):
             return
         if not self.same_save:
@@ -462,7 +480,9 @@ class Session:
                 # We were muted on the host's lot: what we have of our sims
                 # is older than what the host has.
                 self._go_stale("left the host's lot")
-            elif self._owes:
+            elif self._owes or not self._call("playing_adopted", True):
+                # What we have of our sims is older than the host's: our
+                # game started from a save, not from the host's state.
                 if now >= self._retry_at:
                     self._go_stale("loading the host's copy of our sims")
             elif not self._alone:
@@ -574,9 +594,10 @@ class Session:
         else:
             self._retry_at = self._clock() + RETRY_SECONDS[min(self._failures, len(RETRY_SECONDS) - 1)]
             self._failures += 1
-        if self._behind and self._in_zone:
-            self._behind = False
+        self._behind = False
+        if self._shows_host and self._in_zone:
             self._reload()
+        self._shows_host = False
         self._announce()
 
     def _reload(self):
@@ -608,7 +629,10 @@ class Session:
             self._log("giving our household to the host")
         self._contributing = now
         try:
-            self._game.contribute(lambda payload: self._saved(request, gift, payload), self._whole)
+            # The host has none of what we did not run ourselves when it
+            # plays another save than ours.
+            whole = self._whole or not self.same_save
+            self._game.contribute(lambda payload: self._saved(request, gift, payload), whole)
         except Exception as error:
             self._log("could not save our household: {}".format(error))
             self._saved(request, gift, None)
@@ -642,6 +666,14 @@ class Session:
 
     def _merged(self, message):
         request = frames.number(message.get("id"))
+        if self.role == GUEST and message.get("missing"):
+            # The host lacks sims we gave only in part: it is to have all.
+            self._whole = True
+            if self._phase == GIVING and request == self._request:
+                self._go_stale("the host does not have all of our household; giving it again", give=True)
+            else:
+                self._gave = 0.0
+            return
         if self.role != GUEST or self._phase != GIVING or request != self._request:
             return
         if message.get("ok"):
@@ -658,6 +690,7 @@ class Session:
     # -- a guest loading the host's state -------------------------------
 
     def _ask(self):
+        self._joining = self.same_zone and self.same_save
         request = self._next(ASKING, SAVE_SECONDS)
         self._log("asking the host for its state")
         fields = {"id": request}
@@ -713,17 +746,17 @@ class Session:
         self._whole = False
         self._failures = 0
         self._retry_at = 0.0
-        if lost and not self.remotes:
+        if lost and not self.remotes and self._joining:
             # Our game client shows the host's world, which the host may
             # still show once it is back.
             self._tell("loaded the host's state, but the connection is down; waiting for it")
-            self._behind = True
+            self._behind = self._shows_host = True
             self._phase = WAITING
             self._lost_at = self._clock()
             self._resume = world
         else:
             self._world = world
-            self._behind = False
+            self._behind = self._shows_host = False
 
     def resync(self):
         """Guest: load the host's state again, as after a reload of its
@@ -752,6 +785,7 @@ class Session:
             return
         if self._on_our_lot(request[1], request[2]):
             self._hold()
+            self._held_for = request[0]
         self._asked = request
         if not self._taking or self._clock() - self._taking > SAVE_SECONDS:
             self._take()
@@ -862,7 +896,10 @@ class Session:
         except Exception as error:
             final = bool(getattr(error, "final", False))
             self._log("could not take the other player's household: {}".format(error))
-            self._send(frames.control("merged", id=request, ok=False, final=final))
+            fields = {"id": request, "ok": False, "final": final}
+            if getattr(error, "missing", False):
+                fields["missing"] = True
+            self._send(frames.control("merged", **fields))
         else:
             self._send(frames.control("merged", id=request, ok=True, outcome=str(outcome or "")))
 
@@ -877,9 +914,8 @@ class Session:
         if not theirs:
             self._log("the other player's sim {} is not theirs to play here".format(self.remote_sim_id))
             return
-        for sim_id in theirs:
-            if sim_id not in self._welcomed:
-                self._welcomed.append(sim_id)
+        # What the guest plays now; sims it played before are ours again.
+        self._welcomed = list(theirs)
 
     def _send_off(self):
         """Host: the guest took its sims to another lot. Left here they would
@@ -930,6 +966,7 @@ class Session:
             return
         # Whatever our game client showed, it now shows our own simulation.
         self._world = ""
+        self._shows_host = False
         if self._phase != IDLE and not self._in_zone:
             self._give_up("left the zone before the host's state arrived")
         elif self._phase == IDLE and self._in_zone:
@@ -950,7 +987,7 @@ class Session:
             return
         self._keep_holding(self._clock())
         if self.role == GUEST:
-            self._behind = True
+            self._behind = self._shows_host = True
             self._report_sim()
             return
         # The guest's game client comes out of a loading screen paused and
@@ -1029,10 +1066,19 @@ class Session:
             self._merge(incoming)
 
     def _seen(self, message):
-        """Host: the guest that is loading still takes our state."""
-        outgoing = self._transfers.outgoing(frames.number(message.get("id")))
-        if self._hold_until and outgoing is not None and outgoing.what == "state":
+        """Host: the guest that is loading still takes our state, or gave
+        up on what we hold for."""
+        if not self._hold_until:
+            return
+        ident = frames.number(message.get("id"))
+        outgoing = self._transfers.outgoing(ident)
+        if outgoing is None or outgoing.what != "state":
+            return
+        if message.get("type") == "got":
             self._hold_until = max(self._hold_until, self._clock() + HOLD_SECONDS)
+        elif message.get("type") == "drop" and ident == self._held_for and self._asked is None:
+            self._hold_until = 0.0
+            self._log("the other player gave up loading; the game is no longer held for them")
 
     def _control(self, message):
         kind = message.get("type")

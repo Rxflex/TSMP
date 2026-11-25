@@ -150,6 +150,7 @@ live-wait-remote = In attesa che l’altro giocatore carichi il salvataggio cond
 live-on = In diretta. I due giochi sono collegati.
 live-syncing = Allineamento dei due giochi in corso. Tienili aperti entrambi; può richiedere un minuto o due.
 live-apart = Entrambi i giochi sono in corso, ognuno sul proprio lotto o nel proprio salvataggio.
+live-retrying = Per ora ogni gioco prosegue da solo; tra poco si ricollegano.
 
 ## Sizes and times
 

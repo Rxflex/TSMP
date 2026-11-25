@@ -448,10 +448,12 @@ Control messages:
 - `link {remotes}` (launcher -> its game: how many other launchers are
   connected), `gone` (launcher -> the other side: the game here
   disconnected), `beat` (launcher -> launcher, never passed to a game).
-- `state {role, in_zone, v, loaded, syncing, joined, zone?, lot?, save?,
-  world?, want?}` (game -> game). `in_zone` is false for a stale guest
-  even in a zone; `loaded`, `syncing` (stale) and `joined` (live) are for
-  the launchers to show. `v` is the version of this protocol (games that
+- `state {role, in_zone, v, loaded, syncing, joined, apart, zone?, lot?,
+  save?, world?, want?}` (game -> game). `in_zone` is false for a stale
+  guest even in a zone; `loaded`, `syncing` (stale), `joined` (live) and
+  `apart` are for the launchers to show: loading the other's game, waiting
+  for it, getting in step, each on its own lot or save, playing alone for
+  now after a failure, or joined. `v` is the version of this protocol (games that
   speak another one are not joined), `zone` the zone's id as the host names
   it, `lot` the lot it is on (`"<lot_description_id>:<active_plex>"`),
   `save` the `guid` of the game's `SaveGameData`, `world` the world its game
@@ -462,8 +464,10 @@ Control messages:
   of the state or `resync_failed {id, missing?}`; `missing` when the host's
   save does not have the household at all (its game was started again from
   a save without it), and the guest then gives all of it again.
-- `merged {id, ok, final?, outcome?}` (host -> guest: your household is, or
-  is not, in my save; `final` when trying again would not help).
+- `merged {id, ok, final?, missing?, outcome?}` (host -> guest: your
+  household is, or is not, in my save; `final` when trying again would not
+  help, `missing` when the host lacks the household and the gift held only
+  part of its sims, so the guest is to give all of it).
 - `offer {id, what, size, ...}`, `got {id, have}`, `drop {id}`: a transfer
   (`tsmp/transfer.py`). `what` is `state` (with the `world` it shows) or
   `household` (with the `save` it comes from).
@@ -535,7 +539,12 @@ client nothing new, and once the host is there asks for its state with
 Only a guest whose client shows the host's world is muted while stale; one
 that never joined, or whose client was built from its own simulation since,
 plays on with it until the host's state loads, so its client misses nothing.
-A guest whose launcher goes away while joined loads its own zone again.
+A guest whose launcher goes away while joined loads its own zone again. A
+guest that loaded the host's state of the host's lot and then finds the host
+gone from it plays on, and gives its household when they meet again. A guest
+that has not loaded the host's state since its game started (its save is
+older than the host's game) loads the host's copy of its lot before it plays
+apart, so that nothing it gives is older than what the host has.
 
 What makes the rest possible is that the whole save lives in Python:
 
@@ -604,7 +613,8 @@ either. The host never runs two saves for guests at once; one asked for
 while another runs is taken when it ends, as the first may be older than
 what the guest asks after. It holds only for a guest that asks for the
 state of the host's own lot; a guest that will be apart is sent its lot's
-state while the host plays on. After a hold runs out, the host only starts
+state while the host plays on, unpaused. A `drop` of what it holds for ends
+the hold at once. After a hold runs out, the host only starts
 a new world once its game has actually moved on (its clock or its objects),
 so a guest that was merely slow to load still joins.
 
@@ -732,6 +742,9 @@ game was on a loading screen) is answered with `drop`, and the guest drops
 one that has not moved for `STALL_SECONDS` itself. A
 household given from the host's own save counts as played there, so a copy
 from any other save is older.
+
+The sims the host sends off are those the guest plays at the time, not
+every sim it once selected: in a shared family that is the one sim it plays.
 
 When the guest reports the sim it controls and that sim belongs to another
 household than the host's, the host adds it, and every sim of its household

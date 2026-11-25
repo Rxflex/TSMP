@@ -150,6 +150,7 @@ live-wait-remote = Esperando a que el otro jugador cargue la partida compartida.
 live-on = En directo. Los dos juegos están unidos.
 live-syncing = Poniendo los dos juegos al día. Mantén ambos abiertos; puede tardar uno o dos minutos.
 live-apart = Los dos juegos están en marcha, cada uno en su propio solar o en su propia partida.
+live-retrying = Por ahora cada juego sigue por su cuenta; se volverán a unir en breve.
 
 ## Sizes and times
 

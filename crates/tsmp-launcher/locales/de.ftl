@@ -150,6 +150,7 @@ live-wait-remote = Warten, bis die andere Person den gemeinsamen Spielstand läd
 live-on = Live. Beide Spiele sind verbunden.
 live-syncing = Die beiden Spiele werden abgeglichen. Lass beide offen; das kann ein, zwei Minuten dauern.
 live-apart = Beide Spiele laufen, jedes auf seinem eigenen Grundstück oder in seinem eigenen Spielstand.
+live-retrying = Vorerst läuft jedes Spiel für sich; gleich werden sie wieder verbunden.
 
 ## Sizes and times
 

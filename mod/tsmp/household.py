@@ -42,11 +42,13 @@ MERGES_FILE = "households.json"
 class Refusal(ValueError):
     """Why the host did not take a household in. A `final` refusal is about
     the payload itself, so sending it again would be refused again; any
-    other may go through later."""
+    other may go through later. `missing` says that the guest gave only
+    part of a household we do not have, and is to give all of it."""
 
-    def __init__(self, reason, final):
+    def __init__(self, reason, final, missing=False):
         super().__init__(reason)
         self.final = final
+        self.missing = missing
 
 
 class Merges:
@@ -203,6 +205,13 @@ def give(done, whole=False):
     resync.save_then(lambda persistence: done(packed(persistence)))
 
 
+def lacking_sims(sim_ids, given, persistence):
+    """The ids of `sim_ids` that neither the SimData `given` nor our save
+    has: a household taken in without them would lose those sims."""
+    have = set(sim.sim_id for sim in given)
+    return [sim_id for sim_id in sim_ids if sim_id not in have and persistence.get_sim_proto_buff(sim_id) is None]
+
+
 def ran_here(sim, ours_only, ran):
     """Whether to give the SimData `sim`: all of them from a save of our
     own, from the host's save only those in a zone of `ran`, the zones our
@@ -239,6 +248,11 @@ def take_in(payload, origin_save=0):
             log.info("household: {:#x} comes from save {:#x} but was played here since; ours is newer and kept".format(
                 household_id, origin_save))
             return KEPT
+        if not known:
+            lacking = lacking_sims(given.sims.ids, part.sims, persistence)
+            if lacking:
+                raise Refusal("{} of its sims came without their data, and this save has none of them".format(
+                    len(lacking)), final=False, missing=True)
         if household_id == services.active_household_id():
             outcome = _update_played(persistence, part, household_id)
         else:

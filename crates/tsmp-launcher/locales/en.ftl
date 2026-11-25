@@ -162,6 +162,7 @@ live-wait-remote = Waiting for the other player to load the shared save.
 live-on = Live. Both games are joined.
 live-syncing = Getting the two games in step. Keep both open; this can take a minute or two.
 live-apart = Both games are running, each on its own lot or in its own save.
+live-retrying = Each game plays on by itself for now; they join again shortly.
 
 ## Sizes and times. { $n } is a number such as 12.5
 
