@@ -266,6 +266,11 @@ impl Inner {
                 }
                 Err(_) => continue,
             };
+            // Windows hands out accepted sockets non-blocking when the
+            // listener is; every read would then fail at once.
+            if stream.set_nonblocking(false).is_err() {
+                continue;
+            }
             match self.gate.admit(stream, address) {
                 Ok(peer) => {
                     let inner = self.clone();

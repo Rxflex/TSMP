@@ -26,7 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The version is the launcher's; a tag must name it.
       - name: Version
@@ -77,13 +77,13 @@ jobs:
     env:
       VERSION: ${{ needs.server.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The release page lists every change since the previous tag.
           fetch-depth: 0
 
       # The game loads Python 3.7 bytecode only.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.7"
 

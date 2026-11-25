@@ -1,0 +1,48 @@
+name: tests
+
+# Every push and pull request: the mod's tests on the game's Python, and the
+# Rust tests on Windows, where players run the launcher, and on Linux, where
+# session servers usually run.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Bash stops at the first command that fails, also on Windows.
+    shell: bash
+
+jobs:
+  mod:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The game loads Python 3.7 bytecode only.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.7"
+      - run: python -m unittest discover -s mod/tests
+      - run: python mod/build.py
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tsmp-core -p tsmp-net -p tsmp-server -p tsmp-launcher
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tsmp-core -p tsmp-cli -p tsmp-net -p tsmp-server
