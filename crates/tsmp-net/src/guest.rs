@@ -6,7 +6,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -16,9 +16,9 @@ use crate::paths::safe_join;
 use crate::protocol::{
     GuestStatus, Hello, Message, PROTOCOL_VERSION, Root, SaveInfo, Session, expect_message, write_message,
 };
+use crate::route::Route;
 use crate::{Error, Result, file_err};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,9 +37,8 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn connect(address: SocketAddr, hello: &Hello) -> Result<Self> {
-        let stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
-        let _ = stream.set_nodelay(true);
+    pub fn connect(host: &Route, hello: &Hello) -> Result<Self> {
+        let stream = host.open()?;
         let mut reader = BufReader::with_capacity(1 << 16, stream.try_clone()?);
         let mut writer = BufWriter::new(stream);
         write_message(&mut writer, &Message::Hello(hello.clone()))?;

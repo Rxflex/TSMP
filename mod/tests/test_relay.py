@@ -1,7 +1,9 @@
 """The mod's bridge and session against the launcher's real relay.
 
-Needs the `live_pair` example:  cargo build -p tsmp-net --example live_pair
-Skipped when it has not been built.
+Needs the `live_pair` example:  cargo build -p tsmp-server --example live_pair
+Skipped when it has not been built. Every test runs twice: with the guest's
+launcher dialling the host's, and with the two meeting through a session
+server.
 """
 
 import os
@@ -44,8 +46,10 @@ class Player:
 
 @unittest.skipUnless(os.path.exists(EXAMPLE), "live_pair example is not built")
 class RelayTest(unittest.TestCase):
+    ARGS = []
+
     def setUp(self):
-        self.relay = subprocess.Popen([EXAMPLE], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.relay = subprocess.Popen([EXAMPLE] + self.ARGS, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.addCleanup(self.stop)
         host_port, guest_port = map(int, self.relay.stdout.readline().split())
         self.host = Player(host_port, session.HOST)
@@ -123,6 +127,10 @@ class RelayTest(unittest.TestCase):
         self.addCleanup(guest.bridge.close)
         guest.game.zone = True
         self.until("the session again", lambda: host.session.live and guest.session.live)
+
+
+class OnlineRelayTest(RelayTest):
+    ARGS = ["online"]
 
 
 if __name__ == "__main__":

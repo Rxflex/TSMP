@@ -72,15 +72,26 @@ guest-syncing = Copie de { $done } sur { $total }
 guest-ready = Prêt
 guest-failed = Échec : { $message }
 host-stop = Arrêter l’hébergement
+online = Par internet
+online-detail = Pour un joueur hors de votre réseau. Saisissez l'adresse d'un serveur de sessions TSMP ; il vous donne une invitation à lui envoyer.
+online-open = Ouvrir
+online-bad-server = Ce n'est pas une adresse de serveur. Elle ressemble à play.example.org ou 203.0.113.5:47810.
+# { $server } is the session server, such as play.example.org
+online-connecting = Connexion à { $server }…
+online-ready = Ouverte sur { $server }. L'autre joueur rejoint avec cette invitation :
+# { $reason } is the error, in English
+online-retrying = Le serveur est injoignable pour le moment ({ $reason }). Nouvel essai en cours ; l'invitation ne change pas.
+online-invite-detail = Elle se colle sur l'écran « Rejoindre une session », à la place de l'adresse.
+online-stop = Fermer à internet
 
 ## Joining
 
 join-title = Choisissez un hôte
 join-searching = Recherche d’un hôte sur ce réseau. L’autre joueur doit d’abord choisir « Héberger une session ». Si rien n’apparaît, autorisez TSMP dans le pare-feu des deux ordinateurs.
-join-manual = Ou saisissez l'adresse de l'hôte
-join-manual-detail = L'hôte la voit sur l'écran de sa session.
+join-manual = Ou saisissez l'adresse ou l'invitation de l'hôte
+join-manual-detail = Sur ce réseau, l'adresse que l'hôte voit sur l'écran de sa session. Depuis ailleurs, l'invitation que l'hôte vous envoie.
 join-manual-connect = Se connecter
-join-manual-bad = Ce n'est pas une adresse. Elle ressemble à 192.168.0.10.
+join-manual-bad = Ce n'est ni une adresse ni une invitation. Elles ressemblent à 192.168.0.10 et ABCD-EFGH@play.example.org.
 join-failed-title = Impossible de rejoindre la session
 join-working-title = Connexion à la session
 join-connecting = Connexion…

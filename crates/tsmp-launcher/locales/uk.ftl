@@ -75,15 +75,26 @@ guest-syncing = Копіює: { $done } із { $total }
 guest-ready = Готовий
 guest-failed = Помилка: { $message }
 host-stop = Закрити сесію
+online = Через інтернет
+online-detail = Для гравця з іншої мережі. Введіть адресу сервера сесій TSMP — він видасть запрошення, яке треба надіслати гравцеві.
+online-open = Відкрити
+online-bad-server = Це не адреса сервера. Вона виглядає так: play.example.org або 203.0.113.5:47810.
+# { $server } is the session server, such as play.example.org
+online-connecting = Підключення до { $server }…
+online-ready = Відкрито на { $server }. Інший гравець приєднується за цим запрошенням:
+# { $reason } is the error, in English
+online-retrying = Сервер зараз недоступний ({ $reason }). Пробуємо знову; запрошення не зміниться.
+online-invite-detail = Його вставляють на екрані «Приєднатися до сесії», у поле адреси.
+online-stop = Закрити для інтернету
 
 ## Joining
 
 join-title = Виберіть хоста
 join-searching = Шукаємо хоста в цій мережі. Спершу інший гравець має вибрати «Створити сесію». Якщо ніхто не з’являється, дозвольте TSMP у брандмауері на обох комп’ютерах.
-join-manual = Або введіть адресу хоста
-join-manual-detail = Хост бачить її на екрані сесії.
+join-manual = Або введіть адресу хоста чи запрошення
+join-manual-detail = У цій мережі — адреса, яку хост бачить на екрані сесії. З іншої мережі — запрошення, яке надіслав хост.
 join-manual-connect = Підключитися
-join-manual-bad = Це не адреса. Вона виглядає так: 192.168.0.10.
+join-manual-bad = Це не адреса і не запрошення. Вони виглядають так: 192.168.0.10 і ABCD-EFGH@play.example.org.
 join-failed-title = Приєднатися не вдалося
 join-working-title = Приєднуємося
 join-connecting = Підключаємося…

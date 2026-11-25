@@ -19,6 +19,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tsmp_core::manifest::Manifest;
 use tsmp_core::packs::PackSet;
@@ -91,7 +92,10 @@ pub enum Message {
     Error { message: String },
 }
 
-pub fn write_message(writer: &mut impl Write, message: &Message) -> Result<()> {
+/// Write one frame. Every conversation of TSMP over TCP uses this framing:
+/// between launchers ([`Message`]) and with a session server
+/// ([`crate::rendezvous`]).
+pub fn write_message<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<()> {
     let body = serde_json::to_vec(message).map_err(|e| Error::Protocol(e.to_string()))?;
     if body.len() > MAX_FRAME {
         return Err(Error::Protocol(format!("message of {} bytes is too large", body.len())));
@@ -103,7 +107,21 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> Result<()> {
 }
 
 /// `Ok(None)` when the other side closed the connection between messages.
-pub fn read_message(reader: &mut impl Read) -> Result<Option<Message>> {
+///
+/// Reads exactly one frame and nothing past it, so a stream that changes
+/// format after a message can be read with it unbuffered.
+pub fn read_message<T: DeserializeOwned>(reader: &mut impl Read) -> Result<Option<T>> {
+    read_message_up_to(reader, MAX_FRAME)
+}
+
+/// Read a message where the connection closing is itself an error.
+pub fn expect_message<T: DeserializeOwned>(reader: &mut impl Read) -> Result<T> {
+    expect_message_up_to(reader, MAX_FRAME)
+}
+
+/// [`read_message`] for a conversation whose messages are never longer than
+/// `limit`: a longer one is refused before anything is set aside for it.
+pub fn read_message_up_to<T: DeserializeOwned>(reader: &mut impl Read, limit: usize) -> Result<Option<T>> {
     let mut length = [0u8; 4];
     let mut filled = 0;
     while filled < length.len() {
@@ -116,7 +134,7 @@ pub fn read_message(reader: &mut impl Read) -> Result<Option<Message>> {
         }
     }
     let length = u32::from_le_bytes(length) as usize;
-    if length > MAX_FRAME {
+    if length > limit {
         return Err(Error::Protocol(format!("message of {length} bytes is too large")));
     }
     let mut body = vec![0u8; length];
@@ -126,9 +144,9 @@ pub fn read_message(reader: &mut impl Read) -> Result<Option<Message>> {
         .map_err(|e| Error::Protocol(format!("unreadable message: {e}")))
 }
 
-/// Read a message where the connection closing is itself an error.
-pub fn expect_message(reader: &mut impl Read) -> Result<Message> {
-    read_message(reader)?.ok_or_else(|| Error::Protocol("connection closed".into()))
+/// [`expect_message`] with a limit, as in [`read_message_up_to`].
+pub fn expect_message_up_to<T: DeserializeOwned>(reader: &mut impl Read, limit: usize) -> Result<T> {
+    read_message_up_to(reader, limit)?.ok_or_else(|| Error::Protocol("connection closed".into()))
 }
 
 #[cfg(test)]
@@ -140,7 +158,7 @@ mod tests {
         write_message(&mut buffer, &message).unwrap();
         let mut reader = buffer.as_slice();
         assert_eq!(read_message(&mut reader).unwrap(), Some(message));
-        assert_eq!(read_message(&mut reader).unwrap(), None);
+        assert_eq!(read_message::<Message>(&mut reader).unwrap(), None);
     }
 
     #[test]
@@ -206,10 +224,19 @@ mod tests {
         let mut buffer = Vec::new();
         write_message(&mut buffer, &Message::GetSession).unwrap();
         buffer.pop();
-        assert!(read_message(&mut buffer.as_slice()).is_err());
-        assert!(read_message(&mut [1u8, 0].as_slice()).is_err());
-        assert!(read_message(&mut u32::MAX.to_le_bytes().as_slice()).is_err());
-        assert!(expect_message(&mut [].as_slice()).is_err());
+        assert!(read_message::<Message>(&mut buffer.as_slice()).is_err());
+        assert!(read_message::<Message>(&mut [1u8, 0].as_slice()).is_err());
+        assert!(read_message::<Message>(&mut u32::MAX.to_le_bytes().as_slice()).is_err());
+        assert!(expect_message::<Message>(&mut [].as_slice()).is_err());
+    }
+
+    #[test]
+    fn a_limit_refuses_longer_messages() {
+        let mut buffer = Vec::new();
+        write_message(&mut buffer, &Message::GetSession).unwrap();
+        let length = buffer.len() - 4;
+        assert!(read_message_up_to::<Message>(&mut buffer.as_slice(), length - 1).is_err());
+        assert_eq!(read_message_up_to(&mut buffer.as_slice(), length).unwrap(), Some(Message::GetSession));
     }
 
     #[test]
@@ -217,6 +244,6 @@ mod tests {
         let body = b"{\"type\":\"nope\"}";
         let mut buffer = (body.len() as u32).to_le_bytes().to_vec();
         buffer.extend_from_slice(body);
-        assert!(matches!(read_message(&mut buffer.as_slice()), Err(Error::Protocol(_))));
+        assert!(matches!(read_message::<Message>(&mut buffer.as_slice()), Err(Error::Protocol(_))));
     }
 }

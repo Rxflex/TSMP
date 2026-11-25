@@ -72,15 +72,26 @@ guest-syncing = Kopiert { $done } von { $total }
 guest-ready = Bereit
 guest-failed = Fehlgeschlagen: { $message }
 host-stop = Hosten beenden
+online = Über das Internet
+online-detail = Für jemanden außerhalb deines Netzwerks. Gib die Adresse eines TSMP-Sitzungsservers ein; er gibt dir eine Einladung, die du weiterschickst.
+online-open = Öffnen
+online-bad-server = Das ist keine Serveradresse. Sie sieht so aus: play.example.org oder 203.0.113.5:47810.
+# { $server } is the session server, such as play.example.org
+online-connecting = Verbinde mit { $server }…
+online-ready = Offen auf { $server }. Mit dieser Einladung tritt der andere bei:
+# { $reason } is the error, in English
+online-retrying = Der Server ist gerade nicht erreichbar ({ $reason }). Neuer Versuch läuft; die Einladung bleibt gleich.
+online-invite-detail = Sie wird auf dem Bildschirm „Sitzung beitreten“ dort eingefügt, wo die Adresse hingehört.
+online-stop = Für das Internet schließen
 
 ## Joining
 
 join-title = Host wählen
 join-searching = Im Netzwerk wird nach einem Host gesucht. Die andere Person muss zuerst „Sitzung hosten“ wählen. Wenn niemand erscheint, erlaube TSMP auf beiden Computern in der Firewall.
-join-manual = Oder Adresse des Hosts eingeben
-join-manual-detail = Der Host sieht sie auf dem Sitzungsbildschirm.
+join-manual = Oder Adresse oder Einladung des Hosts eingeben
+join-manual-detail = Im selben Netzwerk die Adresse, die der Host auf dem Sitzungsbildschirm sieht. Von woanders die Einladung, die der Host dir schickt.
 join-manual-connect = Verbinden
-join-manual-bad = Das ist keine Adresse. Sie sieht so aus: 192.168.0.10.
+join-manual-bad = Das ist weder eine Adresse noch eine Einladung. Sie sehen so aus: 192.168.0.10 und ABCD-EFGH@play.example.org.
 join-failed-title = Beitreten hat nicht funktioniert
 join-working-title = Beitritt läuft
 join-connecting = Verbindung wird hergestellt…

@@ -80,15 +80,26 @@ guest-syncing = Copying { $done } of { $total }
 guest-ready = Ready
 guest-failed = Failed: { $message }
 host-stop = Stop hosting
+online = Over the internet
+online-detail = For a player outside your network. Enter the address of a TSMP session server, and it gives you an invite to send them.
+online-open = Open
+online-bad-server = That is not a server address. It looks like play.example.org or 203.0.113.5:47810.
+# { $server } is the session server, such as play.example.org
+online-connecting = Connecting to { $server }…
+online-ready = Open on { $server }. The other player joins with this invite:
+# { $reason } is the error, in English
+online-retrying = The server cannot be reached right now ({ $reason }). Trying again; the invite stays the same.
+online-invite-detail = They paste it on the “Join a session” screen, where the address goes.
+online-stop = Close to the internet
 
 ## Joining
 
 join-title = Choose a host
 join-searching = Looking for a host on this network. The other player has to choose “Host a session” first. If nothing shows up, allow TSMP through the firewall on both computers.
-join-manual = Or enter the host's address
-join-manual-detail = The host sees it on their session screen.
+join-manual = Or enter the host's address or invite
+join-manual-detail = On this network, the address the host sees on their session screen. From elsewhere, the invite the host sends you.
 join-manual-connect = Connect
-join-manual-bad = That is not an address. It looks like 192.168.0.10.
+join-manual-bad = That is neither an address nor an invite. They look like 192.168.0.10 and ABCD-EFGH@play.example.org.
 join-failed-title = Joining did not work
 join-working-title = Joining
 join-connecting = Connecting…

@@ -18,7 +18,7 @@
 //! each game is in a zone, for display only.
 
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -26,7 +26,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::protocol::{Hello, Message, PROTOCOL_VERSION, expect_message, write_message};
-use crate::{Error, Result};
+use crate::route::Route;
+use crate::{Error, POLL, Result, sleep_unless};
 
 pub const KIND_MSG: u8 = 1;
 pub const KIND_COMMAND: u8 = 2;
@@ -37,10 +38,8 @@ const MAX_PAYLOAD: usize = 64 << 20;
 /// A game that is loading does not read. Frames wait for it up to this many
 /// bytes; past that the peer is dropped rather than exhausting memory.
 const MAX_QUEUED: usize = 256 << 20;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL: Duration = Duration::from_secs(2);
-const POLL: Duration = Duration::from_millis(100);
 /// Lines of the mods' logs kept for display.
 const LOG_LINES: usize = 200;
 
@@ -416,6 +415,12 @@ impl Relay {
     pub fn add_remote(&self, stream: TcpStream) -> Result<()> {
         Ok(self.inner.attach(Side::Remote, stream)?)
     }
+
+    /// Close every connection and take no more, as dropping it does, for
+    /// owners that cannot be sure they hold the last reference.
+    pub fn close(&self) {
+        self.inner.close();
+    }
 }
 
 impl Drop for Relay {
@@ -428,7 +433,8 @@ impl Drop for Relay {
 }
 
 /// The guest's end of a live session: a relay kept connected to the host,
-/// redialling for as long as it exists.
+/// redialling for as long as it exists, the same way the guest first reached
+/// it.
 pub struct LiveLink {
     relay: Arc<Relay>,
     stop: Arc<AtomicBool>,
@@ -436,7 +442,7 @@ pub struct LiveLink {
 }
 
 impl LiveLink {
-    pub fn start(host: SocketAddr, hello: Hello) -> Result<Self> {
+    pub fn start(host: Route, hello: Hello) -> Result<Self> {
         let relay = Arc::new(Relay::start()?);
         let stop = Arc::new(AtomicBool::new(false));
         let thread = thread::spawn({
@@ -444,16 +450,12 @@ impl LiveLink {
             let stop = stop.clone();
             move || {
                 while !stop.load(Ordering::Relaxed) {
-                    if relay.status().remotes == 0 {
-                        if let Ok(stream) = dial(host, &hello) {
-                            let _ = relay.add_remote(stream);
-                        }
+                    if relay.status().remotes == 0
+                        && let Ok(stream) = dial(&host, &hello)
+                    {
+                        let _ = relay.add_remote(stream);
                     }
-                    let mut waited = Duration::ZERO;
-                    while waited < REDIAL && !stop.load(Ordering::Relaxed) {
-                        thread::sleep(POLL);
-                        waited += POLL;
-                    }
+                    sleep_unless(REDIAL, &stop);
                 }
             }
         });
@@ -484,7 +486,7 @@ impl LiveLink {
 impl Drop for LiveLink {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.relay.inner.close();
+        self.relay.close();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -493,9 +495,8 @@ impl Drop for LiveLink {
 
 /// Connect to a host and ask to join its live session. On success the
 /// stream carries frames from here on.
-fn dial(host: SocketAddr, hello: &Hello) -> Result<TcpStream> {
-    let stream = TcpStream::connect_timeout(&host, CONNECT_TIMEOUT)?;
-    let _ = stream.set_nodelay(true);
+fn dial(host: &Route, hello: &Hello) -> Result<TcpStream> {
+    let stream = host.open()?;
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     write_message(&mut &stream, &Message::JoinLive(hello.clone()))?;
     // Unbuffered on purpose: nothing past the reply may be consumed here.
@@ -519,6 +520,8 @@ mod tests {
     use std::time::Instant;
 
     use tsmp_core::manifest::Manifest;
+
+    use std::net::SocketAddr;
 
     use super::*;
     use crate::host::{Host, HostConfig};
@@ -719,7 +722,7 @@ mod tests {
     #[test]
     fn guest_and_host_games_are_joined_through_both_launchers() {
         let (host, _dir) = start_host(0);
-        let link = LiveLink::start((Ipv4Addr::LOCALHOST, host.port()).into(), hello("guest")).unwrap();
+        let link = LiveLink::start(Route::Direct((Ipv4Addr::LOCALHOST, host.port()).into()), hello("guest")).unwrap();
 
         let mut host_game = Game::connect(host.live().port());
         let mut guest_game = Game::connect(link.port());
@@ -763,7 +766,7 @@ mod tests {
     fn the_guest_keeps_dialling_until_the_host_appears() {
         // Reserve a port, then free it for the host that starts late.
         let port = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap().local_addr().unwrap().port();
-        let link = LiveLink::start((Ipv4Addr::LOCALHOST, port).into(), hello("guest")).unwrap();
+        let link = LiveLink::start(Route::Direct((Ipv4Addr::LOCALHOST, port).into()), hello("guest")).unwrap();
         thread::sleep(Duration::from_millis(300));
         assert_eq!(link.status().remotes, 0);
 

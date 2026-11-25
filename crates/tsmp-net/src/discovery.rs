@@ -15,6 +15,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 
+use crate::sleep_unless;
+
 pub const DISCOVERY_PORT: u16 = 47801;
 const MAGIC: &str = "TSMP";
 const INTERVAL: Duration = Duration::from_secs(1);
@@ -71,11 +73,7 @@ impl Announcer {
                 while !stop.load(Ordering::Relaxed) {
                     // A send can fail while the network is down; keep trying.
                     let _ = socket.send_to(&payload, destination);
-                    let mut waited = Duration::ZERO;
-                    while waited < INTERVAL && !stop.load(Ordering::Relaxed) {
-                        thread::sleep(POLL);
-                        waited += POLL;
-                    }
+                    sleep_unless(INTERVAL, &stop);
                 }
             }
         });

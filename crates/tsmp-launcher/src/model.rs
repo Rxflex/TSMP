@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::mappings::{self, Support};
 use crate::picture;
 use crate::update;
+use tsmp_core::clock::{UtcTime, unix_now};
 use tsmp_core::game::GameInstall;
 use tsmp_core::manifest::{Diff, Manifest, hash_file};
 use gpui::{Image, ImageFormat};
@@ -28,6 +29,8 @@ use tsmp_net::guest::{Connection, Progress, sync_mods, sync_save};
 use tsmp_net::host::{Host, HostConfig, HostEvent};
 use tsmp_net::live::{LiveLink, LiveStatus};
 use tsmp_net::protocol::{DEFAULT_PORT, GuestStatus, Hello, PROTOCOL_VERSION, Session};
+use tsmp_net::rendezvous::{ListingStatus, ServerAddress};
+use tsmp_net::route::Route;
 
 /// File name of the in-game mod inside a Mods folder.
 const MOD_FILE: &str = "tsmp.ts4script";
@@ -155,8 +158,17 @@ pub struct Running {
     /// Other multiplayer mods that were moved out of the Mods folder.
     pub set_aside: Vec<String>,
     pub save: Option<String>,
-    pub own_families: bool,
     pub guests: Vec<Guest>,
+    /// The session as listed on a session server, while it is.
+    pub online: Option<Online>,
+}
+
+/// A hosted session listed on a session server, for guests outside the
+/// local network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Online {
+    pub server: ServerAddress,
+    pub status: ListingStatus,
 }
 
 pub struct Guest {
@@ -200,7 +212,7 @@ pub enum JoinStep {
 /// What joining would change on this computer.
 pub struct Plan {
     connection: Connection,
-    address: SocketAddr,
+    route: Route,
     pub session: Session,
     pub diff: Diff,
     /// Whether the shared save has to be downloaded.
@@ -541,8 +553,9 @@ impl Model {
         });
     }
 
-    /// Connect to a host and work out what joining it would change.
-    pub fn connect(&mut self, address: SocketAddr) {
+    /// Connect to a host, on the local network or through a session server,
+    /// and work out what joining it would change.
+    pub fn connect(&mut self, route: Route) {
         let Some(env) = &self.env else { return };
         match &mut self.screen {
             Screen::Join(screen) if matches!(screen.stage, JoinStage::Browsing) => {
@@ -559,11 +572,44 @@ impl Model {
             _ => return,
         }
         let (env, sender) = (env.clone(), self.sender.clone());
+        self.note(format!("Connecting to {route}"));
         thread::spawn(move || {
-            let plan = make_plan(&env, address, &sender);
+            let plan = make_plan(&env, route, &sender);
             let _ = sender.send(Event::Planned(plan));
         });
-        self.note(format!("Connecting to {address}"));
+    }
+
+    /// List the hosted session on a session server, so that a guest outside
+    /// the local network can join with an invite. Replaces an earlier server.
+    pub fn go_online(&mut self, server: ServerAddress) {
+        let Some(running) = self.running_mut() else { return };
+        running.host.publish(server.clone());
+        running.online = Some(Online {
+            server: server.clone(),
+            status: ListingStatus::Connecting,
+        });
+        self.note(format!("Opening the session on the server {server}"));
+    }
+
+    /// Take the hosted session off its session server. Guests who came
+    /// through it stay.
+    pub fn go_offline(&mut self) {
+        let Some(running) = self.running_mut() else { return };
+        if running.online.take().is_none() {
+            return;
+        }
+        running.host.unpublish();
+        self.note("The session is no longer on the server");
+    }
+
+    fn running_mut(&mut self) -> Option<&mut Running> {
+        match &mut self.screen {
+            Screen::Host(HostScreen {
+                stage: HostStage::Running(running),
+                ..
+            }) => Some(running),
+            _ => None,
+        }
     }
 
     /// Apply the reviewed plan: move displaced files aside and download.
@@ -831,10 +877,25 @@ impl Model {
                         }
                     }
                 }
+                let listed = running.host.listing().map(|listing| listing.status());
+                let mut listing_changed = false;
+                if let (Some(online), Some(status)) = (&mut running.online, listed) {
+                    if online.status != status {
+                        listing_changed = true;
+                        match &status {
+                            ListingStatus::Connecting => {}
+                            ListingStatus::Open(invite) => notes.push((format!("On the server, invite: {invite}"), false)),
+                            ListingStatus::Retrying { reason, .. } => {
+                                notes.push((format!("The server {}: {reason}", online.server), true))
+                            }
+                        }
+                        online.status = status;
+                    }
+                }
                 for (text, bad) in notes {
                     self.write(text, bad);
                 }
-                !events.is_empty()
+                !events.is_empty() || listing_changed
             }
             Screen::Join(screen) => {
                 let Some(browser) = &screen.browser else { return false };
@@ -1040,13 +1101,13 @@ fn start_host(
         has_mod,
         set_aside,
         save: save.map(|save| save.file_name),
-        own_families,
         guests: Vec::new(),
+        online: None,
     })
 }
 
-fn make_plan(env: &Env, address: SocketAddr, sender: &Sender<Event>) -> Result<Plan, String> {
-    let mut connection = Connection::connect(address, &env.hello()).map_err(|e| e.to_string())?;
+fn make_plan(env: &Env, route: Route, sender: &Sender<Event>) -> Result<Plan, String> {
+    let mut connection = Connection::connect(&route, &env.hello()).map_err(|e| e.to_string())?;
     let session = connection.session().map_err(|e| e.to_string())?;
     let _ = sender.send(Event::JoinStep(JoinStep::Comparing));
     let local = scan_mods(env)?;
@@ -1060,7 +1121,7 @@ fn make_plan(env: &Env, address: SocketAddr, sender: &Sender<Event>) -> Result<P
     };
     Ok(Plan {
         connection,
-        address,
+        route,
         session,
         diff,
         save_needed,
@@ -1070,7 +1131,7 @@ fn make_plan(env: &Env, address: SocketAddr, sender: &Sender<Event>) -> Result<P
 fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, String> {
     let Plan {
         mut connection,
-        address,
+        route,
         session,
         diff,
         ..
@@ -1103,7 +1164,7 @@ fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, Str
     })();
     match result {
         Ok(save_updated) => {
-            let live = LiveLink::start(address, env.hello()).map_err(|e| e.to_string())?;
+            let live = LiveLink::start(route, env.hello()).map_err(|e| e.to_string())?;
             let bridge = BridgeFile::write(env, live.port(), "guest")?;
             connection.send_status(GuestStatus::Ready).map_err(|e| e.to_string())?;
             Ok(Synced {
@@ -1132,32 +1193,9 @@ fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, Str
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// `2026-11-13_22-42-54` (UTC), usable as a folder name.
 fn backup_stamp(unix_seconds: u64) -> String {
-    let days = unix_seconds / 86_400;
-    let seconds = unix_seconds % 86_400;
-    // Days since 1970-01-01 to a calendar date (Howard Hinnant's algorithm).
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted % 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}_{:02}-{:02}-{:02}",
-        seconds / 3_600,
-        seconds % 3_600 / 60,
-        seconds % 60
-    )
+    UtcTime::from_unix(unix_seconds).file_stamp()
 }
 
 #[cfg(test)]
@@ -1284,7 +1322,7 @@ mod tests {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, running.port));
 
         let mut guest = Model::with_env(guest_env, false);
-        guest.connect(address);
+        guest.connect(address.into());
         pump_until(&mut [&mut host, &mut guest], |m| {
             !matches!(join_stage(m[1]), JoinStage::Working(_))
         });
@@ -1389,12 +1427,12 @@ mod tests {
         host.start_hosting();
         pump_until(&mut [&mut host], |m| host_running(m[0]).is_some());
         let running = host_running(&host).unwrap();
-        assert!(running.own_families);
+        assert!(host.own_families());
         assert_eq!(running.save, None);
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, running.port));
 
         let mut guest = Model::with_env(guest_env, false);
-        guest.connect(address);
+        guest.connect(address.into());
         pump_until(&mut [&mut host, &mut guest], |m| {
             !matches!(join_stage(m[1]), JoinStage::Working(_))
         });
@@ -1439,7 +1477,7 @@ mod tests {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, running.port));
 
         let mut guest = Model::with_env(guest_env, false);
-        guest.connect(address);
+        guest.connect(address.into());
         pump_until(&mut [&mut host, &mut guest], |m| {
             matches!(join_stage(m[1]), JoinStage::Ready(_) | JoinStage::Failed(_))
         });
@@ -1451,6 +1489,64 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_joins_from_another_network_with_an_invite() {
+        let server = tsmp_server::Server::start(tsmp_server::Config {
+            listen: (Ipv4Addr::LOCALHOST, 0).into(),
+            journal: tsmp_server::Journal::silent(),
+            ..Default::default()
+        })
+        .unwrap();
+        let server_address = ServerAddress::new("127.0.0.1", server.local_addr().port());
+        let host_dir = tempfile::tempdir().unwrap();
+        let guest_dir = tempfile::tempdir().unwrap();
+        let host_env = player(host_dir.path(), "host", &["EP01"]);
+        let guest_env = player(guest_dir.path(), "guest", &["EP01"]);
+        write(&host_env.game.user_dir, "Mods/tsmp.ts4script", "the mod");
+        write(&host_env.game.user_dir, "saves/Slot_00000002.save", "shared save");
+        let guest_user = guest_env.game.user_dir.clone();
+
+        let mut host = Model::with_env(host_env, false);
+        host.open_host();
+        host.select_save(Some(0));
+        host.start_hosting();
+        pump_until(&mut [&mut host], |m| host_running(m[0]).is_some());
+        host.go_online(server_address.clone());
+        pump_until(&mut [&mut host], |m| {
+            matches!(&host_running(m[0]).unwrap().online, Some(Online { status: ListingStatus::Open(_), .. }))
+        });
+        let online = host_running(&host).unwrap().online.clone().unwrap();
+        assert_eq!(online.server, server_address);
+        let invite = online.status.invite().unwrap().clone();
+        assert!(host.journal_text().contains(&invite.to_string()));
+
+        // The guest types the invite where an address goes.
+        let mut guest = Model::with_env(guest_env, false);
+        guest.connect(invite.to_string().parse().unwrap());
+        pump_until(&mut [&mut host, &mut guest], |m| {
+            !matches!(join_stage(m[1]), JoinStage::Working(_))
+        });
+        assert!(matches!(join_stage(&guest), JoinStage::Review(_)));
+        guest.confirm_sync();
+        pump_until(&mut [&mut host, &mut guest], |m| {
+            matches!(join_stage(m[1]), JoinStage::Ready(_) | JoinStage::Failed(_))
+                && m.iter().all(|model| model.live.is_some_and(|live| live.remotes == 1))
+        });
+        assert!(matches!(join_stage(&guest), JoinStage::Ready(_)));
+        assert_eq!(fs::read_to_string(guest_user.join("saves/Slot_00000002.save")).unwrap(), "shared save");
+        let guests = &host_running(&host).unwrap().guests;
+        assert_eq!(guests.len(), 1);
+        assert_eq!(guests[0].hello.name, "guest");
+
+        // Closing the session to the internet leaves the guest in it.
+        host.go_offline();
+        pump_until(&mut [&mut host], |_| server.stats().sessions == 0);
+        assert!(host_running(&host).unwrap().online.is_none());
+        host.pump();
+        assert_eq!(host.live.unwrap().remotes, 1);
+        assert_eq!(server.stats().tunnels, 2);
+    }
+
+    #[test]
     fn an_unreachable_host_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let mut guest = Model::with_env(player(dir.path(), "guest", &[]), false);
@@ -1459,7 +1555,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         drop(listener);
 
-        guest.connect(address);
+        guest.connect(address.into());
         pump_until(&mut [&mut guest], |m| !matches!(join_stage(m[0]), JoinStage::Working(_)));
 
         assert!(matches!(join_stage(&guest), JoinStage::Failed(_)));

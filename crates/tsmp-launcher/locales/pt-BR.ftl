@@ -72,15 +72,26 @@ guest-syncing = Copiando { $done } de { $total }
 guest-ready = Pronto
 guest-failed = Falhou: { $message }
 host-stop = Parar de hospedar
+online = Pela internet
+online-detail = Para alguém fora da sua rede. Digite o endereço de um servidor de sessões TSMP, e ele dá um convite para você enviar.
+online-open = Abrir
+online-bad-server = Isso não é um endereço de servidor. Ele se parece com play.example.org ou 203.0.113.5:47810.
+# { $server } is the session server, such as play.example.org
+online-connecting = Conectando a { $server }…
+online-ready = Aberta em { $server }. O outro jogador entra com este convite:
+# { $reason } is the error, in English
+online-retrying = Não é possível alcançar o servidor agora ({ $reason }). Tentando de novo; o convite continua o mesmo.
+online-invite-detail = Ele é colado na tela “Entrar em uma sessão”, no lugar do endereço.
+online-stop = Fechar para a internet
 
 ## Joining
 
 join-title = Escolha um anfitrião
 join-searching = Procurando um anfitrião nesta rede. O outro jogador precisa escolher “Hospedar uma sessão” primeiro. Se nada aparecer, libere o TSMP no firewall dos dois computadores.
-join-manual = Ou digite o endereço do anfitrião
-join-manual-detail = O anfitrião o vê na tela da sessão.
+join-manual = Ou digite o endereço ou o convite do anfitrião
+join-manual-detail = Nesta rede, o endereço que o anfitrião vê na tela da sessão. De outra rede, o convite que o anfitrião envia para você.
 join-manual-connect = Conectar
-join-manual-bad = Isso não é um endereço. Ele se parece com 192.168.0.10.
+join-manual-bad = Isso não é um endereço nem um convite. Eles se parecem com 192.168.0.10 e ABCD-EFGH@play.example.org.
 join-failed-title = Não foi possível entrar
 join-working-title = Entrando na sessão
 join-connecting = Conectando…

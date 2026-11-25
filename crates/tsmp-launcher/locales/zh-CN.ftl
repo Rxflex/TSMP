@@ -70,15 +70,26 @@ guest-syncing = 正在复制 { $done } / { $total }
 guest-ready = 已就绪
 guest-failed = 失败：{ $message }
 host-stop = 关闭会话
+online = 通过互联网
+online-detail = 供你网络之外的玩家使用。输入 TSMP 会话服务器的地址，它会给你一个邀请，发给对方即可。
+online-open = 打开
+online-bad-server = 这不是服务器地址。它形如 play.example.org 或 203.0.113.5:47810。
+# { $server } is the session server, such as play.example.org
+online-connecting = 正在连接 { $server }…
+online-ready = 已在 { $server } 上打开。对方用这个邀请加入：
+# { $reason } is the error, in English
+online-retrying = 暂时无法连接服务器（{ $reason }）。正在重试；邀请保持不变。
+online-invite-detail = 对方在“加入会话”界面填写地址的位置粘贴它。
+online-stop = 停止互联网访问
 
 ## Joining
 
 join-title = 选择主机
 join-searching = 正在此网络中查找主机。另一位玩家需要先选择“创建会话”。如果一直没有出现，请在两台电脑的防火墙中允许 TSMP。
-join-manual = 或输入主机地址
-join-manual-detail = 主机可以在会话界面看到它。
+join-manual = 或输入主机的地址或邀请
+join-manual-detail = 在同一网络中，填写主机在会话界面看到的地址；在其他网络中，填写主机发给你的邀请。
 join-manual-connect = 连接
-join-manual-bad = 这不是地址。地址形如 192.168.0.10。
+join-manual-bad = 这既不是地址也不是邀请。它们形如 192.168.0.10 和 ABCD-EFGH@play.example.org。
 join-failed-title = 加入失败
 join-working-title = 正在加入
 join-connecting = 正在连接…

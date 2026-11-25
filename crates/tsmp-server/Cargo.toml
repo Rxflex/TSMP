@@ -1,0 +1,18 @@
+[package]
+name = "tsmp-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "TSMP session server: lets two launchers that cannot reach each other meet over the internet"
+
+[[bin]]
+name = "tsmp-server"
+path = "src/main.rs"
+
+[dependencies]
+getrandom = "0.3.4"
+tsmp-core = { path = "../tsmp-core" }
+tsmp-net = { path = "../tsmp-net" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -2,6 +2,7 @@
 //! which packs two players share, and describing a Mods folder so it can be
 //! synchronised.
 
+pub mod clock;
 pub mod game;
 pub mod manifest;
 pub mod packs;

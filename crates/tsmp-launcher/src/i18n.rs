@@ -11,11 +11,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use rust_embed::RustEmbed;
 use unic_langid::LanguageIdentifier;
+
+use crate::settings;
 
 #[derive(RustEmbed)]
 #[folder = "locales/"]
@@ -95,7 +97,7 @@ impl I18n {
             .ok()
             .and_then(|exe| Some(exe.parent()?.join("locales")));
         let mut i18n = Self::from_sources(overrides.as_deref());
-        let wanted = saved_language().into_iter().chain(sys_locale::get_locales());
+        let wanted = settings::LANGUAGE.load().into_iter().chain(sys_locale::get_locales());
         for tag in wanted {
             if let Some(index) = closest(i18n.languages.iter().map(|l| l.code.as_str()), &tag) {
                 i18n.current = index;
@@ -151,7 +153,7 @@ impl I18n {
     pub fn choose(&mut self, code: &str) {
         if let Some(index) = self.languages.iter().position(|language| language.code == code) {
             self.current = index;
-            save_language(code);
+            settings::LANGUAGE.store(code);
         }
     }
 
@@ -173,29 +175,6 @@ fn closest<'a>(codes: impl Iterator<Item = &'a str> + Clone, wanted: &str) -> Op
         .clone()
         .position(|code| code.to_lowercase() == wanted)
         .or_else(|| codes.clone().position(|code| language(&code.to_lowercase()) == language(&wanted)))
-}
-
-/// `%APPDATA%\TSMP\language`, or the equivalent elsewhere.
-fn settings_file() -> Option<PathBuf> {
-    let base = std::env::var_os("APPDATA")
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".config")))?;
-    Some(base.join("TSMP").join("language"))
-}
-
-fn saved_language() -> Option<String> {
-    let text = fs::read_to_string(settings_file()?).ok()?;
-    let code = text.trim();
-    (!code.is_empty()).then(|| code.to_string())
-}
-
-fn save_language(code: &str) {
-    // Not being able to remember the choice is not worth interrupting for.
-    if let Some(path) = settings_file() {
-        let _ = path.parent().map(fs::create_dir_all);
-        let _ = fs::write(path, code);
-    }
 }
 
 #[cfg(test)]

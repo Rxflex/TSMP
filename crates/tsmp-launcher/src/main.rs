@@ -3,10 +3,12 @@
 // No console window behind the launcher in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod field;
 mod i18n;
 mod mappings;
 mod model;
 mod picture;
+mod settings;
 mod ui;
 mod update;
 

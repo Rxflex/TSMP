@@ -72,7 +72,7 @@ fn guest_ends_up_with_the_hosts_mods_and_nothing_is_lost() {
     write(&mods, "sub/guest-only.package", "mine");
     let (host, address) = start_host(host_dir.path(), None);
 
-    let mut connection = Connection::connect(address, &hello("guest", &["EP01"])).unwrap();
+    let mut connection = Connection::connect(&address.into(), &hello("guest", &["EP01"])).unwrap();
     assert_eq!(connection.host.name, "host");
     let session = connection.session().unwrap();
     let local = Manifest::scan(&mods, None).unwrap();
@@ -112,7 +112,7 @@ fn save_is_fetched_once_and_a_different_local_save_is_kept() {
     write(&saves, "Slot_00000002.save", "guest's own save");
     let (_host, address) = start_host(&host_mods, Some(&host_save));
 
-    let mut connection = Connection::connect(address, &hello("guest", &[])).unwrap();
+    let mut connection = Connection::connect(&address.into(), &hello("guest", &[])).unwrap();
     let save = connection.session().unwrap().save.expect("host offers a save");
 
     assert!(sync_save(&mut connection, &saves, &backup, &save, &mut |_| {}).unwrap());
@@ -161,7 +161,7 @@ fn guest_refuses_unsafe_paths_before_touching_anything() {
     let mods = guest.path().join("Mods");
     write(&mods, "mine.package", "mine");
     let (_host, address) = start_host(host_dir.path(), None);
-    let mut connection = Connection::connect(address, &hello("guest", &[])).unwrap();
+    let mut connection = Connection::connect(&address.into(), &hello("guest", &[])).unwrap();
     let mut hostile = connection.session().unwrap().mods;
     let entry = hostile.files["ok.package"].clone();
     hostile.files.insert("../escaped.package".into(), entry);
@@ -183,7 +183,7 @@ fn damaged_content_is_rejected_and_leaves_the_old_file() {
     let mods = guest.path().join("Mods");
     write(&mods, "mod.package", "old local");
     let (_host, address) = start_host(host_dir.path(), None);
-    let mut connection = Connection::connect(address, &hello("guest", &[])).unwrap();
+    let mut connection = Connection::connect(&address.into(), &hello("guest", &[])).unwrap();
     let session = connection.session().unwrap();
     // The file changes on the host after its manifest was taken.
     write(host_dir.path(), "mod.package", "tampered");
@@ -207,7 +207,7 @@ fn mismatched_protocol_versions_are_reported() {
     let mut stream = TcpStream::connect(address).unwrap();
     write_message(&mut stream, &Message::Hello(old)).unwrap();
     assert!(matches!(read_message(&mut stream).unwrap(), Some(Message::Hello(_))));
-    assert_eq!(read_message(&mut stream).unwrap(), None);
+    assert_eq!(read_message::<Message>(&mut stream).unwrap(), None);
     assert_eq!(host.wait(Duration::from_millis(300)), None, "no join event for an incompatible guest");
 }
 
@@ -215,7 +215,7 @@ fn mismatched_protocol_versions_are_reported() {
 fn dropping_the_host_disconnects_guests() {
     let host_dir = tempfile::tempdir().unwrap();
     let (host, address) = start_host(host_dir.path(), None);
-    let mut connection = Connection::connect(address, &hello("guest", &[])).unwrap();
+    let mut connection = Connection::connect(&address.into(), &hello("guest", &[])).unwrap();
     connection.session().unwrap();
 
     drop(host);

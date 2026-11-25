@@ -5,25 +5,29 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 use gpui::{
     Animation, AnimationElement, AnimationExt, AnyElement, App, ClickEvent, ClipboardItem, Context,
-    Div, ElementId, FocusHandle, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit, Rgba,
-    ScrollHandle, SharedString, Stateful, Svg, Window, WindowControlArea, div, img,
-    linear_color_stop, linear_gradient, pulsating_between, px, relative, rgb, svg,
+    Div, ElementId, FontWeight, Img, KeyDownEvent, MouseButton, ObjectFit, Rgba, ScrollHandle,
+    SharedString, Stateful, Svg, Window, WindowControlArea, div, img, linear_color_stop,
+    linear_gradient, pulsating_between, px, relative, rgb, svg,
 };
 use tsmp_core::packs::{PackSet, pack_name};
 use tsmp_net::live::LiveStatus;
 use tsmp_net::protocol::DEFAULT_PORT;
 use tsmp_net::protocol::GuestStatus;
+use tsmp_net::rendezvous::{ListingStatus, ServerAddress};
+use tsmp_net::route::Route;
 
+use crate::field::{TextField, Typed};
 use crate::i18n::{I18n, tr};
 use crate::mappings::Support;
 use crate::model::{
     Env, GameState, HostScreen, HostStage, JoinScreen, JoinStage, JoinStep, Model, Plan, Preview,
     Running, Screen, Synced, clock,
 };
+use crate::settings;
 
 /// How long a button says that it has copied.
 const COPIED_FOR: Duration = Duration::from_millis(2500);
@@ -33,18 +37,18 @@ const JOURNAL_WIDTH: f32 = 540.;
 
 // A house plan at night: deep blue paper, pale lines, one warm lamp.
 const PAPER: u32 = 0x16223a;
-const RAIL: u32 = 0x111b30;
+pub(crate) const RAIL: u32 = 0x111b30;
 const PANEL: u32 = 0x1d2c49;
 const PANEL_HOVER: u32 = 0x25375a;
-const LINE: u32 = 0x34486e;
+pub(crate) const LINE: u32 = 0x34486e;
 const TEXT: u32 = 0xeaf0fa;
-const MUTED: u32 = 0x93a4c4;
-const LAMP: u32 = 0xffc857;
+pub(crate) const MUTED: u32 = 0x93a4c4;
+pub(crate) const LAMP: u32 = 0xffc857;
 const LAMP_HOVER: u32 = 0xffd985;
 const INK: u32 = 0x1a1503;
 const GOOD: u32 = 0x63d9b0;
 const WARNING: u32 = 0xff9f5a;
-const DANGER: u32 = 0xff6b7a;
+pub(crate) const DANGER: u32 = 0xff6b7a;
 const CLOSE_HOVER: u32 = 0xe5484d;
 const SKY: u32 = 0x8fb4ff;
 
@@ -57,8 +61,10 @@ const PAGE_WIDTH: f32 = 860.;
 /// The left edge shared by the page, the title bar and the bottom bar.
 const GUTTER: f32 = 56.;
 
-/// The longest address worth typing: `255.255.255.255:65535`.
-const ADDRESS_LENGTH: usize = 21;
+/// The longest address or invite worth typing.
+const ADDRESS_LENGTH: usize = 120;
+/// The longest server address worth typing: a full domain name and a port.
+const SERVER_LENGTH: usize = 260;
 /// How many members of a household a save names before counting the rest.
 const NAMED_SIMS: usize = 3;
 /// How many file names a review lists before summarising the rest.
@@ -80,10 +86,12 @@ pub struct Launcher {
     /// Where the page is scrolled to, and what the scroll bar last showed.
     scroll: ScrollHandle,
     scroll_shown: (f32, f32),
-    /// What the player typed as the host's address, when the search finds nobody.
-    address: String,
-    address_focus: FocusHandle,
-    address_refused: bool,
+    /// What the player typed as the host's address or invite, when the
+    /// search finds nobody.
+    address: TextField,
+    /// The session server a host opens the session on, for guests outside
+    /// the local network.
+    server: TextField,
     /// This computer's address on the local network, for the other player to type.
     lan_address: Option<IpAddr>,
     /// The door of the home screen under the pointer, and the one it just left.
@@ -128,9 +136,13 @@ impl Launcher {
             choosing_language: false,
             scroll: ScrollHandle::new(),
             scroll_shown: (0., 0.),
-            address: String::new(),
-            address_focus: cx.focus_handle(),
-            address_refused: false,
+            address: TextField::new(cx, ADDRESS_LENGTH, |c| {
+                c.is_ascii_alphanumeric() || ".:-@[]".contains(c)
+            }),
+            server: TextField::new(cx, SERVER_LENGTH, |c| {
+                c.is_ascii_alphanumeric() || ".:-[]".contains(c)
+            })
+            .with_text(&remembered_server()),
             lan_address: lan_address(),
             door: None,
             door_left: None,
@@ -173,41 +185,35 @@ impl Launcher {
         )
     }
 
-    /// Typing in the address field: digits, dots and a colon, nothing else.
     fn type_address(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        let typed = if keystroke.modifiers.control || keystroke.modifiers.platform {
-            if keystroke.key != "v" {
-                return;
-            }
-            cx.read_from_clipboard()
-                .and_then(|item| item.text())
-                .unwrap_or_default()
-        } else {
-            match keystroke.key.as_str() {
-                "backspace" => {
-                    self.address.pop();
-                    String::new()
-                }
-                "enter" => return self.connect_to_address(cx),
-                _ => keystroke.key_char.clone().unwrap_or_default(),
-            }
-        };
-        let allowed = typed
-            .chars()
-            .filter(|c| c.is_ascii_digit() || matches!(c, '.' | ':'));
-        self.address
-            .extend(allowed.take(ADDRESS_LENGTH.saturating_sub(self.address.len())));
-        self.address_refused = false;
+        if self.address.key(event, cx) == Typed::Submitted {
+            self.connect_to_address();
+        }
         cx.notify();
     }
 
-    fn connect_to_address(&mut self, cx: &mut Context<Self>) {
-        match parse_address(&self.address) {
-            Some(address) => self.model.connect(address),
-            None => self.address_refused = true,
+    fn connect_to_address(&mut self) {
+        match self.address.text().parse::<Route>() {
+            Ok(route) => self.model.connect(route),
+            Err(_) => self.address.refuse(),
+        }
+    }
+
+    fn type_server(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.server.key(event, cx) == Typed::Submitted {
+            self.go_online();
         }
         cx.notify();
+    }
+
+    fn go_online(&mut self) {
+        match self.server.text().parse::<ServerAddress>() {
+            Ok(server) => {
+                settings::SERVER.store(&server.to_string());
+                self.model.go_online(server);
+            }
+            Err(_) => self.server.refuse(),
+        }
     }
 
     /// A click handler that changes the model and redraws.
@@ -241,32 +247,17 @@ impl Launcher {
     /// Puts `text` on the clipboard when pressed, and says so for a moment.
     fn copy_button(&self, id: &'static str, text: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let done = self.copied.is_some_and(|(copied, _)| copied == id);
-        div()
-            .id(id)
-            .flex_none()
-            .h(px(34.))
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(rgb(LINE))
-            .text_size(px(14.))
-            .text_color(rgb(if done { GOOD } else { TEXT }))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(PANEL_HOVER)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                this.copied = Some((id, Instant::now()));
-                cx.notify();
-            }))
-            .child(icon(
-                if done { "check" } else { "copy" },
-                16.,
-                if done { GOOD } else { MUTED },
-            ))
-            .child(tr!(self.i18n, if done { "copied" } else { "copy" }))
+        chip(
+            id,
+            if done { "check" } else { "copy" },
+            tr!(self.i18n, if done { "copied" } else { "copy" }),
+            done,
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            this.copied = Some((id, Instant::now()));
+            cx.notify();
+        }))
     }
 
     /// Something that went wrong, in the words it came in, with a button
@@ -861,7 +852,7 @@ impl Launcher {
             ))
     }
 
-    fn host(&self, screen: &HostScreen, cx: &mut Context<Self>) -> AnyElement {
+    fn host(&self, screen: &HostScreen, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.i18n;
         match &screen.stage {
             HostStage::Setup => {
@@ -1107,7 +1098,7 @@ impl Launcher {
             )
             .child(waiting_dots())
             .into_any_element(),
-            HostStage::Running(running) => self.hosting(screen, running, cx),
+            HostStage::Running(running) => self.hosting(screen, running, window, cx),
             HostStage::Failed(message) => {
                 self.failure(tr!(t, "host-failed-title"), None, message, cx)
             }
@@ -1137,6 +1128,7 @@ impl Launcher {
         &self,
         screen: &HostScreen,
         running: &Running,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = &self.i18n;
@@ -1221,6 +1213,7 @@ impl Launcher {
                     size = bytes(t, running.mod_bytes)
                 ),
             ),
+            self.online(running, window, cx),
         ];
         let mut warnings = Vec::new();
         if !running.has_mod {
@@ -1241,6 +1234,101 @@ impl Launcher {
             running.save.as_deref(),
             screen.selected_preview().map(|preview| &**preview),
         )
+    }
+
+    /// Opening the session to players outside the local network: the server
+    /// to list it on, then the invite to send them.
+    fn online(&self, running: &Running, window: &Window, cx: &mut Context<Self>) -> Div {
+        let t = &self.i18n;
+        let body = match &running.online {
+            None => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(
+                            self.server
+                                .view("server", "play.example.org", SERVER_WIDTH, window)
+                                .on_key_down(cx.listener(Self::type_server)),
+                        )
+                        .child(button(
+                            "online-open",
+                            tr!(t, "online-open"),
+                            false,
+                            cx.listener(|this, _, _, cx| {
+                                this.go_online();
+                                cx.notify();
+                            }),
+                        )),
+                )
+                .child(if self.server.refused() {
+                    notice(DANGER, tr!(t, "online-bad-server"))
+                } else {
+                    small(tr!(t, "online-detail"))
+                }),
+            Some(online) => {
+                let server = online.server.to_string();
+                let state = match &online.status {
+                    ListingStatus::Connecting => status_line(
+                        WARNING,
+                        tr!(t, "online-connecting", server = server.as_str()),
+                    ),
+                    ListingStatus::Open(_) => {
+                        status_line(GOOD, tr!(t, "online-ready", server = server.as_str()))
+                    }
+                    ListingStatus::Retrying { reason, .. } => status_line(
+                        WARNING,
+                        tr!(t, "online-retrying", reason = reason.as_str()),
+                    ),
+                };
+                let mut body = div().flex().flex_col().gap_2().child(state);
+                if let Some(invite) = online.status.invite() {
+                    let invite = invite.to_string();
+                    body = body
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .font_family(DISPLAY_FONT)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_size(px(17.))
+                                        .text_color(rgb(LAMP))
+                                        .child(invite.clone()),
+                                )
+                                .child(self.copy_button("copy-invite", invite, cx)),
+                        )
+                        .child(small(tr!(t, "online-invite-detail")));
+                }
+                body.child(
+                    div().flex().child(
+                        chip("online-stop", "close", tr!(t, "online-stop"), false)
+                            .on_click(Self::act(cx, |model| model.go_offline())),
+                    ),
+                )
+            }
+        };
+        div()
+            .w(px(ROSTER_WIDTH))
+            .pt_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .text_color(rgb(MUTED))
+                    .child(tr!(t, "online")),
+            )
+            .child(body)
     }
 
     /// Where both players wait for each other before the game: who is here
@@ -1321,7 +1409,7 @@ impl Launcher {
                             .gap_3()
                             .cursor_pointer()
                             .hover(|style| style.bg(rgb(PANEL_HOVER)).border_color(rgb(LAMP)))
-                            .on_click(Self::act(cx, move |model| model.connect(address)))
+                            .on_click(Self::act(cx, move |model| model.connect(address.into())))
                             .child(avatar(name))
                             .child(
                                 div()
@@ -1365,35 +1453,10 @@ impl Launcher {
                             ),
                     );
                 }
-                let focused = self.address_focus.is_focused(window);
-                let field = div()
-                    .id("address")
-                    .track_focus(&self.address_focus)
-                    .on_key_down(cx.listener(Self::type_address))
-                    .w(px(300.))
-                    .h(px(48.))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .rounded(px(10.))
-                    .bg(rgb(RAIL))
-                    .border_1()
-                    .border_color(rgb(if self.address_refused {
-                        DANGER
-                    } else if focused {
-                        LAMP
-                    } else {
-                        LINE
-                    }))
-                    .cursor_text()
-                    .child(if self.address.is_empty() && !focused {
-                        div().text_color(rgb(MUTED)).child("192.168.0.10")
-                    } else {
-                        div().child(self.address.clone())
-                    })
-                    .when(focused, |this| {
-                        this.child(div().w(px(1.)).h(px(22.)).bg(rgb(LAMP)))
-                    });
+                let field = self
+                    .address
+                    .view("address", "192.168.0.10", ADDRESS_WIDTH, window)
+                    .on_key_down(cx.listener(Self::type_address));
                 let by_address = div()
                     .flex()
                     .flex_col()
@@ -1403,9 +1466,12 @@ impl Launcher {
                         "connect",
                         tr!(t, "join-manual-connect"),
                         true,
-                        cx.listener(|this, _, _, cx| this.connect_to_address(cx)),
+                        cx.listener(|this, _, _, cx| {
+                            this.connect_to_address();
+                            cx.notify();
+                        }),
                     )))
-                    .child(if self.address_refused {
+                    .child(if self.address.refused() {
                         notice(DANGER, tr!(t, "join-manual-bad"))
                     } else {
                         small(tr!(t, "join-manual-detail"))
@@ -1834,7 +1900,7 @@ impl Render for Launcher {
                 message,
                 cx,
             ),
-            (Screen::Host(screen), _) => self.host(screen, cx),
+            (Screen::Host(screen), _) => self.host(screen, window, cx),
             (Screen::Join(screen), _) => self.join(screen, window, cx),
             (Screen::Home | Screen::Loading, _) => loading(),
         };
@@ -2098,6 +2164,10 @@ fn section(title: String) -> Div {
 
 /// The lobby: the players on the left, the save they share on the right.
 const ROSTER_WIDTH: f32 = 440.;
+/// The server field leaves room beside it for its button.
+const SERVER_WIDTH: f32 = 290.;
+/// Wide enough for an invite with a long server name.
+const ADDRESS_WIDTH: f32 = 400.;
 const LOBBY_GAP: f32 = 24.;
 const SAVE_WIDTH: f32 = PAGE_WIDTH - ROSTER_WIDTH - LOBBY_GAP;
 const STATE_WIDTH: f32 = 180.;
@@ -2378,12 +2448,14 @@ fn portrait(preview: Option<&Preview>) -> Img {
     }
 }
 
-/// An address as a player types it: with the port, or without for the usual one.
-fn parse_address(text: &str) -> Option<SocketAddr> {
-    let text = text.trim();
-    text.parse()
+/// The server a host last opened a session on, unless `TSMP_SERVER` names
+/// another.
+fn remembered_server() -> String {
+    std::env::var("TSMP_SERVER")
         .ok()
-        .or_else(|| Some(SocketAddr::new(text.parse().ok()?, DEFAULT_PORT)))
+        .filter(|server| !server.trim().is_empty())
+        .or_else(|| settings::SERVER.load())
+        .unwrap_or_default()
 }
 
 /// This computer's address on the local network. Nothing is sent: a UDP socket
@@ -2761,6 +2833,27 @@ fn change(picture: &'static str, text: String, detail: Option<Div>) -> Div {
         )
 }
 
+/// A small framed button with an icon: for something done on the side.
+fn chip(id: &'static str, picture: &str, label: String, done: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(34.))
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(LINE))
+        .text_size(px(14.))
+        .text_color(rgb(if done { GOOD } else { TEXT }))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(PANEL_HOVER)))
+        .child(icon(picture, 16., if done { GOOD } else { MUTED }))
+        .child(label)
+}
+
 fn small(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(14.))
@@ -3077,16 +3170,6 @@ mod tests {
             ago(&t, SystemTime::now() - Duration::from_secs(86_400)),
             "1 day ago"
         );
-        assert_eq!(
-            parse_address(" 192.168.0.10 "),
-            Some(SocketAddr::from(([192, 168, 0, 10], DEFAULT_PORT)))
-        );
-        assert_eq!(
-            parse_address("10.0.0.2:5000"),
-            Some(SocketAddr::from(([10, 0, 0, 2], 5000)))
-        );
-        assert_eq!(parse_address("192.168.0"), None);
-        assert_eq!(parse_address(""), None);
         assert_eq!(simoleons(940), "§940");
         assert_eq!(simoleons(12_500), "§12 500");
         assert_eq!(simoleons(1_000_000), "§1 000 000");
