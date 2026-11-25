@@ -15,10 +15,10 @@
 
 # TSMP
 
-Open-source multiplayer for The Sims 4. Two people on one local network play
-the same household on the same lot, and the launcher does the setup: it finds
-the other computer, copies the mods and the save, and starts both games with
-the packs both players own.
+Open-source multiplayer for The Sims 4. Two people play the same household on
+the same lot, on one local network or over the internet, and the launcher does
+the setup: it finds the other computer, copies the mods and the save, and
+starts both games with the packs both players own.
 
 ## What works
 
@@ -86,8 +86,10 @@ details and how each of them was found.
   </tr>
 </table>
 
-You need two Windows computers on one local network, each with its own copy
-of the game at the same version, and script mods enabled in the game options.
+You need two Windows computers, each with its own copy of the game at the
+same version, and script mods enabled in the game options. On one local
+network that is all; from different networks you also need a session server
+(see [Playing over the internet](#playing-over-the-internet)).
 
 1. Build the launcher and the mod (see [Building](#building)), or take them
    from someone who has. Copy `tsmp.ts4script` into the `Mods` folder of the
@@ -125,6 +127,64 @@ Good to know:
   same file makes the mod run every line written to `<user dir>/tsmp/run.txt`
   as a console command. `tsmp.selftest` writes what the game holds (lot,
   households, sims, clock) to the log, so two games can be compared there.
+
+### Playing over the internet
+
+Two computers on different networks usually cannot reach each other, so they
+meet on a TSMP session server that both can reach: one that a friend runs, or
+your own (see [Running a session server](#running-a-session-server)).
+
+1. The host opens the session as usual. Under **Over the internet** on the
+   session screen they enter the server's address and press **Open**. The
+   launcher shows an invite such as `K7QM-2XDA@play.example.org` with a
+   button that copies it.
+2. The host sends the invite to the other player.
+3. The other player chooses **Join a session**, pastes the invite where the
+   host's address goes and presses **Connect**. From here everything is as on
+   a local network.
+
+The server only passes bytes between the two launchers; the files and the
+game travel through it, so its connection decides how fast the guest syncs.
+The invite stays the same if the host's connection to the server drops for a
+moment; it ends when the host closes it, stops hosting, or has been away for
+two minutes. The launcher remembers the server for next time; the variable
+`TSMP_SERVER` sets it in advance.
+
+### Running a session server
+
+`tsmp-server` is a small program without settings files that keeps nothing on
+disk. Any computer that both players can reach will do, typically a cheap
+Linux server with a public address. It needs one TCP port open, 47810 by
+default.
+
+    cargo build --release -p tsmp-server    # -> target/release/tsmp-server
+    ./tsmp-server --listen 0.0.0.0:47810
+
+`tsmp-server --help` lists the limits that can be changed: sessions at once,
+connections in all and from one address, how often hosts are pinged and how
+long a session waits for a host that lost its connection. The server writes
+one line to standard error for every session opened, resumed, lost and
+closed, and how busy it is once an hour.
+
+Under systemd, `/etc/systemd/system/tsmp-server.service`:
+
+    [Unit]
+    Description=TSMP session server
+    After=network-online.target
+
+    [Service]
+    ExecStart=/usr/local/bin/tsmp-server
+    DynamicUser=yes
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+
+A session code is eight characters, and an address that asks for codes that
+do not exist is held back for a minute after twenty, so codes cannot be
+found by guessing. Anyone who has an invite can join that session, the same
+as anyone on the host's local network can: send it only to the person you
+are playing with.
 
 ## Game versions and branches
 
@@ -165,7 +225,8 @@ publishes it.
     cargo test                               # everything except the UI itself
     cargo build --release -p tsmp-launcher   # -> target/release/tsmp.exe
     cargo run -p tsmp-cli -- info            # show the detected game and packs
-    cargo build -p tsmp-net --example live_pair   # lets the mod tests use the real relay
+    cargo build -p tsmp-server --example live_pair   # lets the mod tests use the real relay and server
+    cargo build --release -p tsmp-server     # -> target/release/tsmp-server
     python -m unittest discover -s mod/tests
     python mod/build.py                      # -> dist/tsmp.ts4script
 
@@ -179,7 +240,8 @@ publishes it.
 | --- | --- |
 | `mod/` | The script mod (Python 3.7): hooks, the link to the launcher, session rules, build mode sync |
 | `crates/tsmp-core` | Finds the game, works out the packs two players share, builds and compares manifests of a Mods folder |
-| `crates/tsmp-net` | LAN discovery, the launcher-to-launcher protocol for mods and saves, the relay between the two games |
+| `crates/tsmp-net` | LAN discovery, the launcher-to-launcher protocol for mods and saves, the relay between the two games, meeting through a session server |
+| `crates/tsmp-server` | The session server for players on different networks |
 | `crates/tsmp-launcher` | The launcher (Rust + [gpui](https://www.gpui.rs)) |
 | `crates/tsmp-cli` | A diagnostic command line over the core |
 | `mappings/` | Addresses inside the game's simulation library, one file per game version |

@@ -1,7 +1,8 @@
 name: release
 
 # Pushing a tag v<version> builds the launcher, with the mod inside it, and
-# publishes both as a release. Running launchers find it and update.
+# the session server, and publishes them as a release. Running launchers find
+# it and update.
 on:
   push:
     tags: ["v*"]
@@ -10,7 +11,25 @@ permissions:
   contents: write
 
 jobs:
+  # Session servers usually run on Linux.
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test and build the session server
+        run: |
+          cargo test -p tsmp-net -p tsmp-server
+          cargo build --release -p tsmp-server
+          cp target/release/tsmp-server tsmp-server-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server
+          path: tsmp-server-linux-x86_64
+
   release:
+    needs: server
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,11 +52,15 @@ jobs:
 
       - name: Test and build the launcher
         run: |
-          cargo test -p tsmp-core -p tsmp-net -p tsmp-launcher
+          cargo test -p tsmp-core -p tsmp-net -p tsmp-server -p tsmp-launcher
           cargo build --release -p tsmp-launcher
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server
 
       - name: Publish
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" target/release/tsmp.exe dist/tsmp.ts4script --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" target/release/tsmp.exe dist/tsmp.ts4script tsmp-server-linux-x86_64 --generate-notes
