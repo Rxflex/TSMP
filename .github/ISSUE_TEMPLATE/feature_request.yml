@@ -1,0 +1,48 @@
+name: Idea / Идея
+description: Something TSMP could do or do better. / Что TSMP мог бы уметь или делать лучше.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [open issues](https://github.com/Rxflex/TSMP/issues) first. TSMP will not unlock content a player does not own, and it does not take code or assets from the game.
+
+        Сначала загляните в [открытые issues](https://github.com/Rxflex/TSMP/issues). TSMP не будет открывать контент, которого у игрока нет, и не берёт код или ресурсы из игры.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do / Что вы хотите сделать
+      description: What you tried to do in a game together, and what got in the way. / Что вы пытались сделать в совместной игре и что помешало.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How it could work / Как это могло бы работать
+      description: What the launcher or the game would do. / Что делали бы лаунчер или игра.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do now instead / Как вы обходитесь сейчас
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Part of the project / Часть проекта
+      options:
+        - Launcher / Лаунчер
+        - In the game (the mod) / В игре (мод)
+        - Session server / Сервер сессий
+        - Translations / Переводы
+        - Documentation / Документация
+        - Not sure / Не знаю
+    validations:
+      required: false

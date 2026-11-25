@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.jpg" alt="TSMP: two houses at night, joined by one line" width="100%">
+  <img src="docs/assets/banner.jpg" alt="TSMP, multiplayer for The Sims 4: two houses at night, joined by one line" width="100%">
 </p>
 
 <p align="center">
@@ -7,24 +7,39 @@
 </p>
 
 <p align="center">
-  <img alt="Game version 1.129.39.1030" src="https://img.shields.io/badge/game-1.129.39.1030-ffc857?labelColor=16223a">
-  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-8fb4ff?labelColor=16223a">
-  <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-63d9b0?labelColor=16223a">
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-ff9f5a?labelColor=16223a">
+  <a href="https://github.com/Rxflex/TSMP/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Rxflex/TSMP?include_prereleases&label=release&color=ff9f5a&labelColor=16223a"></a>
+  <a href="https://github.com/Rxflex/TSMP/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Rxflex/TSMP/total?label=downloads&color=8fb4ff&labelColor=16223a"></a>
+  <a href="https://github.com/Rxflex/TSMP/actions/workflows/ci.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/Rxflex/TSMP/ci.yml?label=tests&labelColor=16223a"></a>
+  <a href="https://github.com/Rxflex/TSMP/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Rxflex/TSMP?label=stars&color=ffc857&labelColor=16223a"></a>
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-63d9b0?labelColor=16223a"></a>
+  <a href="#game-versions-and-branches"><img alt="Game version 1.129.39.1030" src="https://img.shields.io/badge/game-1.129.39.1030-ffc857?labelColor=16223a"></a>
+  <a href="#playing"><img alt="Windows" src="https://img.shields.io/badge/platform-Windows-8fb4ff?labelColor=16223a"></a>
 </p>
 
-# TSMP
+# TSMP: The Sims 4 multiplayer
 
-Open-source multiplayer for The Sims 4. Two people play one world together,
-on one local network or over the internet, and the launcher does the setup:
-it finds the other computer, copies the mods and the save, and starts both
-games with the packs both players own.
+Free, open-source multiplayer for The Sims 4. Play The Sims 4 with a friend:
+two people share one world, on one local network or over the internet, and the
+launcher does the setup. It finds the other computer, copies the mods and the
+save, and starts both games with the packs both players own.
+
+<p align="center">
+  <a href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe"><img alt="Download tsmp.exe" src="https://img.shields.io/badge/download-tsmp.exe-ffc857?style=for-the-badge&labelColor=16223a"></a>
+  <a href="https://github.com/Rxflex/TSMP/releases"><img alt="All releases" src="https://img.shields.io/badge/all%20releases-GitHub-8fb4ff?style=for-the-badge&labelColor=16223a"></a>
+</p>
+
+<p align="center">
+  One file for Windows, with the mod inside. Each player needs their own
+  computer and their own copy of The Sims 4, at the same version.<br>
+  The project is experimental: <a href="#what-works">What works</a> says what has been tried and how.
+</p>
 
 <p align="center">
   <a href="#playing">Playing</a> ·
   <a href="#playing-over-the-internet">Over the internet</a> ·
   <a href="#each-with-their-own-family">Own families</a> ·
   <a href="#running-a-session-server">Session server</a> ·
+  <a href="#faq">FAQ</a> ·
   <a href="#building">Building</a> ·
   <a href="docs/internals.md">How it works inside</a>
 </p>
@@ -116,9 +131,13 @@ same version, and script mods enabled in the game options. On one local
 network that is all; from different networks you also need a session server
 (see [Playing over the internet](#playing-over-the-internet)).
 
-1. Build the launcher and the mod (see [Building](#building)), or take them
-   from someone who has. Copy `tsmp.ts4script` into the `Mods` folder of the
-   host. Remove other multiplayer mods first; they patch the same functions.
+1. Both players download
+   [`tsmp.exe`](https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe)
+   from the [releases](https://github.com/Rxflex/TSMP/releases), or build it
+   (see [Building](#building)). The mod is inside it: the launcher puts it into
+   the host's `Mods` folder when hosting starts, and the guest gets it with the
+   sync. Other multiplayer mods patch the same functions, so the launcher moves
+   S4MP files it finds into the backup folder; remove any other one first.
 2. Both players run `tsmp.exe`. Windows asks once to allow it through the
    firewall: allow it on private networks, or the host will not be found.
 3. One player chooses **Host a session** and picks the save to share.
@@ -193,10 +212,12 @@ your own (see [Running a session server](#running-a-session-server)).
 
 The server only passes bytes between the two launchers; the files and the
 game travel through it, so its connection decides how fast the guest syncs.
-The invite stays the same if the host's connection to the server drops for a
-moment; it ends when the host closes it, stops hosting, or has been away for
-two minutes. The launcher remembers the server for next time; the variable
-`TSMP_SERVER` sets it in advance.
+The invite stays the same if the host's connection to the server drops.
+After two minutes away the session closes, but the server keeps its code for
+the host for half an hour, so the same invite works again once the host's
+launcher gets through. It ends when the host closes it or stops hosting. The
+launcher remembers the server for next time; the variable `TSMP_SERVER` sets
+it in advance.
 
 ### Each with their own family
 
@@ -343,14 +364,224 @@ Most translations have not yet been checked by native speakers, and the
 game's own menu names in them may differ from what the game shows.
 Corrections are welcome.
 
+## FAQ
+
+<details>
+<summary><b>Is there official multiplayer in The Sims 4?</b></summary>
+
+No. The game has no multiplayer of its own. TSMP is a fan project that adds it
+with a script mod and a launcher. It is not affiliated with or endorsed by
+Electronic Arts.
+
+</details>
+
+<details>
+<summary><b>How do I play The Sims 4 with friends?</b></summary>
+
+Both players run `tsmp.exe`. One chooses **Host a session** and picks a save,
+the other chooses **Join a session**, picks the host and presses **Sync**, and
+both start the game. On one local network the host is found by itself; from
+different networks the host sends an invite through a session server. The
+steps are in [Playing](#playing) and
+[Playing over the internet](#playing-over-the-internet).
+
+</details>
+
+<details>
+<summary><b>Is TSMP free?</b></summary>
+
+Yes. It is open source under the MIT licence. There is no paid version and no
+early-access tier.
+
+</details>
+
+<details>
+<summary><b>Does each player need their own copy of the game?</b></summary>
+
+Yes. Each player needs their own Windows computer with their own copy of The
+Sims 4, at the same game version. The launcher warns when the two versions
+differ. The base game is free on the EA app and Steam.
+
+</details>
+
+<details>
+<summary><b>How many people can play?</b></summary>
+
+Two: one host and one guest.
+
+</details>
+
+<details>
+<summary><b>Do we need the same packs (DLC)?</b></summary>
+
+No. Players with different packs play with the packs they have in common: the
+launcher starts both games with the game's own `-disablepacks:` option and
+warns if a game loaded packs the session should not have. TSMP does not unlock
+content you do not own.
+
+</details>
+
+<details>
+<summary><b>What about mods and custom content (CC)?</b></summary>
+
+The host's Mods folder is the shared one. When the guest presses **Sync**,
+their Mods folder is made the same as the host's, CC included, and they see
+what will change first. Nothing is deleted: files the host lacks, and local
+versions that differ, are moved to `Mods.tsmp-backup/<date>/` next to the Mods
+folder. Script mods must be allowed in the game options on both computers.
+
+</details>
+
+<details>
+<summary><b>Can I use TSMP together with S4MP or another multiplayer mod?</b></summary>
+
+No. They patch the same parts of the game. When you start hosting, the
+launcher moves the S4MP files it finds out of the Mods folder into the backup
+folder; nothing is deleted.
+
+</details>
+
+<details>
+<summary><b>Do I have to install the mod myself?</b></summary>
+
+No. The mod is built into `tsmp.exe`. The launcher puts it into the host's
+Mods folder when hosting starts, and the guest receives it with the sync.
+
+</details>
+
+<details>
+<summary><b>What happens to my saves?</b></summary>
+
+When you play one family together, the host's save is copied to the guest, and
+the guest's saves that would be replaced go to `saves.tsmp-backup/` first. In
+**Each with their own family** no save is copied, and both launchers back up
+their saves before the session, because each game may write the other's family
+into its own.
+
+</details>
+
+<details>
+<summary><b>Can we play over the internet, not only on one network?</b></summary>
+
+Yes, through a TSMP session server that both players can reach: one a friend
+runs, or your own (`tsmp-server`, a small Linux program that needs one TCP
+port, 47810 by default). The host gets an invite such as
+`K7QM-2XDA@play.example.org` and sends it to the other player. This part is
+new and so far has been tried only against the game's protocol in tests.
+
+</details>
+
+<details>
+<summary><b>Can each of us play our own family?</b></summary>
+
+Yes. With **Each with their own family**, the guest brings a household from a
+save of their own, with its relationships, into the host's world and keeps
+playing it there. This is new and so far tried only in tests.
+
+</details>
+
+<details>
+<summary><b>Can we build a house together?</b></summary>
+
+Yes, on a game version whose addresses are in `mappings/` (now
+1.129.39.1030); the home screen says whether building together is ready for
+yours. In build mode, walls, floors and wall coverings drawn by either player
+appear for the other while both keep building. This was tried on two
+computers. Furniture and household funds in build mode have not yet been
+checked for double counting, and an element both edit at the same moment may
+end up different in the two games.
+
+</details>
+
+<details>
+<summary><b>What has actually been tested?</b></summary>
+
+Tried with two computers and two copies of the game: live mode, building
+together, different packs and the one-button setup on a local network. So far
+only in tests against the game's protocol: playing over the internet, families
+of their own, Create-a-Sim for the guest and different lots. The project is
+experimental; reports from your games are welcome.
+
+</details>
+
+<details>
+<summary><b>Does it work on Mac, Linux or consoles?</b></summary>
+
+No. The launcher and the mod are for The Sims 4 on Windows only. Only the
+optional session server runs on Linux.
+
+</details>
+
+<details>
+<summary><b>Does it work with Steam and the EA app?</b></summary>
+
+Yes. The launcher finds the game installed by either. A Steam copy is started
+through Steam, which may ask you to confirm the launch arguments.
+
+</details>
+
+<details>
+<summary><b>Is it safe? Windows or my antivirus warns about it.</b></summary>
+
+The code is open, and every release lists the SHA-256 checksums of its files.
+The release files are not code-signed, so Windows may warn the first time; you
+can also build everything from source. Windows asks once to allow `tsmp.exe`
+through the firewall: allow it on private networks, or the host will not be
+found.
+
+Joining runs the host's script mods on your computer, and script mods are
+unrestricted code. Only join people you trust.
+
+</details>
+
+<details>
+<summary><b>Will a game update break it?</b></summary>
+
+It can. Building together depends on addresses inside the game that change
+between builds. The mod checks the build before it touches anything: on a
+build it does not know, build mode sync switches itself off and the rest keeps
+working. Once the addresses for a new version are added to this repository,
+the launcher downloads them by itself (see
+[Game versions and branches](#game-versions-and-branches)), and it updates
+itself from the releases here (see [Updates](#updates)).
+
+</details>
+
+<details>
+<summary><b>Which languages does the launcher have?</b></summary>
+
+Deutsch, English, Español, Français, Italiano, Polski, Português (Brasil),
+Русский, Українська and 简体中文. Most translations have not yet been checked
+by native speakers; corrections are welcome (see [Translations](#translations)).
+
+</details>
+
+## Help the project
+
+- **Star the repository.** It helps other players find it.
+- **Tell us how it went.** A report from a real game on two computers helps most,
+  above all for the parts tried only in tests so far: playing over the
+  internet, families of their own, Create-a-Sim for the guest and different
+  lots. [Open an issue](https://github.com/Rxflex/TSMP/issues/new/choose) with
+  the game version, what you did and what happened, and the lines of
+  `<user dir>/tsmp/tsmp.log` around it.
+- **Fix a translation or the code.** [CONTRIBUTING.md](CONTRIBUTING.md) says
+  how; [Translations](#translations) covers the launcher's languages.
+- **Tell other players.** The project site is
+  [rxflex.github.io/TSMP](https://rxflex.github.io/TSMP/).
+
 ## Contributing
 
-Issues and pull requests are welcome. Two rules keep the project safe to
-publish:
+Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has
+the details. Two rules keep the project safe to publish:
 
 - No code or assets of the game in the repository. Findings about the game go
   into `docs/internals.md` as descriptions, with how to reproduce them.
 - Nothing that unlocks content a player does not own.
+
+Report a security problem privately, through
+[GitHub's vulnerability reporting](https://github.com/Rxflex/TSMP/security/advisories/new),
+not in a public issue.
 
 ## Licence
 

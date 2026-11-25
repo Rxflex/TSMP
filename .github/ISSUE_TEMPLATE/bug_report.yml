@@ -1,0 +1,155 @@
+name: Bug report / Ошибка
+description: Something in the launcher or in the game went wrong. / Что-то сломалось в лаунчере или в игре.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Please check the [open issues](https://github.com/Rxflex/TSMP/issues) first; a comment on an existing one helps more than a new one.
+        A security problem goes [privately to the advisories](https://github.com/Rxflex/TSMP/security/advisories/new), not here.
+
+        Спасибо, что нашли время. Сначала загляните в [открытые issues](https://github.com/Rxflex/TSMP/issues): комментарий к уже существующему полезнее нового.
+        Об уязвимостях сообщайте [приватно, через advisories](https://github.com/Rxflex/TSMP/security/advisories/new), а не сюда.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened / Что произошло
+      description: What you saw, in your own words. Error text as it was shown. / Что вы увидели, своими словами. Текст ошибки — как он был показан.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected / Что ожидали
+      description: What should have happened instead. / Что должно было произойти.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Как воспроизвести
+      description: From starting tsmp.exe to the problem. / От запуска tsmp.exe до ошибки.
+      placeholder: |
+        1. Host a session, one family together
+        2. The guest presses Sync
+        3. ...
+    validations:
+      required: false
+
+  - type: input
+    id: launcher-version
+    attributes:
+      label: Launcher version / Версия лаунчера
+      description: 'Copy the journal (below) and take its first line, which starts with "TSMP". / Скопируйте журнал (ниже): его первая строка начинается с «TSMP».'
+      placeholder: TSMP 0.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: game-version
+    attributes:
+      label: Game version / Версия игры
+      description: 'The launcher''s home screen shows it at the bottom, under "Game", as "The Sims 4 1.129.39.1030". It is also in the first line of the journal. / На главном экране лаунчера она внизу, под словом «Игра»: «The Sims 4 1.129.39.1030». Она же есть в первой строке журнала.'
+      placeholder: 1.129.39.1030
+    validations:
+      required: true
+
+  - type: dropdown
+    id: store
+    attributes:
+      label: Where the game is from / Откуда игра
+      options:
+        - EA app
+        - Steam
+    validations:
+      required: false
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Host or guest / Хост или гость
+      description: On which computer it happened. / На каком компьютере это случилось.
+      options:
+        - Host / Хост
+        - Guest / Гость
+        - Both / У обоих
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How the computers were connected / Как соединялись компьютеры
+      options:
+        - Same local network / Одна локальная сеть
+        - Session server, over the internet / Сервер сессий, через интернет
+        - Did not get that far / До этого не дошло
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How you played / Как играли
+      options:
+        - One family together / Одной семьёй
+        - Each with their own family / Каждый со своей семьёй
+        - Did not get that far / До этого не дошло
+    validations:
+      required: false
+
+  - type: dropdown
+    id: packs
+    attributes:
+      label: Do your packs differ? / Дополнения у вас разные?
+      options:
+        - Same packs / Одинаковые
+        - Different packs / Разные
+        - Not sure / Не знаю
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Launcher journal / Журнал лаунчера
+      description: |
+        In the launcher, press **Journal** in the top bar, then **Copy**. This copies everything the launcher and the mods of both games wrote during this run, with the versions on the first line. The journal lives only while the launcher is open, so copy it before you close it. Next to an error message there is also a **Copy** button for that error alone.
+
+        В лаунчере нажмите **Журнал** в верхней панели, затем **Копировать**. Скопируется всё, что за этот запуск записали лаунчер и моды обеих игр, а в первой строке — версии. Журнал хранится, только пока лаунчер открыт, так что скопируйте его до закрытия. Рядом с сообщением об ошибке тоже есть кнопка **Копировать** — для одной этой ошибки.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: files
+    attributes:
+      label: tsmp.log and screenshots / tsmp.log и скриншоты
+      description: |
+        If the game itself misbehaved, drag `tsmp.log` from `<user dir>/tsmp/` (usually `Documents\Electronic Arts\The Sims 4\tsmp\`) here, from both computers if you can. Screenshots help too.
+
+        Если сбоила сама игра, перетащите сюда `tsmp.log` из `<папка пользователя>/tsmp/` (обычно `Documents\Electronic Arts\The Sims 4\tsmp\`), лучше с обоих компьютеров. Скриншоты тоже пригодятся.
+    validations:
+      required: false
+
+  - type: textarea
+    id: mods
+    attributes:
+      label: Other script mods / Другие скриптовые моды
+      description: Script mods (.ts4script) in the host's Mods folder, if any. Other multiplayer mods do not work together with TSMP. / Скриптовые моды (.ts4script) в папке Mods хоста, если есть. Другие моды на мультиплеер с TSMP не совместимы.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send / Перед отправкой
+      options:
+        - label: I use the latest release of tsmp.exe. / У меня последний выпуск tsmp.exe.
+          required: false
+        - label: The text above has no invites, addresses or names I do not want to be public. / В тексте выше нет приглашений, адресов и имён, которые я не хочу показывать всем.
+          required: true

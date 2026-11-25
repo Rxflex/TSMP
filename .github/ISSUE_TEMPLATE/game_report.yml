@@ -1,0 +1,112 @@
+name: How a game went / Как прошла игра
+description: You played with TSMP. Tell us what worked and what did not. / Вы сыграли с TSMP. Расскажите, что получилось, а что нет.
+title: "[Report] "
+labels: ["report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from real games are what this project needs most. These parts are new and so far tried only against the game's protocol in tests, so they matter most: **playing over the internet**, **each with their own family**, **Create-a-Sim for the guest** and **different lots**. A short report of a game that simply worked is useful too.
+
+        Больше всего проекту нужны рассказы о настоящих играх. Особенно важны новые части, которые пока проверены только в тестах против протокола игры: **игра через интернет**, **каждый со своей семьёй**, **редактор персонажа для гостя** и **разные участки**. Короткий отчёт о том, что всё просто заработало, тоже пригодится.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Overall / В целом
+      options:
+        - It worked / Всё получилось
+        - It worked, with problems / Получилось, но с проблемами
+        - Something broke the session / Что-то сломало сессию
+        - We could not start / Начать так и не вышло
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What you tried / Что пробовали
+      description: Tick everything you did in this game. / Отметьте всё, что делали в этой игре.
+      options:
+        - label: Live mode / Режим жизни
+        - label: Building together / Строительство вдвоём
+        - label: Different packs / Разные дополнения
+        - label: Over the internet, through a session server / Через интернет, через сервер сессий
+        - label: Each with their own family / Каждый со своей семьёй
+        - label: Create-a-Sim for the guest / Редактор персонажа у гостя
+        - label: Different lots, travelling / Разные участки, поездки
+
+  - type: textarea
+    id: story
+    attributes:
+      label: How it went / Как всё прошло
+      description: What you did and what happened, in order. What looked different in the two games? / Что вы делали и что происходило, по порядку. Что выглядело в двух играх по-разному?
+    validations:
+      required: true
+
+  - type: input
+    id: duration
+    attributes:
+      label: How long you played / Сколько играли
+      placeholder: 2 hours / 2 часа
+    validations:
+      required: false
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How the computers were connected / Как соединялись компьютеры
+      options:
+        - Same local network / Одна локальная сеть
+        - Our own session server / Свой сервер сессий
+        - Someone else's session server / Чужой сервер сессий
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Launcher and game version / Версии лаунчера и игры
+      description: The first line of the copied journal (Journal → Copy in the launcher). / Первая строка скопированного журнала («Журнал» → «Копировать» в лаунчере).
+      placeholder: 'TSMP 0.0.1, The Sims 4 1.129.39.1030, packs: 12'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: packs
+    attributes:
+      label: Do your packs differ? / Дополнения у вас разные?
+      options:
+        - Same packs / Одинаковые
+        - Different packs / Разные
+        - Not sure / Не знаю
+    validations:
+      required: false
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Launcher journal (optional) / Журнал лаунчера (необязательно)
+      description: Journal → Copy in the launcher, before you close it. / «Журнал» → «Копировать» в лаунчере, до того как закроете его.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: files
+    attributes:
+      label: tsmp.log (if something broke) / tsmp.log (если что-то сломалось)
+      description: |
+        Drag `tsmp.log` from `<user dir>/tsmp/` (usually `Documents\Electronic Arts\The Sims 4\tsmp\`) here, from both computers if you can. Screenshots are welcome too.
+
+        Перетащите сюда `tsmp.log` из `<папка пользователя>/tsmp/` (обычно `Documents\Electronic Arts\The Sims 4\tsmp\`), лучше с обоих компьютеров. Скриншоты тоже пригодятся.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you send / Перед отправкой
+      options:
+        - label: The text above has no invites, addresses or names I do not want to be public. / В тексте выше нет приглашений, адресов и имён, которые я не хочу показывать всем.
+          required: true

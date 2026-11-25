@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSMP: free The Sims 4 multiplayer mod for two players</title>
+<meta name="description" content="Play The Sims 4 with a friend on a local network or over the internet. Free, open-source multiplayer mod with a Windows launcher that syncs mods, CC, the save and packs.">
+<link rel="canonical" href="https://rxflex.github.io/TSMP/">
+<link rel="alternate" hreflang="en" href="https://rxflex.github.io/TSMP/">
+<link rel="alternate" hreflang="ru" href="https://rxflex.github.io/TSMP/ru/">
+<link rel="alternate" hreflang="x-default" href="https://rxflex.github.io/TSMP/">
+<meta name="theme-color" content="#16223a">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TSMP">
+<meta property="og:title" content="TSMP: The Sims 4 multiplayer for two players">
+<meta property="og:description" content="Free, open-source multiplayer for The Sims 4. Two people share one world, on a local network or over the internet, and the launcher does the setup.">
+<meta property="og:url" content="https://rxflex.github.io/TSMP/">
+<meta property="og:image" content="https://rxflex.github.io/TSMP/assets/social-preview.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="TSMP, multiplayer for The Sims 4: two houses at night, joined by one line">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="ru_RU">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="TSMP: The Sims 4 multiplayer for two players">
+<meta name="twitter:description" content="Free, open-source multiplayer for The Sims 4. Two people share one world, on a local network or over the internet, and the launcher does the setup.">
+<meta name="twitter:image" content="https://rxflex.github.io/TSMP/assets/social-preview.jpg">
+<meta name="twitter:image:alt" content="TSMP, multiplayer for The Sims 4: two houses at night, joined by one line">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@600;700&display=swap">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "TSMP",
+  "alternateName": "TSMP: The Sims 4 multiplayer",
+  "description": "Free, open-source multiplayer mod for The Sims 4. Two players share one world, on a local network or over the internet; a Windows launcher finds the other computer, copies the mods and the save, and starts both games with the packs both players own.",
+  "url": "https://rxflex.github.io/TSMP/",
+  "downloadUrl": "https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe",
+  "installUrl": "https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe",
+  "image": "https://rxflex.github.io/TSMP/assets/social-preview.jpg",
+  "screenshot": "https://rxflex.github.io/TSMP/assets/screens/en-home.png",
+  "operatingSystem": "Windows",
+  "applicationCategory": "GameApplication",
+  "applicationSubCategory": "Game mod",
+  "inLanguage": ["de", "en", "es", "fr", "it", "pl", "pt-BR", "ru", "uk", "zh-CN"],
+  "isAccessibleForFree": true,
+  "license": "https://github.com/Rxflex/TSMP/blob/HEAD/LICENSE",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "sameAs": ["https://github.com/Rxflex/TSMP"]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": "Is there official multiplayer in The Sims 4?", "acceptedAnswer": {"@type": "Answer", "text": "No. The game has no multiplayer of its own. TSMP is a fan project that adds it with a script mod and a launcher. It is not affiliated with or endorsed by Electronic Arts."}},
+    {"@type": "Question", "name": "How do I play The Sims 4 with a friend?", "acceptedAnswer": {"@type": "Answer", "text": "Both players run tsmp.exe. One chooses Host a session and picks a save, the other chooses Join a session, picks the host and presses Sync, and both start the game. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See How to play and Playing over the internet."}},
+    {"@type": "Question", "name": "Is TSMP free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is open source under the MIT licence. There is no paid version and no early-access tier."}},
+    {"@type": "Question", "name": "Does each player need their own copy of the game?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Each player needs their own Windows computer with their own copy of The Sims 4, at the same game version. The launcher warns when the two versions differ. The base game is free on the EA app and Steam."}},
+    {"@type": "Question", "name": "How many people can play?", "acceptedAnswer": {"@type": "Answer", "text": "Two: one host and one guest."}},
+    {"@type": "Question", "name": "Do we need the same packs (DLC)?", "acceptedAnswer": {"@type": "Answer", "text": "No. Players with different packs play with the packs they have in common: the launcher starts both games with the game's own -disablepacks: option and warns if a game loaded packs the session should not have. TSMP does not unlock content you do not own."}},
+    {"@type": "Question", "name": "What about mods and custom content (CC)?", "acceptedAnswer": {"@type": "Answer", "text": "The host's Mods folder is the shared one. When the guest presses Sync, their Mods folder is made the same as the host's, CC included, and they see what will change first. Nothing is deleted: files the host lacks, and local versions that differ, are moved to Mods.tsmp-backup/<date>/ next to the Mods folder. Script mods must be allowed in the game options on both computers."}},
+    {"@type": "Question", "name": "Can I use TSMP together with S4MP or another multiplayer mod?", "acceptedAnswer": {"@type": "Answer", "text": "No. They patch the same parts of the game. When you start hosting, the launcher moves the S4MP files it finds out of the Mods folder into the backup folder; nothing is deleted. Remove any other multiplayer mod first."}},
+    {"@type": "Question", "name": "Do I have to install the mod myself?", "acceptedAnswer": {"@type": "Answer", "text": "No. The mod is built into tsmp.exe. The launcher puts it into the host's Mods folder when hosting starts, and the guest receives it with the sync."}},
+    {"@type": "Question", "name": "What happens to my saves?", "acceptedAnswer": {"@type": "Answer", "text": "When you play one family together, the host's save is copied to the guest, and the guest's saves that would be replaced go to saves.tsmp-backup/ first. In Each with their own family no save is copied, and both launchers back up their saves before the session, because each game may write the other's family into its own."}},
+    {"@type": "Question", "name": "Can we play over the internet, not only on one network?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, through a TSMP session server that both players can reach: one a friend runs, or your own (tsmp-server, a small Linux program that needs one TCP port, 47810 by default). The host gets an invite such as K7QM-2XDA@play.example.org and sends it to the other player. This part is new and so far has been tried only against the game's protocol in tests."}},
+    {"@type": "Question", "name": "Can each of us play our own family?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. With Each with their own family, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. This is new and so far tried only in tests."}},
+    {"@type": "Question", "name": "Can we build a house together?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, on a game version whose addresses are in the repository (now 1.129.39.1030); the launcher's home screen says whether building together is ready for yours. In build mode, walls, floors and wall coverings drawn by either player appear for the other while both keep building. This was tried on two computers. Furniture and household funds in build mode have not yet been checked for double counting, and an element both edit at the same moment may end up different in the two games."}},
+    {"@type": "Question", "name": "What has actually been tested?", "acceptedAnswer": {"@type": "Answer", "text": "Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. So far only in tests against the game's protocol: playing over the internet, families of their own, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome."}},
+    {"@type": "Question", "name": "Does it work on Mac, Linux or consoles?", "acceptedAnswer": {"@type": "Answer", "text": "No. The launcher and the mod are for The Sims 4 on Windows only. Only the optional session server runs on Linux."}},
+    {"@type": "Question", "name": "Does it work with Steam and the EA app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The launcher finds the game installed by either. A Steam copy is started through Steam, which may ask you to confirm the launch arguments."}},
+    {"@type": "Question", "name": "Is it safe? Windows or my antivirus warns about it.", "acceptedAnswer": {"@type": "Answer", "text": "The code is open, and every release lists the SHA-256 checksums of its files. The release files are not code-signed, so Windows may warn the first time; you can also build everything from source. Windows asks once to allow tsmp.exe through the firewall: allow it on private networks, or the host will not be found. Joining runs the host's script mods on your computer, and script mods are unrestricted code. Only join people you trust."}},
+    {"@type": "Question", "name": "Will a game update break it?", "acceptedAnswer": {"@type": "Answer", "text": "It can. Building together depends on addresses inside the game that change between builds. The mod checks the build before it touches anything: on a build it does not know, build mode sync switches itself off and the rest keeps working. Once the addresses for a new version are added to the repository, the launcher downloads them by itself, and it updates itself from the project's GitHub releases. Set the environment variable TSMP_NO_UPDATE to switch the self-update off."}},
+    {"@type": "Question", "name": "Which languages does the launcher have?", "acceptedAnswer": {"@type": "Answer", "text": "Deutsch, English, Español, Français, Italiano, Polski, Português (Brasil), Русский, Українська and 简体中文. Most translations have not yet been checked by native speakers; corrections are welcome."}}
+  ]
+}
+</script>
+
+<style>
+:root{
+  --bg:#111b30;--bg-2:#16223a;--card:#1b2946;--card-2:#203153;--line:#2c3e63;
+  --text:#eaf0fa;--muted:#aebbd3;--yellow:#ffc857;--blue:#8fb4ff;--mint:#63d9b0;--orange:#ff9f5a;
+  --ink:#16223a;--radius:16px;
+  --head:"Unbounded","Golos Text",system-ui,sans-serif;
+  --body:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font:400 1.0625rem/1.6 var(--body);overflow-wrap:break-word}
+img{max-width:100%;height:auto;display:block}
+a{color:var(--blue);text-underline-offset:3px}
+a:hover{color:var(--yellow)}
+:focus-visible{outline:3px solid var(--yellow);outline-offset:3px;border-radius:6px}
+h1,h2,h3{font-family:var(--head);font-weight:700;line-height:1.15;letter-spacing:-.01em;margin:0 0 .6em}
+h1{font-size:clamp(2rem,5.2vw,3.5rem)}
+h2{font-size:clamp(1.55rem,3.4vw,2.35rem)}
+h3{font-size:1.12rem;line-height:1.3}
+p{margin:0 0 1em}
+code{font-family:var(--mono);font-size:.9em;background:rgba(143,180,255,.12);padding:.1em .35em;border-radius:6px;white-space:nowrap}
+pre{font-family:var(--mono);font-size:.9rem;line-height:1.55;background:#0c1426;border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:0 0 1.2em;overflow-x:auto}
+pre code{background:none;padding:0;white-space:pre}
+code.long{white-space:normal}
+.wrap{max-width:1140px;margin:0 auto;padding:0 16px}
+@media (min-width:720px){.wrap{padding:0 28px}}
+.skip{position:absolute;left:-9999px;top:8px;background:var(--yellow);color:var(--ink);padding:8px 14px;border-radius:8px;z-index:10}
+.skip:focus{left:8px}
+
+/* header */
+.top{border-bottom:1px solid rgba(44,62,99,.7)}
+.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--head);font-weight:700;font-size:1.25rem;color:var(--yellow);text-decoration:none;letter-spacing:.02em}
+.logo img{width:30px;height:30px}
+.nav{display:flex;align-items:center;gap:6px 20px;flex-wrap:wrap;justify-content:flex-end}
+.nav a{color:var(--muted);text-decoration:none;font-weight:500;font-size:.97rem}
+.nav a:hover{color:var(--text)}
+.nav .lang{color:var(--text);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+.nav .lang:hover{border-color:var(--yellow);color:var(--yellow)}
+@media (max-width:820px){.nav .opt{display:none}}
+
+/* hero */
+.hero{position:relative;padding:48px 0 72px;overflow:hidden}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.8;background:
+  radial-gradient(900px 420px at 80% 30%,rgba(143,180,255,.10),transparent 70%),
+  radial-gradient(600px 400px at 0% 100%,rgba(255,200,87,.06),transparent 70%)}
+@media (min-width:980px){.hero::before{background:
+  radial-gradient(2px 2px at 8% 18%,var(--yellow) 50%,transparent 51%),
+  radial-gradient(2px 2px at 46% 9%,#cfd9ee 50%,transparent 51%),
+  radial-gradient(3px 3px at 93% 14%,var(--yellow) 50%,transparent 51%),
+  radial-gradient(2px 2px at 70% 6%,#cfd9ee 50%,transparent 51%),
+  radial-gradient(2px 2px at 24% 92%,#cfd9ee 50%,transparent 51%),
+  radial-gradient(900px 420px at 80% 30%,rgba(143,180,255,.10),transparent 70%),
+  radial-gradient(600px 400px at 0% 100%,rgba(255,200,87,.06),transparent 70%)}}
+.hero .wrap{position:relative;display:grid;gap:40px;align-items:center}
+@media (min-width:980px){.hero .wrap{grid-template-columns:1fr 1.08fr;gap:56px}.hero{padding:72px 0 96px}}
+.eyebrow{display:inline-flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:.9rem;font-weight:600;color:var(--mint);margin:0 0 18px}
+.eyebrow span+span::before{content:"·";margin-right:10px;color:var(--muted)}
+.hero h1 em{font-style:normal;color:var(--yellow);white-space:nowrap}
+html[lang="ru"] .hero h1{font-size:clamp(1.9rem,4.6vw,3.05rem)}
+.lead{font-size:1.18rem;color:#d3dcec;max-width:36em}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin:28px 0 18px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:52px;padding:12px 22px;border-radius:12px;font-weight:600;font-size:1.05rem;text-decoration:none;transition:transform .15s ease,background .15s ease,border-color .15s ease}
+.btn svg{width:20px;height:20px;flex:none}
+@media (max-width:480px){.cta .btn{flex:1 1 100%}}
+.btn-main{background:var(--yellow);color:var(--ink)}
+.btn-main:hover{background:#ffd47a;color:var(--ink);transform:translateY(-1px)}
+.btn-alt{border:1px solid var(--line);color:var(--text);background:rgba(27,41,70,.6)}
+.btn-alt:hover{border-color:var(--blue);color:var(--text)}
+.fine{font-size:.93rem;color:var(--muted);max-width:34em;margin:0}
+.fine a{color:var(--muted)}
+.shot{margin:0;border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);background:var(--bg-2);box-shadow:0 30px 80px -20px rgba(0,0,0,.6),0 0 0 6px rgba(143,180,255,.05)}
+
+/* sections */
+section{padding:72px 0;scroll-margin-top:12px}
+section.alt{background:var(--bg-2);border-top:1px solid rgba(44,62,99,.6);border-bottom:1px solid rgba(44,62,99,.6)}
+.intro{max-width:46em;color:#d3dcec;font-size:1.08rem}
+.art{border-radius:var(--radius);border:1px solid var(--line);margin:0 0 32px;width:100%}
+.art.wide{max-width:860px;margin:0 auto 32px}
+
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));margin-top:28px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 20px 16px;display:flex;flex-direction:column}
+.card h3{display:flex;align-items:center;gap:10px}
+.card h3 svg{width:22px;height:22px;flex:none;color:var(--yellow)}
+.card p{color:#cdd6e7;font-size:.98rem}
+.card .tag{margin-top:auto;align-self:flex-start}
+.tag{display:inline-block;font-size:.78rem;font-weight:600;letter-spacing:.02em;padding:3px 10px;border-radius:999px;white-space:nowrap}
+.tag.ok{color:var(--mint);background:rgba(99,217,176,.12);border:1px solid rgba(99,217,176,.35)}
+.tag.test{color:var(--blue);background:rgba(143,180,255,.10);border:1px solid rgba(143,180,255,.35)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:20px;font-size:.93rem;color:var(--muted)}
+
+.need{background:rgba(255,200,87,.07);border:1px solid rgba(255,200,87,.3);border-radius:var(--radius);padding:16px 20px;margin:24px 0 32px;max-width:52em}
+.need p{margin:0}
+.steps{list-style:none;padding:0;margin:0 0 36px;display:grid;gap:16px;counter-reset:s}
+@media (min-width:880px){.steps{grid-template-columns:repeat(3,1fr)}}
+.steps li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 20px 18px}
+.steps li::before{content:counter(s);display:inline-grid;place-items:center;width:38px;height:38px;border-radius:50%;background:var(--yellow);color:var(--ink);font:700 1.05rem var(--head);margin-bottom:14px}
+.steps p{color:#cdd6e7;margin:0}
+b,strong{font-weight:600;color:var(--text)}
+.ui{color:var(--yellow);font-weight:600}
+
+.gallery{display:grid;gap:20px;grid-template-columns:1fr;margin:0 0 32px}
+@media (min-width:720px){.gallery{grid-template-columns:1fr 1fr}}
+.gallery figure{margin:0}
+.gallery img{border-radius:12px;border:1px solid var(--line);background:var(--bg-2)}
+.gallery figcaption{font-size:.95rem;color:var(--muted);margin-top:10px}
+
+.note{border-left:4px solid var(--orange);background:rgba(255,159,90,.08);border-radius:0 12px 12px 0;padding:14px 18px;margin:0 0 24px;max-width:52em}
+.note p{margin:0}
+.list{padding-left:1.2em;margin:0 0 1em;max-width:52em;color:#cdd6e7}
+.list li{margin:.35em 0}
+.list li::marker{color:var(--yellow)}
+
+.split{display:grid;gap:32px;align-items:center}
+@media (min-width:900px){.split{grid-template-columns:1fr 1fr;gap:48px}}
+.split .art{margin:0}
+ol.plain{padding-left:1.3em;margin:0 0 1.2em;color:#cdd6e7}
+ol.plain li{margin:.5em 0}
+ol.plain li::marker{color:var(--yellow);font-weight:700}
+.sub{margin-top:48px;padding-top:40px;border-top:1px solid var(--line)}
+
+.status{display:grid;gap:16px;margin-top:28px}
+@media (min-width:880px){.status{grid-template-columns:repeat(3,1fr)}}
+.status .card h3{font-size:1.02rem}
+.status ul{margin:0;padding-left:1.1em;color:#cdd6e7;font-size:.98rem}
+.status li{margin:.3em 0}
+.status .ok h3{color:var(--mint)}
+.status .test h3{color:var(--blue)}
+.status .todo h3{color:var(--orange)}
+
+.faq{max-width:52em;margin-top:24px}
+.faq details{border-bottom:1px solid var(--line)}
+.faq summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;gap:16px;align-items:center;padding:18px 0}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary h3{margin:0;font-family:var(--body);font-weight:600;font-size:1.08rem;letter-spacing:0}
+.faq summary::after{content:"+";font:600 1.5rem/1 var(--head);color:var(--yellow);flex:none;transition:transform .15s ease}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq .a{padding:0 0 18px;color:#cdd6e7}
+.faq .a p:last-child{margin-bottom:0}
+
+.help{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:24px}
+.final{text-align:center}
+.final .art{max-width:900px;margin:0 auto 28px}
+.final .cta{justify-content:center;margin:0 0 12px}
+.final .fine{margin:0 auto}
+.help .card p{margin-bottom:0}
+
+footer{border-top:1px solid var(--line);padding:40px 0 48px;color:var(--muted);font-size:.95rem}
+footer .wrap{display:grid;gap:20px}
+@media (min-width:820px){footer .wrap{grid-template-columns:1.4fr 1fr}}
+footer p{margin:0 0 .6em}
+footer nav{display:flex;flex-wrap:wrap;gap:8px 18px;align-content:flex-start}
+footer a{color:var(--muted)}
+footer a:hover{color:var(--yellow)}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="./" aria-label="TSMP home"><img src="favicon.svg" alt="" width="30" height="30">TSMP</a>
+    <nav class="nav" aria-label="Main">
+      <a class="opt" href="#playing">How to play</a>
+      <a class="opt" href="#playing-over-the-internet">Over the internet</a>
+      <a class="opt" href="#faq">FAQ</a>
+      <a href="https://github.com/Rxflex/TSMP">GitHub</a>
+      <a class="lang" href="ru/" hreflang="ru" lang="ru" title="Русская версия">RU</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow"><span>Free</span><span>Open source</span><span>Windows</span></p>
+      <h1>The&nbsp;Sims&nbsp;4 multiplayer <em>for two</em></h1>
+      <p class="lead">Play The&nbsp;Sims&nbsp;4 with a friend. Two people share one world, on one local network or over the internet, and the launcher does the setup: it finds the other computer, copies the mods and the save, and starts both games with the packs both players own.</p>
+      <div class="cta">
+        <a class="btn btn-main" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+          Download tsmp.exe
+        </a>
+        <a class="btn btn-alt" href="https://github.com/Rxflex/TSMP">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.26 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <p class="fine">One file for Windows, with the mod inside. Each player needs their own computer and their own copy of The&nbsp;Sims&nbsp;4, at the same version. The project is experimental: <a href="#status">see what has been tried</a>.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/screens/en-home.png" width="1120" height="840" fetchpriority="high" alt="The TSMP launcher's home screen: Play The Sims 4 together, with Host a session and Join a session, and the detected game version and packs below">
+    </figure>
+  </div>
+</div>
+
+<section id="what-works" class="alt" aria-labelledby="what-works-h">
+  <div class="wrap">
+    <h2 id="what-works-h">What works</h2>
+    <p class="intro">The&nbsp;Sims&nbsp;4 has no multiplayer of its own. TSMP adds it with a script mod and a launcher. One player hosts, the other joins, and both play in the host's world.</p>
+    <img class="art wide" src="assets/together.jpg" width="1400" height="700" loading="lazy" alt="Two people building in the same house at the same time">
+    <div class="grid">
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 11 12 4l9 7v9H3z"/><path d="M10 20v-5h4v5"/></svg>Live mode</h3>
+        <p>Both players see the same lot, sims and clock. Each controls their own sims; the host's simulation decides what happens.</p>
+        <span class="tag ok">Tried on two computers</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h8v5H3zM13 6h8v5h-8zM7 13h10v5H7z"/></svg>Build mode, both at once</h3>
+        <p>Walls, floors and wall coverings drawn by either player appear for the other while they keep building.</p>
+        <span class="tag ok">Tried on two computers</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg>Over the internet</h3>
+        <p>Players on different networks meet through a small session server with an invite such as <code>K7QM-2XDA@play.example.org</code>. A dropped connection picks up again by itself.</p>
+        <span class="tag test">So far only in tests</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="7" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c0-3.3 2.2-6 5-6s5 2.7 5 6M13.5 20c.2-2.8 1.6-5 3.5-5s3.5 2.2 3.5 5"/></svg>Each with their own family</h3>
+        <p>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there.</p>
+        <span class="tag test">So far only in tests</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21c.6-4 3.3-6.5 7-6.5s6.4 2.5 7 6.5"/></svg>Create-a-Sim</h3>
+        <p>Either player edits their own sims; the host's game takes the guest's new look.</p>
+        <span class="tag test">So far only in tests</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-5.3-6-10a6 6 0 0 1 12 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2.2"/></svg>Different lots</h3>
+        <p>Players can each be on a lot of their own and meet again; a guest travelling to the host sees one loading screen.</p>
+        <span class="tag test">So far only in tests</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 7.5l9 4.5 9-4.5zM3 12l9 4.5 9-4.5M3 16.5 12 21l9-4.5"/></svg>Different packs</h3>
+        <p>Players with different DLC play with the packs they have in common, through the game's own <code>-disablepacks:</code> option. TSMP does not unlock content.</p>
+        <span class="tag ok">Tried on two computers</span>
+      </article>
+      <article class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/></svg>One-button setup</h3>
+        <p>The guest's Mods folder, CC included, and the shared save are made the same as the host's. Nothing is deleted: replaced files go to a backup folder.</p>
+        <span class="tag ok">Tried on two computers</span>
+      </article>
+    </div>
+    <p class="legend"><span class="tag ok">Tried on two computers</span> with two copies of the game. <span class="tag test">So far only in tests</span> against the game's protocol.</p>
+  </div>
+</section>
+
+<section id="playing" aria-labelledby="playing-h">
+  <div class="wrap">
+    <h2 id="playing-h">How to play The&nbsp;Sims&nbsp;4 with a friend</h2>
+    <div class="need">
+      <p><b>You need</b> two Windows computers, each with its own copy of The&nbsp;Sims&nbsp;4 at the same version, and script mods enabled in the game options. On one local network that is all; from different networks you also need a <a href="#playing-over-the-internet">session server</a>.</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Both download tsmp.exe</h3>
+        <p>One file, with the mod inside. Run it on both computers. Windows asks once to allow it through the firewall: allow it on private networks, or the host will not be found.</p>
+      </li>
+      <li>
+        <h3>One of you hosts</h3>
+        <p>Choose <span class="ui">Host a session</span> and pick the save to share. Your save and your mods become the shared ones; the launcher puts the mod into your Mods folder.</p>
+      </li>
+      <li>
+        <h3>The other joins</h3>
+        <p>Choose <span class="ui">Join a session</span>, pick the host from the list, read what will change and press <span class="ui">Sync</span>. Then both press <span class="ui">Start game</span> and load the shared save.</p>
+      </li>
+    </ol>
+    <div class="gallery">
+      <figure>
+        <img src="assets/screens/en-choose.png" width="1120" height="840" loading="lazy" alt="The host chooses one family together or each with their own, and the save">
+        <figcaption><b>The host</b> picks how to play and the save.</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/screens/en-review.png" width="1120" height="840" loading="lazy" alt="The guest sees what will change in the Mods folder before syncing">
+        <figcaption><b>The guest</b> sees what will change, and nothing is deleted.</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/screens/en-lobby.png" width="1120" height="840" loading="lazy" alt="The host's session screen with both players ready and the packs both own">
+        <figcaption><b>Both are ready.</b> The packs in the session are the ones both own.</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/screens/en-ready.png" width="1120" height="840" loading="lazy" alt="The guest's session screen, ready to start the game">
+        <figcaption><b>Start the game</b> on both computers and load the save.</figcaption>
+      </figure>
+    </div>
+    <p class="intro">The guest loads the host's world once more after its lot loads; the host's game stays paused until the launcher says <span class="ui">Live. Both games are joined.</span> Keep the launcher open while playing: it carries the session.</p>
+    <div class="note" role="note">
+      <p><b>Only join people you trust.</b> Joining runs the host's script mods on your computer, and script mods are unrestricted code.</p>
+    </div>
+    <ul class="list">
+      <li>Files the host lacks, and local versions that differ, are moved to <code>Mods.tsmp-backup/&lt;date&gt;/</code> next to the Mods folder. Saves go to <code>saves.tsmp-backup/</code> the same way.</li>
+      <li>The game from the EA app and from Steam both work. A Steam copy is started through Steam, which may ask to confirm the launch arguments.</li>
+      <li>After the game starts, the launcher warns if it loaded packs the session should not have.</li>
+      <li>The launcher speaks Deutsch, English, Español, Français, Italiano, Polski, Português (Brasil), Русский, Українська and 简体中文.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="playing-over-the-internet" class="alt" aria-labelledby="internet-h">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <h2 id="internet-h">Playing over the internet</h2>
+        <p>Two computers on different networks usually cannot reach each other, so they meet on a TSMP session server that both can reach: one that a friend runs, or your own.</p>
+        <ol class="plain">
+          <li>The host opens the session as usual. Under <span class="ui">Over the internet</span> on the session screen they enter the server's address and press <span class="ui">Open</span>. The launcher shows an invite such as <code>K7QM-2XDA@play.example.org</code>.</li>
+          <li>The host sends the invite to the other player.</li>
+          <li>The other player chooses <span class="ui">Join a session</span>, pastes the invite where the host's address goes and presses <span class="ui">Connect</span>. From here everything is as on a local network.</li>
+        </ol>
+        <p>The invite stays the same if the host's connection drops for a moment. <span class="tag test">So far only in tests</span></p>
+      </div>
+      <img class="art" src="assets/internet.jpg" width="1400" height="700" loading="lazy" alt="Two houses on distant hills, joined through a lamp on a hill between them">
+    </div>
+
+    <div id="running-a-session-server" class="sub">
+      <h3>Running a session server</h3>
+      <p class="intro"><code>tsmp-server</code> is one small file for Linux, without settings files, that keeps nothing on disk. Any computer both players can reach will do, typically a cheap Linux server with a public address. It needs one TCP port open, 47810 by default. It only passes bytes between the two launchers, so its connection decides how fast the guest syncs.</p>
+      <p>Take <a href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp-server-linux-x86_64">tsmp-server-linux-x86_64</a> from the latest release (it runs on any x86_64 Linux), or build it with <code class="long">cargo build --release -p tsmp-server</code>. Then:</p>
+      <pre><code>chmod +x tsmp-server-linux-x86_64
+./tsmp-server-linux-x86_64 --listen 0.0.0.0:47810</code></pre>
+      <p>A session code is eight characters, and an address that keeps asking for codes that do not exist is held back, so codes cannot be found by guessing. Anyone who has an invite can join that session: send it only to the person you are playing with. The <a href="https://github.com/Rxflex/TSMP#running-a-session-server">README</a> has a systemd unit and the limits <code>--help</code> lists.</p>
+    </div>
+  </div>
+</section>
+
+<section id="each-with-their-own-family" aria-labelledby="families-h">
+  <div class="wrap">
+    <div class="split">
+      <img class="art" src="assets/families.jpg" width="1400" height="700" loading="lazy" alt="Two families walking from their own houses to one lit house">
+      <div>
+        <h2 id="families-h">Each with their own family</h2>
+        <p>Each player can bring a household from a save of their own. The host picks <span class="ui">Each with their own family</span> when they start hosting, and then no save is copied; each player loads their own save.</p>
+        <p>When the guest comes to the host's lot, its household, with its sims, home lot and relationships, is copied into the host's save, and the guest goes on playing it there. Both launchers back up their saves first, because each game may write the other's family into its own.</p>
+        <p><span class="tag test">So far only in tests</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="status" class="alt" aria-labelledby="status-h">
+  <div class="wrap">
+    <h2 id="status-h">What has been tried</h2>
+    <p class="intro">TSMP is experimental, and the first release is v0.0.1. This is what has been checked and how.</p>
+    <div class="status">
+      <div class="card ok">
+        <h3>Tried on two computers</h3>
+        <ul>
+          <li>Live mode</li>
+          <li>Building together</li>
+          <li>Different packs</li>
+          <li>One-button setup on a local network</li>
+          <li>One log for both games</li>
+        </ul>
+      </div>
+      <div class="card test">
+        <h3>So far only in tests</h3>
+        <ul>
+          <li>Playing over the internet</li>
+          <li>Families of their own</li>
+          <li>Create-a-Sim for the guest</li>
+          <li>Different lots</li>
+          <li>Keeping both games in step on its own</li>
+        </ul>
+      </div>
+      <div class="card todo">
+        <h3>Not handled yet</h3>
+        <ul>
+          <li>The guest waits while the host is in Create-a-Sim.</li>
+          <li>An element both edit at the same moment may end up different in the two games.</li>
+          <li>Furniture and household funds in build mode have not been checked for double counting.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="intro" style="margin-top:24px">Tests here means runs against the game's protocol, not two people at two computers. A report from a real game helps most: <a href="https://github.com/Rxflex/TSMP/issues/new/choose">open an issue</a> with the game version, what you did and what happened.</p>
+  </div>
+</section>
+
+<section id="faq" aria-labelledby="faq-h">
+  <div class="wrap">
+    <h2 id="faq-h">Questions and answers</h2>
+    <div class="faq">
+      <details>
+        <summary><h3>Is there official multiplayer in The&nbsp;Sims&nbsp;4?</h3></summary>
+        <div class="a"><p>No. The game has no multiplayer of its own. TSMP is a fan project that adds it with a script mod and a launcher. It is not affiliated with or endorsed by Electronic Arts.</p></div>
+      </details>
+      <details>
+        <summary><h3>How do I play The&nbsp;Sims&nbsp;4 with a friend?</h3></summary>
+        <div class="a"><p>Both players run <code>tsmp.exe</code>. One chooses <b>Host a session</b> and picks a save, the other chooses <b>Join a session</b>, picks the host and presses <b>Sync</b>, and both start the game. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See <a href="#playing">How to play</a> and <a href="#playing-over-the-internet">Playing over the internet</a>.</p></div>
+      </details>
+      <details>
+        <summary><h3>Is TSMP free?</h3></summary>
+        <div class="a"><p>Yes. It is open source under the MIT licence. There is no paid version and no early-access tier.</p></div>
+      </details>
+      <details>
+        <summary><h3>Does each player need their own copy of the game?</h3></summary>
+        <div class="a"><p>Yes. Each player needs their own Windows computer with their own copy of The&nbsp;Sims&nbsp;4, at the same game version. The launcher warns when the two versions differ. The base game is free on the EA app and Steam.</p></div>
+      </details>
+      <details>
+        <summary><h3>How many people can play?</h3></summary>
+        <div class="a"><p>Two: one host and one guest.</p></div>
+      </details>
+      <details>
+        <summary><h3>Do we need the same packs (DLC)?</h3></summary>
+        <div class="a"><p>No. Players with different packs play with the packs they have in common: the launcher starts both games with the game's own <code>-disablepacks:</code> option and warns if a game loaded packs the session should not have. TSMP does not unlock content you do not own.</p></div>
+      </details>
+      <details>
+        <summary><h3>What about mods and custom content (CC)?</h3></summary>
+        <div class="a"><p>The host's Mods folder is the shared one. When the guest presses <b>Sync</b>, their Mods folder is made the same as the host's, CC included, and they see what will change first. Nothing is deleted: files the host lacks, and local versions that differ, are moved to <code>Mods.tsmp-backup/&lt;date&gt;/</code> next to the Mods folder. Script mods must be allowed in the game options on both computers.</p></div>
+      </details>
+      <details>
+        <summary><h3>Can I use TSMP together with S4MP or another multiplayer mod?</h3></summary>
+        <div class="a"><p>No. They patch the same parts of the game. When you start hosting, the launcher moves the S4MP files it finds out of the Mods folder into the backup folder; nothing is deleted. Remove any other multiplayer mod first.</p></div>
+      </details>
+      <details>
+        <summary><h3>Do I have to install the mod myself?</h3></summary>
+        <div class="a"><p>No. The mod is built into <code>tsmp.exe</code>. The launcher puts it into the host's Mods folder when hosting starts, and the guest receives it with the sync.</p></div>
+      </details>
+      <details>
+        <summary><h3>What happens to my saves?</h3></summary>
+        <div class="a"><p>When you play one family together, the host's save is copied to the guest, and the guest's saves that would be replaced go to <code>saves.tsmp-backup/</code> first. In <b>Each with their own family</b> no save is copied, and both launchers back up their saves before the session, because each game may write the other's family into its own.</p></div>
+      </details>
+      <details>
+        <summary><h3>Can we play over the internet, not only on one network?</h3></summary>
+        <div class="a"><p>Yes, through a TSMP session server that both players can reach: one a friend runs, or your own (<code>tsmp-server</code>, a small Linux program that needs one TCP port, 47810 by default). The host gets an invite such as <code>K7QM-2XDA@play.example.org</code> and sends it to the other player. This part is new and so far has been tried only against the game's protocol in tests.</p></div>
+      </details>
+      <details>
+        <summary><h3>Can each of us play our own family?</h3></summary>
+        <div class="a"><p>Yes. With <b>Each with their own family</b>, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. This is new and so far tried only in tests.</p></div>
+      </details>
+      <details>
+        <summary><h3>Can we build a house together?</h3></summary>
+        <div class="a"><p>Yes, on a game version whose addresses are in the repository (now 1.129.39.1030); the launcher's home screen says whether building together is ready for yours. In build mode, walls, floors and wall coverings drawn by either player appear for the other while both keep building. This was tried on two computers. Furniture and household funds in build mode have not yet been checked for double counting, and an element both edit at the same moment may end up different in the two games.</p></div>
+      </details>
+      <details>
+        <summary><h3>What has actually been tested?</h3></summary>
+        <div class="a"><p>Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. So far only in tests against the game's protocol: playing over the internet, families of their own, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome.</p></div>
+      </details>
+      <details>
+        <summary><h3>Does it work on Mac, Linux or consoles?</h3></summary>
+        <div class="a"><p>No. The launcher and the mod are for The&nbsp;Sims&nbsp;4 on Windows only. Only the optional session server runs on Linux.</p></div>
+      </details>
+      <details>
+        <summary><h3>Does it work with Steam and the EA app?</h3></summary>
+        <div class="a"><p>Yes. The launcher finds the game installed by either. A Steam copy is started through Steam, which may ask you to confirm the launch arguments.</p></div>
+      </details>
+      <details>
+        <summary><h3>Is it safe? Windows or my antivirus warns about it.</h3></summary>
+        <div class="a"><p>The code is open, and every release lists the SHA&#8209;256 checksums of its files. The release files are not code-signed, so Windows may warn the first time; you can also build everything from source. Windows asks once to allow <code>tsmp.exe</code> through the firewall: allow it on private networks, or the host will not be found.</p><p>Joining runs the host's script mods on your computer, and script mods are unrestricted code. Only join people you trust.</p></div>
+      </details>
+      <details>
+        <summary><h3>Will a game update break it?</h3></summary>
+        <div class="a"><p>It can. Building together depends on addresses inside the game that change between builds. The mod checks the build before it touches anything: on a build it does not know, build mode sync switches itself off and the rest keeps working. Once the addresses for a new version are added to the repository, the launcher downloads them by itself, and it updates itself from the project's GitHub releases. Set the environment variable <code>TSMP_NO_UPDATE</code> to switch the self-update off.</p></div>
+      </details>
+      <details>
+        <summary><h3>Which languages does the launcher have?</h3></summary>
+        <div class="a"><p>Deutsch, English, Español, Français, Italiano, Polski, Português (Brasil), Русский, Українська and 简体中文. Most translations have not yet been checked by native speakers; corrections are welcome.</p></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section id="help" class="alt" aria-labelledby="help-h">
+  <div class="wrap">
+    <h2 id="help-h">Help the project</h2>
+    <div class="help">
+      <div class="card">
+        <h3>Star the repository</h3>
+        <p>It helps other players find it. <a href="https://github.com/Rxflex/TSMP">github.com/Rxflex/TSMP</a></p>
+      </div>
+      <div class="card">
+        <h3>Tell how it went</h3>
+        <p>A report from a real game on two computers helps most, above all for the parts tried only in tests. <a href="https://github.com/Rxflex/TSMP/issues/new/choose">Open an issue</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Fix a translation or the code</h3>
+        <p>Each launcher language is one Fluent file. <a href="https://github.com/Rxflex/TSMP/blob/HEAD/CONTRIBUTING.md">CONTRIBUTING.md</a> says how.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="download" class="final" aria-labelledby="download-h">
+  <div class="wrap">
+    <img class="art" src="assets/banner.jpg" width="1800" height="600" loading="lazy" alt="TSMP: two houses at night, joined by one dashed line">
+    <h2 id="download-h">Play The&nbsp;Sims&nbsp;4 together</h2>
+    <div class="cta">
+      <a class="btn btn-main" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+        Download tsmp.exe
+      </a>
+      <a class="btn btn-alt" href="https://github.com/Rxflex/TSMP/releases">All releases</a>
+    </div>
+    <p class="fine">Free and open source. Every release lists the SHA&#8209;256 checksums of its files.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <p><b>TSMP</b>, free multiplayer for The&nbsp;Sims&nbsp;4. Open source under the <a href="https://github.com/Rxflex/TSMP/blob/HEAD/LICENSE">MIT licence</a>.</p>
+      <p>A fan project. Not affiliated with or endorsed by Electronic Arts. The Sims is a trademark of Electronic Arts Inc.</p>
+      <p>Found a security problem? Report it privately through <a href="https://github.com/Rxflex/TSMP/security/advisories/new">GitHub's vulnerability reporting</a>.</p>
+    </div>
+    <nav aria-label="Links">
+      <a href="https://github.com/Rxflex/TSMP">Source code</a>
+      <a href="https://github.com/Rxflex/TSMP/releases">Releases</a>
+      <a href="https://github.com/Rxflex/TSMP/blob/HEAD/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/Rxflex/TSMP/blob/HEAD/docs/internals.md">How it works inside</a>
+      <a href="https://github.com/Rxflex/TSMP/issues">Issues</a>
+      <a href="ru/" hreflang="ru" lang="ru">Русский</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem / Уязвимость
+    url: https://github.com/Rxflex/TSMP/security/advisories/new
+    about: Report it privately, not in a public issue. / Сообщите приватно, не в открытом issue.
+  - name: Questions and answers (FAQ)
+    url: https://github.com/Rxflex/TSMP#faq
+    about: Packs, mods, saves, the internet, safety. Most questions are answered here.
+  - name: Вопросы и ответы (по-русски)
+    url: https://github.com/Rxflex/TSMP/blob/HEAD/README.ru.md#вопросы-и-ответы
+    about: Дополнения, моды, сохранения, игра через интернет, безопасность.

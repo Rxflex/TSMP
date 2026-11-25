@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://rxflex.github.io/TSMP/sitemap.xml
