@@ -104,13 +104,14 @@ Releases are made by the maintainers:
 1. Describe the release in [CHANGELOG.md](CHANGELOG.md) and
    [CHANGELOG.ru.md](CHANGELOG.ru.md), in a section `## v<version> — <title>`.
 2. Set the same version in `crates/tsmp-launcher/Cargo.toml`.
-3. Push a tag `v<version>`.
+3. Push a tag `v<version>`, or start the release workflow by hand on the
+   branch with **publish** ticked, which tags the commit it builds.
 
 `.github/workflows/release.yml` refuses a tag that does not match the
 launcher's version or that the changelogs do not describe, then tests and
 builds everything and publishes the release. Running launchers find it and
-update. Started by hand from the Actions tab, the workflow does everything but
-publish, and keeps the files and the page with the run.
+update. Started by hand from the Actions tab without **publish**, the workflow
+does everything but publish, and keeps the files and the page with the run.
 
 ## Коротко по-русски
 

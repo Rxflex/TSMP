@@ -8,12 +8,19 @@ name: release
 #
 # Started by hand (Actions, release, Run workflow), it does everything but
 # publish, whichever branch or tag it is started on: the files and the page it
-# would publish are kept with the run. A failed release is run again with
-# "Re-run jobs" on the tag's own run.
+# would publish are kept with the run. Started by hand on a branch with
+# "publish" ticked, it publishes too, tagging the commit it built; that is for
+# releasing without pushing a tag. A failed release is run again with
+# "Re-run jobs" on its own run.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the release, tagging this commit v<version>"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -35,6 +42,10 @@ jobs:
           version="v$(grep -m1 '^version' crates/tsmp-launcher/Cargo.toml | cut -d'"' -f2)"
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
             echo "::error::The tag $GITHUB_REF_NAME is not the launcher's version $version"
+            exit 1
+          fi
+          if [ "${{ inputs.publish }}" = true ] && [ "$GITHUB_REF_TYPE" != branch ]; then
+            echo "::error::Publishing by hand starts on a branch; a tag is published by pushing it"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -109,7 +120,7 @@ jobs:
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep what a run by hand would publish
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && !inputs.publish
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ env.VERSION }}
@@ -122,10 +133,12 @@ jobs:
             title.txt
 
       - name: Publish
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+        # Run by hand, the tag does not exist yet: the release makes it, on
+        # the commit that was built.
         run: |
           gh release create "$VERSION" \
             dist/tsmp.exe dist/tsmp.ts4script dist/tsmp-server-linux-x86_64 dist/SHA256SUMS.txt \
-            --title "$(cat title.txt)" --notes-file notes.md
+            --target "$GITHUB_SHA" --title "$(cat title.txt)" --notes-file notes.md
