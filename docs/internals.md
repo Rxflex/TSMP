@@ -858,14 +858,22 @@ A guest edits its own sims in Create-a-Sim. CAS opens with the line
 its client with `sims4.commands.client_cheat`. A joined guest lets it open
 on its own client (when the host's simulation opens it for a sim the guest
 plays, the host sends the line to the guest in `cas {line}` instead of
-showing it). Before it opens, the guest notes the part of the sim's
-`SimData` that CAS edits (`tsmp/appearance.py`: names, voice, skin,
-physique, face, genetics, outfits); CAS closes by loading the guest's zone
-again from its own simulation, and when it is back the guest sends what
-changed in `appearance {sim_id, look}` before it asks for the host's state.
-The host puts that look on its sim, standing on the lot or not, through the
-sim's fields and `load_outfits`, `set_current_outfit` and
-`resend_physical_attributes`, so the state the guest then loads has it.
+showing it, and the guest makes the sim the client comes back to its own).
+Only the line opens it: a CAS command the game refuses changes nothing, and
+one whose screen does not open within `CAS_SECONDS` (unless the game is
+saving to leave its zone) has the guest load the host's state again, as its
+own simulation reached its client meanwhile. When the line goes out, the
+guest saves the sim and notes the part of its `SimData` that CAS edits
+(`tsmp/appearance.py`: names, voice, skin, physique, face, genetics,
+outfits); CAS closes by loading the guest's zone again from its own
+simulation, and when it is back the guest sends the fields that changed in
+`appearance {sim_id, look, fields}`, before it asks for the host's state and
+again on every new link until the host answers `appearance_done`. Not after
+a save loaded from the menu meanwhile. The host puts those fields on its
+sim, standing on the lot or not, through the sim's fields and
+`load_outfits`, `set_current_outfit` and `resend_physical_attributes`, so
+the state the guest then loads has them, and the rest of the sim stays as
+the host has it.
 Age, gender, species, traits and occult forms edited in CAS stay as the
 host has them. While its client shows a host's world it is loading, the
 guest's CAS stays shut.
@@ -880,7 +888,10 @@ orders the travel with `MSG_TRAVEL_SIMS_TO_ZONE` (`TravelSimsToZone`: the
 zone in fixed64 field 1, the travellers in packed fixed64 field 2); the
 session holds that message back when the zone is the host's lot (by lot,
 else by id), gives the household if the guest played by itself, asks for
-the host's state of that lot, and travels into it with the same sims. Should
+the host's state of that lot, and travels into it with the same sims, which
+the host makes the guest's on its lot. It waits `TRAVEL_WAIT_SECONDS` for a
+host that left its lot or cannot be reached, and lets the travel go when its
+launcher goes. Should
 anything fail, the message goes to the client as it was, and the travel
 happens as before.
 

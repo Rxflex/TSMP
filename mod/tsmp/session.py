@@ -66,6 +66,9 @@ CAS_SCREEN = "sims.exit2cas"
 CAS_REFUSED = "Create-a-Sim cannot be opened while the other player's game is being loaded"
 # The command that brackets build mode: `1` on entering it, `0` on leaving.
 BUILD_COMMAND = "clock.build_buy_pause_unpause"
+# A guest holding back a travel to the host's lot waits this long for a host
+# that left it or cannot be reached, then travels as ordered.
+TRAVEL_WAIT_SECONDS = 30.0
 # A guest that was let into Create-a-Sim and has not left its zone within
 # this many seconds did not go.
 CAS_SECONDS = 30.0
@@ -186,14 +189,18 @@ class Session:
                                        again would not help
         same_household(a, b)           True if both sim ids are in one household
         pause()                        host: pause the game
-        welcome(sim_id, before)        host: have the other player's sim on
+        welcome(sim_id, before, travellers)
+                                       host: have the other player's sim on
                                        the lot and controllable; returns the
                                        ids now theirs, none to refuse it
         send_off(sim_ids)              host: the other player left with these
         joined(sim_id)                 host: the other player plays it here
         notify(text)                   tell the local player something
-        appearance(sim_id)             bytes of how that sim looks, b"" for none
-        apply_appearance(sim_id, look) host: give our sim that look
+        appearance(sim_id)             bytes of how that sim looks now, b""
+        look_changes(before, after)    (look, field names) of what changed
+        apply_appearance(sim_id, look, names)
+                                       host: give our sim those fields of it
+        leaving_zone()                 our game saves to leave its zone
         client_cheat(line)             guest: pass a line to our game client
     `send(frame)` queues a packed frame for the launcher; `clock()` tells the
     time in seconds.
@@ -265,8 +272,11 @@ class Session:
         # Guest: we are loading our own zone again.
         self._reloading = False
         # Guest: Create-a-Sim was opened for one of our sims while joined:
-        # (sim id, how it looked, when); its new look goes to the host.
+        # (sim id, how it looked, when, in which save); and what changed,
+        # (sim id, look, field names), until the host says it has it.
         self._cas = None
+        self._look = None
+        self._look_sent = False
         # Guest: the travel to the host's lot our game ordered, held back
         # until the host's state is here: (message, zone of ours, the host's
         # name for it, its lot, the travellers).
@@ -327,6 +337,8 @@ class Session:
         self._taken_at = ""
         # Host: since when the link has been down while we hold, 0 while up.
         self._link_lost_at = 0.0
+        # Host: sims a guest travels to our lot with.
+        self._travellers = []
         # Host: sims made the other player's on our lot, and those it plays
         # on another, which our lot is to be kept free of.
         self._welcomed = []
@@ -408,6 +420,8 @@ class Session:
         if self.role == GUEST and self._shows_host and self._in_zone and self._phase != LOADING:
             # Our game client shows the host's world, which is gone.
             self._reload()
+        if self.role == GUEST:
+            self._let_travel_go()
         # What our game has of our sims is behind the host's whatever the
         # launcher does: it loads the host's copy before it gives any.
         self._owes = self._owes or (self.role == GUEST and self._behind)
@@ -435,6 +449,8 @@ class Session:
         self._welcomed = []
         self._lost_loading = False
         self._whole = False
+        self._travel = None
+        self._travellers = []
 
     def _idle(self):
         self._phase = IDLE
@@ -592,6 +608,10 @@ class Session:
         """Guest, stale: start the next step once the host can answer, and
         give up on a step that is taking too long."""
         if self._phase == WAITING:
+            if self._travel is not None and (self._lost_at or self._away_at) and \
+                    now - (self._lost_at or self._away_at) > TRAVEL_WAIT_SECONDS:
+                self._give_up("the host is not on its lot; travelling as ordered")
+                return
             if not self.remotes:
                 if self._lost_at and now - self._lost_at > LINK_SECONDS:
                     self._give_up("the host did not come back; playing on by ourselves")
@@ -790,6 +810,7 @@ class Session:
     # -- a guest loading the host's state -------------------------------
 
     def _ask(self):
+        self._send_look()
         # Lots compare across saves; we may still be in a save of our own.
         # A guest about to travel asks for the lot it travels to.
         self._joining = self.same_zone or self._travel is not None
@@ -805,6 +826,8 @@ class Session:
         household = self._call("household_id", 0)
         if household:
             fields["household"] = str(household)
+        if self._travel is not None:
+            fields["travellers"] = [str(sim_id) for sim_id in self._travel[4]]
         self._send(frames.control("resync", **fields))
 
     def _offered(self, incoming):
@@ -892,6 +915,8 @@ class Session:
             return
         self._hold_for(request)
         self._asked = request
+        # The sims a guest travels with, to be on our lot with it.
+        self._travellers = [frames.number(sim_id) for sim_id in message.get("travellers") or []]
         if not self._taking or self._clock() - self._taking > SAVE_SECONDS:
             self._take()
 
@@ -1043,7 +1068,7 @@ class Session:
         if self.role != HOST or not self.remote_sim_id or not self._in_zone:
             return
         try:
-            theirs = self._game.welcome(self.remote_sim_id, tuple(self._welcomed))
+            theirs = self._game.welcome(self.remote_sim_id, tuple(self._welcomed), tuple(self._travellers))
         except Exception as error:
             self._log("could not bring the other player's sim in: {}".format(error))
             return
@@ -1085,9 +1110,13 @@ class Session:
             self._reported_sim_id = 0
             self._zone_changed()
             self._announce()
-        if self._cas is not None and self._in_zone and self._clock() - self._cas[2] > CAS_SECONDS:
-            # Create-a-Sim did not open after all.
+        if (self._cas is not None and self._in_zone and self._clock() - self._cas[2] > CAS_SECONDS
+                and not self._call("leaving_zone", 0)):
+            # Create-a-Sim did not open after all, and our own simulation was
+            # let through to our client meanwhile.
             self._cas = None
+            if self.live:
+                self._go_stale("Create-a-Sim did not open; loading the host's state again")
         self._transfers.pump()
         if self.role == HOST:
             # A guest gives up on these after as long, and says nothing if
@@ -1110,6 +1139,11 @@ class Session:
                 self._call("loaded_by_hand", 0)
 
     def _zone_changed(self):
+        if self._building:
+            # A client built again is not in build mode.
+            self._building = False
+            if self.remotes:
+                self._send(frames.control("building", on=False))
         if self.role == HOST:
             self._world = ""
             if self._in_zone:
@@ -1127,12 +1161,16 @@ class Session:
         # Whatever our game client showed, it now shows our own simulation.
         self._world = ""
         self._shows_host = False
+        by_hand = 0
+        if self._phase == IDLE and self._in_zone:
+            by_hand = self._call("loaded_by_hand", 0)
+            if by_hand:
+                self._look = None
         if self._cas is not None and self._in_zone:
-            self._closed_cas()
+            self._closed_cas(by_hand)
         if self._phase != IDLE and not self._in_zone:
             self._give_up("left the zone before the host's state arrived")
         elif self._phase == IDLE and self._in_zone:
-            by_hand = self._call("loaded_by_hand", 0)
             if self._reloading:
                 # Our own reload, of our own zone.
                 self._reloading = False
@@ -1264,7 +1302,9 @@ class Session:
                 # theirs, and knows nothing of what was under way.
                 self._link_lost_at = 0.0
                 self._transfers.forget()
+                self._look_sent = False
                 self._announce(want=True)
+                self._send_look()
                 if self._building:
                     self._send(frames.control("building", on=True))
         elif kind == "gone":
@@ -1306,8 +1346,8 @@ class Session:
             if self.role == GUEST:
                 self._tell(str(message.get("text") or "")[:200])
         elif kind == "cas":
-            line = str(message.get("line") or "")
-            if self.role == GUEST and line.startswith(CAS_SCREEN) and self._open_cas(_numbers(line)[:1]):
+            line = self._our_cas_line(str(message.get("line") or ""))
+            if self.role == GUEST and line and self.live:
                 try:
                     self._game.client_cheat(line)
                 except Exception as error:
@@ -1315,6 +1355,8 @@ class Session:
                     self._log("could not open Create-a-Sim: {}".format(error))
         elif kind == "appearance":
             self._appearance(message)
+        elif kind == "appearance_done":
+            self._appearance_done(message)
         elif kind == "building":
             self._remote_build_mode(message)
         elif kind == "active_sim":
@@ -1346,7 +1388,10 @@ class Session:
         self.remote_zone = frames.number(message.get("zone"))
         self.remote_lot = str(message.get("lot") or "")
         self.remote_save = frames.number(message.get("save"))
-        self.remote_world = str(message.get("world") or "")
+        world = str(message.get("world") or "")
+        if not self.remote_in_zone or world != self.remote_world:
+            self.remote_building = False
+        self.remote_world = world
         if self.role == HOST and self._taken_at and self.remote_world and self.remote_world == self._world:
             # The guest shows the state we saved for it: if our game moved
             # on since, it is behind ours, and loads again.
@@ -1441,7 +1486,8 @@ class Session:
         then the host's state. So the order is held back, the host's state
         fetched, and the game travels once, into it."""
         if (self.role != GUEST or self._phase != IDLE or self.live or not self.remotes or not self.remote_in_zone
-                or not self.speaks_our_version or self._travel is not None):
+                or not self.speaks_our_version or self._travel is not None
+                or (self._glued and self._glued == self.remote_save)):
             return False
         zone_id, sims = wire.travel(data)
         if not zone_id:
@@ -1488,7 +1534,7 @@ class Session:
         names a sim the guest plays: it would take our player's screen, and
         the guest's own client cannot edit a sim of the host's simulation."""
         if self.role == GUEST and line.startswith(CAS_SCREEN):
-            return self._open_cas(_numbers(line)[:1])
+            return self._open_cas(line)
         if self.role != HOST or not self.live:
             return True
         for sim_id in _numbers(line):
@@ -1499,15 +1545,25 @@ class Session:
                 return False
         return True
 
+    def _our_cas_line(self, line):
+        """The host's line to open Create-a-Sim, made ours: its third number
+        is the sim the client comes back to, the host's own there."""
+        words = line.split()
+        if len(words) < 2 or words[0] != CAS_SCREEN:
+            return ""
+        if len(words) >= 4 and frames.number(words[3]):
+            words[3] = str(self._game.active_sim_id() or words[1])
+        return " ".join(words)
+
     def _build_mode(self, on):
         """Our player enters or leaves build mode; the other is told, as two
         players building one lot at once should edit different parts of it:
         the same wall edited by both at the same instant may end up
         differently in the two games."""
-        if on == self._building or self.role is None:
+        if on == self._building:
             return
         self._building = on
-        if self.remotes:
+        if self.remotes and self.role is not None:
             self._send(frames.control("building", on=on))
         if on and self.remote_building and self.same_zone and self.same_save:
             self._tell(BOTH_BUILDING)
@@ -1526,49 +1582,81 @@ class Session:
         else:
             self._tell("the other player is in build mode")
 
-    def _open_cas(self, sim_ids):
-        """Guest: Create-a-Sim is to open for one of our sims. Joined, we let
-        it and note how the sim looks, to send its new look to the host;
-        while our client shows a host's world we are loading, it stays shut.
-        Returns whether it may open."""
+    def _open_cas(self, line):
+        """Guest: our game client is told to open Create-a-Sim with `line`
+        (`sims.exit2cas <sim> ...`). Joined, we let it and note how the sim
+        looks, to send what changes to the host; while our client shows a
+        host's world we are loading, it stays shut. Returns whether it may
+        open."""
         if self._muted:
+            self._cas = None
             self._tell(CAS_REFUSED)
             return False
-        if self.live and self._cas is None:
-            sim_id = sim_ids[0] if sim_ids else self._game.active_sim_id()
+        if self.live or self._cas is not None:
+            numbers = _numbers(line)
+            sim_id = numbers[0] if numbers else self._game.active_sim_id()
             try:
                 before = self._game.appearance(sim_id)
             except Exception as error:
                 self._log("could not note how sim {} looks: {}".format(sim_id, error))
                 before = b""
-            self._cas = (sim_id, before, self._clock())
-            self._log("Create-a-Sim opens for our sim {}; its new look goes to the host".format(sim_id))
+            self._cas = (sim_id, before, self._clock(), self._save)
+            self._log("Create-a-Sim opens for our sim {}; what changes goes to the host".format(sim_id))
         return True
 
-    def _closed_cas(self):
-        """Guest: back from Create-a-Sim. The host has the sim as it was;
-        it takes the new look before it saves its state for us."""
-        sim_id, before, _ = self._cas
+    def _closed_cas(self, by_hand):
+        """Guest: back from Create-a-Sim. The host has the sim as it was; it
+        takes what changed before it saves its state for us. Not after a
+        save was loaded from the menu meanwhile: that is another look."""
+        sim_id, before, _, save = self._cas
         self._cas = None
+        if by_hand or self._save != save:
+            return
         try:
             after = self._game.appearance(sim_id)
+            look, names = self._game.look_changes(before, after)
         except Exception as error:
             self._log("could not read how sim {} looks now: {}".format(sim_id, error))
             return
-        if after and after != before and self.remotes:
-            self._send(frames.control("appearance", sim_id=str(sim_id), look=base64.b64encode(after).decode("ascii")))
-            self._log("sent the new look of sim {} to the host".format(sim_id))
+        if names:
+            self._look = (sim_id, look, names)
+            self._look_sent = False
+            self._send_look()
+
+    def _send_look(self):
+        """Guest: the new look is on its way to the host until it says it
+        has it; sent again on every new link, always before we ask for its
+        state."""
+        if self._look is None or self._look_sent or not self.remotes or not self.same_save:
+            return
+        sim_id, look, names = self._look
+        self._send(frames.control("appearance", sim_id=str(sim_id), look=base64.b64encode(look).decode("ascii"),
+                                  fields=list(names)))
+        self._look_sent = True
+        self._log("sent the new look of sim {} to the host".format(sim_id))
 
     def _appearance(self, message):
         """Host: the guest edited one of its sims in Create-a-Sim."""
         sim_id = frames.number(message.get("sim_id"))
-        if self.role != HOST or not sim_id or not (sim_id == self.remote_sim_id or sim_id in self._welcomed):
+        if self.role != HOST or not sim_id:
             return
-        try:
-            look = base64.b64decode(str(message.get("look") or ""))
-            self._game.apply_appearance(sim_id, look)
-        except Exception as error:
-            self._log("could not give sim {} its new look: {}".format(sim_id, error))
+        ok = False
+        if sim_id == self.remote_sim_id or sim_id in self._welcomed or sim_id in self._away:
+            try:
+                look = base64.b64decode(str(message.get("look") or ""))
+                names = [str(name) for name in message.get("fields") or []]
+                self._game.apply_appearance(sim_id, look, names)
+                ok = True
+            except Exception as error:
+                self._log("could not give sim {} its new look: {}".format(sim_id, error))
+        self._send(frames.control("appearance_done", sim_id=str(sim_id), ok=ok))
+
+    def _appearance_done(self, message):
+        if self.role != GUEST or self._look is None or frames.number(message.get("sim_id")) != self._look[0]:
+            return
+        self._look = None
+        if not message.get("ok"):
+            self._tell("the host could not take the new look of your sim")
 
     def _relay(self, msg_id, data):
         self.relayed += 1
@@ -1582,8 +1670,10 @@ class Session:
         if self.role == HOST and self._hold_until and name in CLOCK_NAMES:
             self._log("{} refused: the other player is loading".format(name))
             return False
-        if self.role == GUEST and name.startswith(CAS_PREFIXES) and (self.live or self._muted):
-            return self._open_cas(_numbers(" ".join(args)))
+        if self.role == GUEST and name.startswith(CAS_PREFIXES) and self._muted:
+            # It would open Create-a-Sim over a host's world we are loading.
+            self._tell(CAS_REFUSED)
+            return False
         if self._cas is not None:
             # On its way to Create-a-Sim: our own simulation answers.
             return True

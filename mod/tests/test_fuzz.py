@@ -159,6 +159,14 @@ class Pair:
         else:
             self.reload(self.guest, lot)
 
+    def guest_opens_cas(self):
+        """The guest's player opens Create-a-Sim for its sim; most of the
+        time it opens and the zone loads again when it closes."""
+        guest = self.guest
+        if guest.session.client_cheat("sims.exit2cas 222 1 222") and self.rng.random() < 0.7:
+            guest.game.looks[222] = bytes([self.rng.randrange(256)])
+            self.reload(guest)
+
     def restart_host(self):
         self.host = self.new_host(self.host.now)
         if self.linked:
@@ -189,7 +197,7 @@ class Pair:
 
     def step(self):
         rng = self.rng
-        choice = rng.randrange(18)
+        choice = rng.randrange(19)
         if choice == 0:
             self.tick(rng.choice([0.5, 5, 20, 60, 200]))
         elif choice == 1:
@@ -221,6 +229,8 @@ class Pair:
             self.host_refuses()
         elif choice == 16:
             self.guest_orders_travel()
+        elif choice == 17:
+            self.guest_opens_cas()
         else:
             self.tick(1)
 

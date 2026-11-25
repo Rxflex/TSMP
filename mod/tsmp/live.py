@@ -263,8 +263,8 @@ class Game:
         resync.install()
         return household.take_in(payload, save_id)
 
-    def welcome(self, sim_id, before=()):
-        return household.welcome(sim_id, _client(), before)
+    def welcome(self, sim_id, before=(), travellers=()):
+        return household.welcome(sim_id, _client(), before, travellers)
 
     def send_off(self, sim_ids):
         household.send_off(sim_ids, _client())
@@ -279,8 +279,14 @@ class Game:
     def appearance(self, sim_id):
         return appearance.take(sim_id)
 
-    def apply_appearance(self, sim_id, look):
-        appearance.apply(sim_id, look)
+    def look_changes(self, before, after):
+        return appearance.changes(before, after)
+
+    def apply_appearance(self, sim_id, look, names=()):
+        appearance.apply(sim_id, look, names)
+
+    def leaving_zone(self):
+        return resync.leaving_zone()
 
     def client_cheat(self, line):
         import sims4.commands

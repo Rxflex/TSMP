@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from tsmp import appearance  # noqa: E402
 
 
-class CopyTest(unittest.TestCase):
+class Messages(unittest.TestCase):
     def setUp(self):
         try:
             from google.protobuf import descriptor_pb2
@@ -15,6 +15,8 @@ class CopyTest(unittest.TestCase):
             self.skipTest("protobuf is not installed")
         self.message = descriptor_pb2.FileDescriptorProto
 
+
+class CopyTest(Messages):
     def test_only_the_named_fields_are_copied(self):
         source = self.message(name="a.proto", package="pkg", syntax="proto3")
         source.dependency.extend(["x", "y"])
@@ -34,6 +36,17 @@ class CopyTest(unittest.TestCase):
         target = self.message()
         appearance.copy(self.message(), target, ("options",))
         self.assertFalse(target.HasField("options"))
+
+
+class ChangedTest(Messages):
+    def test_only_fields_that_differ_are_named(self):
+        before = self.message(name="a.proto", package="old")
+        before.dependency.append("x")
+        after = self.message(name="a.proto", package="new")
+        after.dependency.append("x")
+        after.options.java_package = "j"
+        self.assertEqual(appearance.changed(before, after, ("name", "package", "dependency", "options", "nothing")),
+                         ["package", "options"])
 
 
 if __name__ == "__main__":

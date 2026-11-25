@@ -138,6 +138,8 @@ _provided_save = 0
 # save the same way and are not travels.
 _travelled = False
 _saving_ours = False
+# Our game saves to leave its zone, which can take a while.
+_leaving = False
 
 
 def current_save():
@@ -193,6 +195,12 @@ def provided_zones():
     return frozenset(_provided)
 
 
+def leaving_zone():
+    """Whether our game has begun saving to leave its zone, since it last
+    entered one."""
+    return _leaving
+
+
 def _forget_travel():
     global _travelled
     travelled, _travelled = _travelled, False
@@ -203,7 +211,8 @@ def loaded_by_hand():
     """Guest, once a zone has loaded: whether it was loaded from the menu
     rather than reached by a travel. Such a load replaces the save in memory
     with one from disk, so what came from the host's save is forgotten."""
-    global _adopted
+    global _adopted, _leaving
+    _leaving = False
     if _forget_travel():
         return False
     _names.forget()
@@ -310,9 +319,10 @@ def install():
 
     @functools.wraps(original_save)
     def save_to_scratch_slot_gen(self, timeline):
-        global _travelled
+        global _travelled, _leaving
         if not _saving_ours:
             _travelled = True
+            _leaving = True
         if pending():
             # Our own state is the one being replaced: saving it would only
             # overwrite what the host sent.

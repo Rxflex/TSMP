@@ -54,11 +54,42 @@ def copy(source, target, names=FIELDS):
             setattr(target, name, value)
 
 
+def changed(before, after, names=FIELDS):
+    """The fields of `names` whose values differ between the messages
+    `before` and `after`."""
+    def one(message, name):
+        part = type(message)()
+        copy(message, part, (name,))
+        return part.SerializeToString()
+
+    return [name for name in names if name in after.DESCRIPTOR.fields_by_name and one(before, name) != one(after, name)]
+
+
+def changes(before, after):
+    """(bytes, field names) of what differs between two looks from `take`:
+    only those fields, so that the host keeps whatever else it has of the
+    sim, which may be newer than our copy."""
+    from protocolbuffers import FileSerialization_pb2 as serialization
+
+    old, new = serialization.SimData(), serialization.SimData()
+    old.MergeFromString(before)
+    new.MergeFromString(after)
+    names = changed(old, new)
+    look = serialization.SimData()
+    copy(new, look, names)
+    return look.SerializeToString(), names
+
+
 def take(sim_id):
-    """Bytes of how the sim `sim_id` looks in our save, b"" for none."""
+    """Bytes of how the sim `sim_id` looks now, b"" for none: saved from the
+    sim itself first, the way the game saves it on leaving the zone, as what
+    our save holds may be older."""
     import services
     from protocolbuffers import FileSerialization_pb2 as serialization
 
+    sim_info = services.sim_info_manager().get(sim_id)
+    if sim_info is not None:
+        _try("saving the sim", sim_info.save_sim)
     sim = services.get_persistence_service().get_sim_proto_buff(sim_id)
     if sim is None:
         return b""
@@ -67,10 +98,11 @@ def take(sim_id):
     return look.SerializeToString()
 
 
-def apply(sim_id, data):
-    """Host: put the look `data` (bytes from `take`) on our sim `sim_id`, which
-    may stand on the lot, and have every game client shown it. Each step that
-    the game refuses is logged and the others still run."""
+def apply(sim_id, data, names=FIELDS):
+    """Host: put the fields `names` of the look `data` (from `changes`) on
+    our sim `sim_id`, which may stand on the lot, and have every game client
+    shown it. Each step that the game refuses is logged and the others
+    still run."""
     import services
     from protocolbuffers import FileSerialization_pb2 as serialization
 
@@ -80,9 +112,10 @@ def apply(sim_id, data):
         return
     look = serialization.SimData()
     look.MergeFromString(data)
-    failed = [name for name, step in _steps(sim_info, look) if not _try(name, step)]
-    log.info("appearance: sim {:#x} looks as edited by the other player{}".format(
-        sim_id, " (not done: {})".format(", ".join(failed)) if failed else ""))
+    names = set(names)
+    failed = [name for name, step in _steps(sim_info, look, names) if not _try(name, step)]
+    log.info("appearance: sim {:#x} looks as edited by the other player ({}){}".format(
+        sim_id, ", ".join(sorted(names)), " (not done: {})".format(", ".join(failed)) if failed else ""))
 
 
 def _try(name, step):
@@ -94,32 +127,38 @@ def _try(name, step):
         return False
 
 
-def _steps(sim_info, look):
-    """(name, step) in the order the game itself changes a sim's look."""
-    base = sim_info._base
+# Fields put on the sim's base as they are, and those that are messages
+# there kept as bytes.
+_PLAIN = ("skin_tone", "skin_tone_val_shift", "custom_texture", "voice_pitch", "voice_actor", "voice_effect",
+          "physique", "flags")
+_SERIALIZED = ("genetic_data", "pelt_layers", "pronouns")
 
-    def names():
+
+def _steps(sim_info, look, names):
+    """(name, step) for what `names` holds, in the order the game itself
+    changes a sim's look."""
+    base = sim_info._base
+    steps = []
+
+    def names_step():
         # Assigned through the sim's fields, so that clients hear of them.
         for name in ("first_name", "last_name"):
-            if getattr(look, name):
+            if name in names:
                 setattr(sim_info, name, getattr(look, name))
         for name in ("first_name_key", "last_name_key", "full_name_key"):
-            if getattr(look, name, 0):
+            if name in names:
                 setattr(base, name, getattr(look, name))
 
     def body():
-        for name in ("skin_tone", "skin_tone_val_shift", "custom_texture", "voice_pitch", "voice_actor",
-                     "voice_effect", "physique", "flags"):
-            if hasattr(look, name):
+        for name in _PLAIN:
+            if name in names:
                 setattr(base, name, getattr(look, name))
-        base.facial_attributes = look.facial_attr
-        base.genetic_data = look.genetic_data.SerializeToString()
-        base.pelt_layers = look.pelt_layers.SerializeToString()
-        if hasattr(look, "pronouns"):
-            base.pronouns = look.pronouns.SerializeToString()
-
-    def tattoos():
-        if hasattr(look, "parts_custom_tattoos") and hasattr(base, "parts_custom_tattoos"):
+        for name in _SERIALIZED:
+            if name in names:
+                setattr(base, name, getattr(look, name).SerializeToString())
+        if "facial_attr" in names:
+            base.facial_attributes = look.facial_attr
+        if "parts_custom_tattoos" in names and hasattr(base, "parts_custom_tattoos"):
             base.parts_custom_tattoos = dict((tattoo.body_type, tattoo.texture_id)
                                              for tattoo in look.parts_custom_tattoos)
 
@@ -150,5 +189,14 @@ def _steps(sim_info, look):
         if hasattr(sim_info, "force_resend_suntan_data"):
             sim_info.force_resend_suntan_data()
 
-    return (("names", names), ("body", body), ("tattoos", tattoos), ("outfits", outfits),
-            ("current outfit", current_outfit), ("shown", shown))
+    if names & {"first_name", "last_name", "first_name_key", "last_name_key", "full_name_key"}:
+        steps.append(("names", names_step))
+    if names & set(_PLAIN + _SERIALIZED + ("facial_attr", "parts_custom_tattoos")):
+        steps.append(("body", body))
+    if "outfits" in names:
+        steps.append(("outfits", outfits))
+    if names & {"outfits", "current_outfit_type", "current_outfit_index"}:
+        steps.append(("current outfit", current_outfit))
+    if names:
+        steps.append(("shown", shown))
+    return steps

@@ -75,6 +75,7 @@ class FakeGame:
         self.merge_error = None
         self.merge_error_stays = True
         self.welcomed = []
+        self.welcome_travellers = []
         self.refuse_sims = ()
         self.sent_off = []
         self.joined_sims = []
@@ -82,6 +83,7 @@ class FakeGame:
         self.looks = {}
         self.applied = []
         self.cheats = []
+        self.leaving = False
         self.reloads = 0
         self.pauses = 0
         self.households = {}
@@ -167,7 +169,8 @@ class FakeGame:
         self.merged.append((payload, save_id))
         return "took in"
 
-    def welcome(self, sim_id, before=()):
+    def welcome(self, sim_id, before=(), travellers=()):
+        self.welcome_travellers.append(list(travellers))
         if sim_id in self.refuse_sims:
             return []
         self.welcomed.append(sim_id)
@@ -186,8 +189,14 @@ class FakeGame:
     def appearance(self, sim_id):
         return self.looks.get(sim_id, b"")
 
-    def apply_appearance(self, sim_id, look):
+    def look_changes(self, before, after):
+        return (after, ["outfits"]) if after != before else (b"", [])
+
+    def apply_appearance(self, sim_id, look, names=()):
         self.applied.append((sim_id, look))
+
+    def leaving_zone(self):
+        return self.leaving
 
     def client_cheat(self, line):
         self.cheats.append(line)
@@ -1058,6 +1067,68 @@ class HostTest(unittest.TestCase):
         reloads_from_host(host, guest)
         self.assertTrue(guest.session.live)
 
+    def test_a_create_a_sim_command_the_game_refuses_changes_nothing(self):
+        host, guest = joined()
+        self.assertTrue(guest.session.command("sims.modify_in_cas", ["222"]))
+        # No line to open it came: still muted, still forwarding.
+        self.assertIsNone(guest.session.outbound(OTHER_MSG, b"own"))
+        self.assertFalse(guest.session.command("interactions.select", ["1"]))
+
+    def test_create_a_sim_that_did_not_open_loads_the_hosts_state_again(self):
+        host, guest = joined()
+        guest.session.client_cheat("sims.exit2cas 222 1 222")
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"own"), b"own")
+        guest.tick(session.CAS_SECONDS + 1)
+        self.assertTrue(guest.session.stale)
+        self.assertIsNone(guest.session.outbound(OTHER_MSG, b"own"))
+
+    def test_create_a_sim_waits_for_the_save_that_leaves_the_zone(self):
+        host, guest = joined()
+        guest.session.client_cheat("sims.exit2cas 222 1 222")
+        guest.game.leaving = True
+        guest.tick(session.CAS_SECONDS + 1)
+        self.assertFalse(guest.session.stale)
+
+    def test_a_new_look_waits_for_the_link_and_goes_before_the_request(self):
+        host, guest = joined()
+        guest.game.looks[222] = b"before"
+        guest.session.client_cheat("sims.exit2cas 222 1 222")
+        guest.leave()
+        guest.link(0)
+        host.link(0)
+        guest.game.looks[222] = b"after"
+        guest.arrive()
+        guest.take()
+        host.link(1)
+        guest.link(1)
+        sent = []
+        for _ in range(20):
+            to_host = guest.take()
+            sent += [frames.parse_json(p).get("type") for kind, _, p in to_host if kind == frames.CONTROL]
+            host.receive(to_host)
+            guest.receive(host.take())
+        self.assertLess(sent.index("appearance"), sent.index("resync"))
+        self.assertEqual(host.game.applied, [(222, b"after")])
+        self.assertIsNone(guest.session._look)
+
+    def test_a_save_loaded_from_create_a_sims_menu_sends_no_look(self):
+        host, guest = joined()
+        guest.game.looks[222] = b"before"
+        guest.session.client_cheat("sims.exit2cas 222 1 222")
+        guest.leave()
+        guest.game.looks[222] = b"from disk"
+        guest.game.by_hand = True
+        guest.arrive()
+        settle(host, guest)
+        self.assertEqual(host.game.applied, [])
+
+    def test_the_hosts_line_comes_back_to_the_guests_own_sim(self):
+        host, guest = joined()
+        host.game.sim_id = 111
+        host.session.client_cheat("sims.exit2cas 222 1 111 outfitType 1")
+        settle(host, guest)
+        self.assertEqual(guest.game.cheats, ["sims.exit2cas 222 1 222 outfitType 1"])
+
     def test_create_a_sim_closed_without_a_change_sends_nothing(self):
         host, guest = joined()
         guest.game.looks[222] = b"same"
@@ -1153,6 +1224,16 @@ class HostTest(unittest.TestCase):
         settle(host, guest)
         self.assertTrue(guest.session.remote_building)
 
+
+    def test_build_mode_ends_with_the_zone(self):
+        host, guest = joined()
+        guest.session.command("clock.build_buy_pause_unpause", ["1"])
+        settle(host, guest)
+        self.assertTrue(host.session.remote_building)
+        guest.leave()
+        settle(host, guest)
+        self.assertFalse(host.session.remote_building)
+        self.assertFalse(guest.session._building)
 
 class HoldTest(unittest.TestCase):
     def test_the_host_stays_paused_until_the_guest_is_in(self):
@@ -1624,6 +1705,44 @@ class LotsTest(unittest.TestCase):
         settle(host, guest)
         self.assertTrue(guest.session.live)
         self.assertTrue(host.session.live)
+
+    def test_a_held_travel_goes_when_the_launcher_goes(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        order = travel_to(7, 222)
+        self.assertIsNone(guest.session.outbound(TRAVEL, order))
+        guest.session.bridge_down("closed")
+        self.assertEqual(guest.game.delivered[-1], (TRAVEL, order))
+        self.assertIsNone(guest.session._travel)
+
+    def test_a_held_travel_waits_little_for_a_host_that_left_its_lot(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        guest.session._alone = False
+        order = travel_to(7, 222)
+        guest.session.outbound(TRAVEL, order)
+        settle(host, guest)
+        host.leave()
+        settle(host, guest)
+        guest.tick(session.TRAVEL_WAIT_SECONDS + 1)
+        guest.tick(1)
+        self.assertEqual(guest.game.delivered[-1], (TRAVEL, order))
+
+    def test_the_host_has_the_sims_that_travel_with_the_guest(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        guest.session._alone = False
+        guest.session.outbound(TRAVEL, travel_to(7, 222, 333))
+        settle(host, guest)
+        answers(host, guest)
+        guest.leave()
+        guest.arrive(7)
+        settle(host, guest)
+        self.assertTrue(guest.session.live)
+        self.assertEqual(host.game.welcome_travellers[-1], [222, 333])
 
     def test_a_travel_elsewhere_goes_as_it_is(self):
         host, guest = joined()

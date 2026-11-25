@@ -334,6 +334,9 @@ def _take(persistence, part, given, home, objects, known):
 
     household_id = given.household_id
     account = persistence.get_account_proto_buff().nucleus_id
+    # The household manager does not read again sims it has on our lot, so
+    # what the guest has of them and of their relationships is not taken.
+    on_lot = _on_our_lot(part.sims)
     sims = _copy_sims(persistence, part.sims)
     ours = persistence.get_household_proto_buff(household_id)
     if ours is None:
@@ -355,7 +358,7 @@ def _take(persistence, part, given, home, objects, known):
             log.exception("household: could not set the funds")
     if manager.load_household(household_id) is None:
         raise Refusal("the game did not load the household", final=False)
-    _take_relationships(part, sims)
+    _take_relationships(part, [sim for sim in sims if sim.sim_id not in on_lot])
     outcome = UPDATED if known else TOOK_IN
     log.info("household: {} {:#x} ({} sims, home {:#x})".format(
         outcome, household_id, len(part.sims), ours.home_zone))
@@ -373,16 +376,8 @@ def _update_played(persistence, part, household_id):
     if household is None or manager.get(household_id) is None:
         log.info("household: {:#x} is played here but not loaded; ours is kept".format(household_id))
         return KEPT
-    infos = services.sim_info_manager()
-    current = services.current_zone_id()
-
-    def here(sim_id):
-        # The household manager reads again only the sims it does not have
-        # on this lot; one it has would be saved over our copy.
-        info = infos.get(sim_id)
-        return info is not None and (info.is_instanced() or info.zone_id == current)
-
-    gift = _sims_to_update(part.sims, set(household.sims.ids), here)
+    on_lot = _on_our_lot(part.sims)
+    gift = _sims_to_update(part.sims, set(household.sims.ids), lambda sim_id: sim_id in on_lot)
     if not gift:
         log.info("household: the other player's sims of {:#x} are all on this lot; ours are kept".format(
             household_id))
@@ -395,6 +390,22 @@ def _update_played(persistence, part, household_id):
     log.info("household: {:#x} is played here; {} of its {} sims updated".format(
         household_id, len(sims), len(part.sims)))
     return PARTIAL
+
+
+def _on_our_lot(sims):
+    """Ids of the SimData `sims` whose sims stand on our lot here. The
+    household manager reads again only the sims it does not have on this
+    lot; one it has would be saved over our copy."""
+    import services
+
+    infos = services.sim_info_manager()
+    current = services.current_zone_id()
+    on_lot = set()
+    for sim in sims:
+        info = infos.get(sim.sim_id)
+        if info is not None and (info.is_instanced() or info.zone_id == current):
+            on_lot.add(sim.sim_id)
+    return on_lot
 
 
 def _sims_to_update(sims, members, here):
@@ -655,13 +666,14 @@ def _set_owner(persistence, zone, household, account):
         owner.household_name = household.name
 
 
-def welcome(sim_id, client, theirs=()):
+def welcome(sim_id, client, theirs=(), travellers=()):
     """Host: the other player controls `sim_id`. Have that sim, and the sims
     of its household that came along to our lot, on the lot and in our game
     client's list of controllable sims, so that they are simulated as played
     sims and not sent home as visitors. `theirs` are the sims welcomed for
-    that player before. Returns the ids of the sims now controllable for
-    them, [] when refused."""
+    that player before, `travellers` the sims the other player's game
+    travelled with to our lot. Returns the ids of the sims now controllable
+    for them, [] when refused."""
     import services
 
     infos = services.sim_info_manager()
@@ -679,7 +691,10 @@ def welcome(sim_id, client, theirs=()):
         return []
     group = [sim_info]
     if sim_info.household_id != own:
-        group += _travellers(sim_id, _members(sim_info), services.current_zone_id())
+        came = set(travellers)
+        members = _members(sim_info)
+        group += _travellers(sim_id, members, services.current_zone_id())
+        group += [info for info in members if info.id in came and info.id != sim_id and info not in group]
     return [info.id for info in group if _make_controllable(client, info, own)]
 
 
