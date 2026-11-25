@@ -7,7 +7,9 @@ name: release
 # there is not released.
 #
 # Started by hand (Actions, release, Run workflow), it does everything but
-# publish: the files and the page it would publish are kept with the run.
+# publish, whichever branch or tag it is started on: the files and the page it
+# would publish are kept with the run. A failed release is run again with
+# "Re-run jobs" on the tag's own run.
 on:
   push:
     tags: ["v*"]
@@ -17,7 +19,8 @@ permissions:
   contents: write
 
 jobs:
-  # Session servers usually run on Linux.
+  # Session servers usually run on Linux. The server is linked statically
+  # (musl), so it runs on any x86_64 Linux, old or new.
   server:
     runs-on: ubuntu-latest
     outputs:
@@ -49,9 +52,14 @@ jobs:
 
       - name: Test and build the session server
         run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
           cargo test -p tsmp-net -p tsmp-server
-          cargo build --release -p tsmp-server
-          cp target/release/tsmp-server tsmp-server-linux-x86_64
+          cargo build --release --target x86_64-unknown-linux-musl -p tsmp-server
+          cp target/x86_64-unknown-linux-musl/release/tsmp-server tsmp-server-linux-x86_64
+          file tsmp-server-linux-x86_64 | grep -q 'static'
+          ./tsmp-server-linux-x86_64 --version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -61,6 +69,11 @@ jobs:
   release:
     needs: server
     runs-on: windows-latest
+    # Bash stops at the first command that fails; PowerShell would only look
+    # at the last one of each step.
+    defaults:
+      run:
+        shell: bash
     env:
       VERSION: ${{ needs.server.outputs.version }}
     steps:
@@ -90,14 +103,13 @@ jobs:
           path: dist
 
       - name: Write the release page
-        shell: bash
         run: |
           cp target/release/tsmp.exe dist/
           python .github/release/notes.py "$VERSION" dist notes.md title.txt
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep what a run by hand would publish
-        if: github.ref_type != 'tag'
+        if: github.event_name != 'push'
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ env.VERSION }}
@@ -110,8 +122,7 @@ jobs:
             title.txt
 
       - name: Publish
-        if: github.ref_type == 'tag'
-        shell: bash
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

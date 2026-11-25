@@ -22,7 +22,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 FILES = (
     ("tsmp.exe", "The launcher for Windows, with the mod inside. This is the one to download."),
     ("tsmp.ts4script", "The mod alone, for putting into the Mods folder by hand."),
-    ("tsmp-server-linux-x86_64", "The session server for players on different networks, for Linux."),
+    ("tsmp-server-linux-x86_64", "The session server for players on different networks, for any x86_64 Linux."),
     ("SHA256SUMS.txt", "The checksums of the files above."),
 )
 
@@ -84,9 +84,12 @@ class History:
     def _previous(version):
         """The newest version tag before `version`, None for the first."""
         def key(tag):
-            return tuple(int(part) for part in re.findall(r"\d+", tag))
+            return tuple(int(part) for part in tag[1:].split("."))
 
-        tags = [tag for tag in git("tag", "--list", "v*").split() if tag != version and key(tag) < key(version)]
+        # Only releases count: a tag such as v0.2.0-rc.1 is not one.
+        final = re.compile(r"^v\d+(\.\d+)*$")
+        tags = [tag for tag in git("tag", "--list", "v*").split()
+                if final.match(tag) and tag != version and (not final.match(version) or key(tag) < key(version))]
         return max(tags, key=key) if tags else None
 
     @staticmethod
