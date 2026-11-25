@@ -24,11 +24,11 @@ fatal-hint = Installez le jeu, lancez-le une fois, puis rouvrez TSMP.
 ## Home
 
 home-title = Jouer aux Sims 4 ensemble
-home-lead = Les deux joueurs ouvrent TSMP sur le même réseau. L’un héberge, l’autre rejoint.
+home-lead = Les deux joueurs ouvrent TSMP, sur le même réseau ou n’importe où avec une invitation. L’un héberge, l’autre rejoint.
 home-host = Héberger une session
 home-host-detail = Partagez vos mods et votre sauvegarde avec l’autre joueur.
 home-join = Rejoindre une session
-home-join-detail = Trouvez l’hôte sur ce réseau et copiez ses mods.
+home-join-detail = Trouvez l’hôte sur ce réseau ou utilisez son invitation, et copiez ses mods.
 home-computer = Cet ordinateur
 fact-game = Jeu
 fact-mods = Mods
@@ -183,7 +183,7 @@ copy = Copier
 copied = Copié
 journal = Journal
 journal-empty = Rien ne s'est encore passé.
-join-failed-hint = Vérifiez que l'hôte n'a pas fermé la session et que les deux ordinateurs sont sur le même réseau.
+join-failed-hint = Vérifiez que l'hôte n'a pas fermé la session et que les deux ordinateurs sont sur le même réseau ou que l'invitation est toujours valable.
 guest-title = Vous êtes dans la session
 player-you = Vous
 player-host = Hôte

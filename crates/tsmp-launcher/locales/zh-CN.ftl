@@ -24,11 +24,11 @@ fatal-hint = 请安装游戏并启动一次，然后重新打开 TSMP。
 ## Home
 
 home-title = 一起玩《模拟人生 4》
-home-lead = 两位玩家在同一网络中打开 TSMP。一人创建会话，另一人加入。
+home-lead = 两位玩家打开 TSMP：在同一网络中，或在任何地方凭邀请。一人创建会话，另一人加入。
 home-host = 创建会话
 home-host-detail = 把你的模组和存档分享给另一位玩家。
 home-join = 加入会话
-home-join-detail = 在此网络中找到主机并复制对方的模组。
+home-join-detail = 在此网络中找到主机，或使用对方的邀请，并复制对方的模组。
 home-computer = 这台电脑
 fact-game = 游戏
 fact-mods = 模组
@@ -178,7 +178,7 @@ copy = 复制
 copied = 已复制
 journal = 日志
 journal-empty = 还没有任何记录。
-join-failed-hint = 请检查主机是否已关闭会话，以及两台电脑是否在同一网络中。
+join-failed-hint = 请检查主机是否已关闭会话，以及两台电脑是否在同一网络中或邀请是否仍然有效。
 guest-title = 你已在会话中
 player-you = 你
 player-host = 主机

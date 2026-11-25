@@ -15,10 +15,23 @@
 
 # TSMP
 
-Open-source multiplayer for The Sims 4. Two people play the same household on
-the same lot, on one local network or over the internet, and the launcher does
-the setup: it finds the other computer, copies the mods and the save, and
-starts both games with the packs both players own.
+Open-source multiplayer for The Sims 4. Two people play one world together,
+on one local network or over the internet, and the launcher does the setup:
+it finds the other computer, copies the mods and the save, and starts both
+games with the packs both players own.
+
+<p align="center">
+  <a href="#playing">Playing</a> ·
+  <a href="#playing-over-the-internet">Over the internet</a> ·
+  <a href="#each-with-their-own-family">Own families</a> ·
+  <a href="#running-a-session-server">Session server</a> ·
+  <a href="#building">Building</a> ·
+  <a href="docs/internals.md">How it works inside</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/screens/en-home.png" alt="The launcher's home screen: host a session or join one" width="88%">
+</p>
 
 ## What works
 
@@ -26,37 +39,38 @@ starts both games with the packs both players own.
   <img src="docs/assets/together.jpg" alt="Two people building in the same house at the same time" width="100%">
 </p>
 
-Tried with two computers and two copies of the game:
+<table>
+  <tr>
+    <td width="50%" valign="top"><b>🏠 Live mode</b><br>Both players see the same lot, sims and clock. Each controls their own sims; the host's simulation decides what happens.</td>
+    <td width="50%" valign="top"><b>🧱 Build mode, both at once</b><br>Walls, floors and wall coverings drawn by either player appear for the other while they keep building.</td>
+  </tr>
+  <tr>
+    <td valign="top"><b>🌍 Over the internet</b><br>Players on different networks meet through a small session server with an invite such as <code>K7QM-2XDA@play.example.org</code>. A dropped connection picks up again by itself.</td>
+    <td valign="top"><b>👨‍👩‍👧 Each with their own family</b><br>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there.</td>
+  </tr>
+  <tr>
+    <td valign="top"><b>🎨 Create-a-Sim</b><br>Either player edits their own sims; the host's game takes the guest's new look.</td>
+    <td valign="top"><b>🧭 Different lots</b><br>Players can each be on a lot of their own and meet again; a guest travelling to the host sees one loading screen.</td>
+  </tr>
+  <tr>
+    <td valign="top"><b>📦 Different packs</b><br>Players with different DLC play with the packs they have in common, through the game's own <code>-disablepacks:</code> option. TSMP does not unlock content.</td>
+    <td valign="top"><b>⚙️ One-button setup</b><br>The guest's Mods folder and the shared save are made the same as the host's. Nothing is deleted: replaced files go to a backup folder.</td>
+  </tr>
+</table>
 
-- **Live mode.** Both players see the same lot, sims and clock. Each controls
-  sims; the host's simulation decides what happens.
-- **Build mode, both at once.** Walls, floors and wall coverings drawn by
-  either player appear for the other while they keep building.
-- **Different packs.** Players with different DLC play with the packs they
-  have in common, through the game's own `-disablepacks:` option. TSMP does
-  not unlock content.
-- **One-button setup.** The guest's Mods folder and the shared save are made
-  the same as the host's. Nothing is deleted: replaced files go to a backup
-  folder.
-- **One log for both games.** Each mod sends its log lines to the other side,
-  and the launcher shows the latest ones under the session status.
+**Tried with two computers and two copies of the game:** live mode, building
+together, different packs, the one-button setup on a local network, and one
+log for both games (each mod sends its log lines to the other side, and the
+launcher shows the latest ones under the session status).
 
-The guest loads the host's world when it arrives, and again whenever the two
-could have drifted apart: the host's lot was loaded again (after Create-a-Sim
-or travel), the guest's own was, or the connection dropped. Meanwhile the
-host's game stays paused, and both players are told what is going on. A
-dropped connection is noticed within seconds and the session picks up again
-by itself, on a LAN or over the internet. Players can be on different lots,
-each playing their own. A guest can also come with a household made in a save
-of their own: it is copied into the host's save, and the guest keeps playing
-it there; the host picks "Each with their own family" in the launcher for
-that, and then no save is copied, but both launchers back up their saves.
-All of this is new and not yet proven in two games.
-
-A guest arriving on the host's lot sees one loading screen. Either player can
-edit their own sims in Create-a-Sim; the host's game takes the guest's new
-look. Relationships come along with a household brought from another save.
-Each player is told when the other is in build mode.
+**New, so far only run against the game's protocol in tests:** playing over the
+internet, families of their own, Create-a-Sim for the guest, different lots,
+and the session keeping both games in step on its own. The guest loads the
+host's world when it arrives and again whenever the two could have drifted
+apart (a lot loaded again, a dropped connection); meanwhile the host's game
+stays paused, and both players are told what is going on. A fuzz test drives
+a host and a guest through tens of thousands of random runs of reloads,
+travels, dropped links and failures to keep this honest.
 
 Not handled yet: the guest waits while the host is in Create-a-Sim. When both
 build on one lot, an element both edit at the same moment may end up
@@ -66,7 +80,7 @@ have not been checked for double counting.
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="Each game runs the TSMP mod, which talks to its launcher; the launchers talk over the local network" width="100%">
+  <img src="docs/assets/architecture.svg" alt="Each game runs the TSMP mod, which talks to its launcher; the launchers talk over the local network or through a session server" width="100%">
 </p>
 
 The game is already split into a client and a simulation that exchange
@@ -114,6 +128,25 @@ network that is all; from different networks you also need a session server
 6. The guest loads the host's world once more after its lot loads; the host's
    game stays paused until the launcher says **Live. Both games are joined.**
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screens/en-choose.png" alt="The host chooses one family together or each with their own, and the save"></td>
+    <td width="50%"><img src="docs/assets/screens/en-review.png" alt="The guest sees what will change before syncing"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>The host</b> picks how to play and the save.</td>
+    <td valign="top"><b>The guest</b> sees what will change, and nothing is deleted.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screens/en-lobby.png" alt="The host's session screen with both players ready"></td>
+    <td><img src="docs/assets/screens/en-ready.png" alt="The guest's session screen, ready to start the game"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Both are ready.</b> The packs in the session are the ones both own.</td>
+    <td valign="top"><b>Start the game</b> on both computers and load the save.</td>
+  </tr>
+</table>
+
 Keep the launcher open while playing; it carries the session.
 
 > [!WARNING]
@@ -141,6 +174,10 @@ Good to know:
 
 ### Playing over the internet
 
+<p align="center">
+  <img src="docs/assets/internet.jpg" alt="Two houses on distant hills, joined through a lamp on a hill between them" width="100%">
+</p>
+
 Two computers on different networks usually cannot reach each other, so they
 meet on a TSMP session server that both can reach: one that a friend runs, or
 your own (see [Running a session server](#running-a-session-server)).
@@ -160,6 +197,21 @@ The invite stays the same if the host's connection to the server drops for a
 moment; it ends when the host closes it, stops hosting, or has been away for
 two minutes. The launcher remembers the server for next time; the variable
 `TSMP_SERVER` sets it in advance.
+
+### Each with their own family
+
+<p align="center">
+  <img src="docs/assets/families.jpg" alt="Two families walking from their own houses to one lit house" width="100%">
+</p>
+
+Each player can bring a household from a save of their own. The host picks
+**Each with their own family** when they start hosting, and then no save is
+copied; each player loads their own save. When the guest comes to the host's lot, its household, with its sims,
+home lot and relationships, is copied into the host's save, and the guest
+goes on playing it there, in the host's world. Whenever the guest plays on a
+lot of its own, its household is given to the host again every few minutes
+and before it comes back. Both launchers back up their saves before such a
+session, because each game may write the other's family into its own.
 
 ### Running a session server
 
