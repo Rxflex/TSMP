@@ -15,7 +15,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 
-from tsmp import bridge, frames, session  # noqa: E402
+from tsmp import bridge, session  # noqa: E402
 
 from test_session import FakeGame, SET_SIM_ACTIVE, VIEW_UPDATE, PIE_MENU, INTERACTABLE, view_update  # noqa: E402
 
