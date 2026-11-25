@@ -10,7 +10,7 @@ import os
 import time
 
 from tsmp import bridge as bridge_module
-from tsmp import driver, frames, hooks, household, log, native, resync, session as session_module
+from tsmp import appearance, driver, frames, hooks, household, log, native, resync, session as session_module
 
 _bridge = None
 _session = None
@@ -275,6 +275,19 @@ class Game:
         sim_info = services.sim_info_manager().get(sim_id)
         if sim_info is not None:
             household.note_joined([sim_info.household_id])
+
+    def appearance(self, sim_id):
+        return appearance.take(sim_id)
+
+    def apply_appearance(self, sim_id, look):
+        appearance.apply(sim_id, look)
+
+    def client_cheat(self, line):
+        import sims4.commands
+
+        client = _client()
+        if client is not None:
+            sims4.commands.client_cheat(line, client.id)
 
     def notify(self, text):
         from sims4.localization import LocalizationHelperTuning

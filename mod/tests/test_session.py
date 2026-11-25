@@ -79,6 +79,9 @@ class FakeGame:
         self.sent_off = []
         self.joined_sims = []
         self.notices = []
+        self.looks = {}
+        self.applied = []
+        self.cheats = []
         self.reloads = 0
         self.pauses = 0
         self.households = {}
@@ -179,6 +182,15 @@ class FakeGame:
     def notify(self, text):
         self.notices.append(text)
         return text
+
+    def appearance(self, sim_id):
+        return self.looks.get(sim_id, b"")
+
+    def apply_appearance(self, sim_id, look):
+        self.applied.append((sim_id, look))
+
+    def client_cheat(self, line):
+        self.cheats.append(line)
 
     def pause(self):
         self.pauses += 1
@@ -985,14 +997,13 @@ class HostTest(unittest.TestCase):
         self.assertEqual(host.game.sent_off, [[222]])
 
 
-    def test_a_screen_for_the_guests_sim_does_not_take_the_hosts(self):
+    def test_a_screen_for_the_guests_sim_opens_in_the_guests_game(self):
         host, guest = joined()
         host.game.sim_id = 111
         self.assertFalse(host.session.client_cheat("sims.exit2cas 222 1 0"))
         self.assertTrue(host.session.client_cheat("sims.exit2cas 111 1 0"))
         settle(host, guest)
-        self.assertTrue(any("Create-a-Sim" in notice for notice in guest.game.notices))
-
+        self.assertEqual(guest.game.cheats, ["sims.exit2cas 222 1 0"])
 
     def test_only_the_sim_the_guest_plays_now_is_sent_off(self):
         host, guest = joined()
@@ -1030,14 +1041,45 @@ class HostTest(unittest.TestCase):
         self.assertFalse(guest.session.live)
         self.assertTrue(guest.session.stale)
 
-    def test_a_joined_guest_cannot_open_create_a_sim(self):
+    def test_a_guest_edits_its_sim_and_the_host_takes_the_new_look(self):
         host, guest = joined()
-        self.assertFalse(guest.session.command("sims.modify_in_cas", ["222"]))
-        self.assertFalse(guest.session.client_cheat("sims.exit2cas 222 0"))
-        self.assertTrue(any("Create-a-Sim" in notice for notice in guest.game.notices))
-        # Playing by itself it can.
-        guest.session.bridge_down("closed")
+        guest.game.looks[222] = b"before"
         self.assertTrue(guest.session.command("sims.modify_in_cas", ["222"]))
+        self.assertTrue(guest.session.client_cheat("sims.exit2cas 222 1 222"))
+        # Its own simulation runs Create-a-Sim.
+        self.assertEqual(guest.session.outbound(OTHER_MSG, b"own"), b"own")
+        guest.leave()
+        guest.game.looks[222] = b"after"
+        guest.arrive()
+        settle(host, guest)
+        self.assertEqual(host.game.applied, [(222, b"after")])
+        # The host took it before it saved its state for the guest.
+        self.assertEqual(len(host.game.snapshots), 2)
+        reloads_from_host(host, guest)
+        self.assertTrue(guest.session.live)
+
+    def test_create_a_sim_closed_without_a_change_sends_nothing(self):
+        host, guest = joined()
+        guest.game.looks[222] = b"same"
+        guest.session.command("sims.modify_in_cas", ["222"])
+        guest.leave()
+        guest.arrive()
+        settle(host, guest)
+        self.assertEqual(host.game.applied, [])
+
+    def test_create_a_sim_stays_shut_while_the_hosts_game_loads(self):
+        host, guest = joined()
+        host_reloads(host, guest)
+        self.assertFalse(guest.session.command("sims.modify_in_cas", ["222"]))
+        self.assertFalse(guest.session.client_cheat("sims.exit2cas 222 1 222"))
+        self.assertTrue(any("Create-a-Sim" in notice for notice in guest.game.notices))
+
+    def test_create_a_sim_that_never_opened_leaves_the_guest_joined(self):
+        host, guest = joined()
+        guest.session.command("sims.modify_in_cas", ["222"])
+        guest.tick(session.CAS_SECONDS + 1)
+        self.assertIsNone(guest.session.outbound(OTHER_MSG, b"own"))
+        self.assertTrue(guest.session.live)
 
     def test_the_guests_sim_is_kept_off_a_host_lot_that_loads_again(self):
         host, guest = joined()
@@ -1087,6 +1129,30 @@ class HostTest(unittest.TestCase):
         host.link(1)
         host.tick(session.LINK_SECONDS)
         self.assertTrue(host.session.holding)
+
+    def test_each_player_hears_when_the_other_builds(self):
+        host, guest = joined()
+        host.session.command("clock.build_buy_pause_unpause", ["1"])
+        settle(host, guest)
+        self.assertIn("the other player is in build mode", guest.game.notices)
+        guest.session.command("clock.build_buy_pause_unpause", ["1"])
+        settle(host, guest)
+        self.assertTrue(any("both of you" in notice for notice in host.game.notices))
+        self.assertTrue(any("both of you" in notice for notice in guest.game.notices))
+        host.session.command("clock.build_buy_pause_unpause", ["0"])
+        settle(host, guest)
+        self.assertIn("the other player left build mode", guest.game.notices)
+        # A guest that connects again hears it from a host still building.
+        guest.session.command("clock.build_buy_pause_unpause", ["0"])
+        host.session.command("clock.build_buy_pause_unpause", ["1"])
+        settle(host, guest)
+        for player in (host, guest):
+            player.link(0)
+        for player in (host, guest):
+            player.link(1)
+        settle(host, guest)
+        self.assertTrue(guest.session.remote_building)
+
 
 class HoldTest(unittest.TestCase):
     def test_the_host_stays_paused_until_the_guest_is_in(self):

@@ -236,8 +236,11 @@ counts; the samples go to the log. `off` restores the objects' tables.
 First run with the recorder (guest side, one wall and one wallpaper): the
 callbacks work on the game's threads. Each edit is one `RequestBuildBuyOp`
 call (`3a0f613c`; the stream starts with the hash, a u32 and the payload
-size), answered by a broadcast of message 706 that repeats the operation and
-adds its result, and by message 728 to the requesting client. The guest's
+size), answered by a broadcast of message 706 (`EVENT_BB_OP`) that repeats
+the operation and adds its result; message 728 that follows it to the
+requesting client is `EVENT_BB_UNDOREDO_STATE_CHANGE` (whether undo and redo
+are possible), not a reply, and a refused operation is answered with 719
+(`EVENT_BB_OP_FAIL`, an error code and an op id). The guest's
 own simulation handles the guest's edits, which is why they never reached
 the host.
 
@@ -335,8 +338,12 @@ Known limitations:
 - Two players editing the same element at nearly the same time may see the
   edits applied in different orders: each simulation applies its own edit
   first and the other's when it arrives. Making one game order all edits
-  would mean holding a guest's call back from its own simulation, which has
-  not been tried against the game.
+  would mean holding a guest's call back from its own simulation; whether
+  its client then waits for the answer, draws the edit early, or gives up
+  is native and has not been tried. So each game tells the other when its
+  player enters and leaves build mode (`building {on}`, from the
+  `clock.build_buy_pause_unpause` command that brackets it), and both
+  players are told when they build one lot at once.
 - The journal and `applied` live in memory for as long as the game runs. A
   game that is started again has neither: it is sent the other game's whole
   journal of the lot again, including edits its save may already hold, and
@@ -846,12 +853,22 @@ on a guest client built from the host's current state, and join once things
 calm down; `TSMP_FUZZ_RUNS` and `TSMP_FUZZ_STEPS` make it search longer
 (30 000 runs of 150 steps found nothing).
 
-Create-a-Sim and other screens the host's simulation opens with
-`sims4.commands.client_cheat` for a sim the guest plays are kept from the
-host's client (they would take the host's screen) and the guest is told
-they cannot be opened yet. A joined guest is refused Create-a-Sim whatever opens it
-(`sims.modify_in_cas`, `cas.*`, `sims.exit2cas` on its own client): it
-would edit a sim of its muted simulation and lose the edits.
+A guest edits its own sims in Create-a-Sim. CAS opens with the line
+`sims.exit2cas <sim> <household> <active sim>`, which a simulation passes to
+its client with `sims4.commands.client_cheat`. A joined guest lets it open
+on its own client (when the host's simulation opens it for a sim the guest
+plays, the host sends the line to the guest in `cas {line}` instead of
+showing it). Before it opens, the guest notes the part of the sim's
+`SimData` that CAS edits (`tsmp/appearance.py`: names, voice, skin,
+physique, face, genetics, outfits); CAS closes by loading the guest's zone
+again from its own simulation, and when it is back the guest sends what
+changed in `appearance {sim_id, look}` before it asks for the host's state.
+The host puts that look on its sim, standing on the lot or not, through the
+sim's fields and `load_outfits`, `set_current_outfit` and
+`resend_physical_attributes`, so the state the guest then loads has it.
+Age, gender, species, traits and occult forms edited in CAS stay as the
+host has them. While its client shows a host's world it is loading, the
+guest's CAS stays shut.
 
 Both launchers copy every save into `saves.tsmp-backup/<time>` before a
 session with households of their own: the host's save takes in the guest's
@@ -867,9 +884,9 @@ the host's state of that lot, and travels into it with the same sims. Should
 anything fail, the message goes to the client as it was, and the travel
 happens as before.
 
-Known gaps: the guest does not follow the host into CAS, it waits, and it
-cannot open CAS for its own sim; replies to commands that still run locally
-on the guest (hovertips, for one) never arrive. A travel held back loses the
+Known gaps: the guest does not follow the host into the host's own CAS, it
+waits; replies to commands that still run locally on the guest (hovertips,
+for one) never arrive. A travel held back loses the
 travel situation the guest's game made for it (its seed is in the guest's
 save, which the host's replaces).
 

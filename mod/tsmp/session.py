@@ -37,6 +37,7 @@ Pure logic with no game imports: the game is reached through the `game`
 adapter (see live.Game) so this can be tested outside the game.
 """
 
+import base64
 import random
 import time
 
@@ -58,11 +59,18 @@ FORWARD_NAMES = CLOCK_NAMES
 # the host's own game client already reports it. The rest of `clock.*` would
 # pause the host whenever the guest opens a menu.
 BLOCK_PREFIXES = ("animation.", "clock.")
-# Commands that open Create-a-Sim. On a joined guest they would edit a sim of
-# its muted simulation, and the edits would be lost.
+# Commands that open Create-a-Sim, and the line the simulation passes on to
+# its game client to do so (`sims.exit2cas <sim> <household> <active sim>`).
 CAS_PREFIXES = ("sims.modify_in_cas", "sims.modify_outfit_in_cas", "cas.")
 CAS_SCREEN = "sims.exit2cas"
-CAS_REFUSED = "Create-a-Sim cannot be opened for your sim while you are joined to the host's game"
+CAS_REFUSED = "Create-a-Sim cannot be opened while the other player's game is being loaded"
+# The command that brackets build mode: `1` on entering it, `0` on leaving.
+BUILD_COMMAND = "clock.build_buy_pause_unpause"
+# A guest that was let into Create-a-Sim and has not left its zone within
+# this many seconds did not go.
+CAS_SECONDS = 30.0
+BOTH_BUILDING = ("both of you are in build mode: build on different parts of the lot, as one wall edited "
+                 "by both at the same moment may end up differently in the two games")
 
 # Seconds, not ticks: over the internet most of the waiting is for the
 # network, and a game that is loading does not tick at all.
@@ -184,6 +192,9 @@ class Session:
         send_off(sim_ids)              host: the other player left with these
         joined(sim_id)                 host: the other player plays it here
         notify(text)                   tell the local player something
+        appearance(sim_id)             bytes of how that sim looks, b"" for none
+        apply_appearance(sim_id, look) host: give our sim that look
+        client_cheat(line)             guest: pass a line to our game client
     `send(frame)` queues a packed frame for the launcher; `clock()` tells the
     time in seconds.
     """
@@ -204,6 +215,7 @@ class Session:
         self.remote_save = 0
         # The world the other game's client shows.
         self.remote_world = ""
+        self.remote_building = False
         self._remote_version = PROTOCOL
         self._in_zone = False
         self._zone = 0
@@ -220,6 +232,8 @@ class Session:
         self._seen_local = set()
         # What we last told the other game of ourselves.
         self._announced = None
+        # Our player is in build mode, as the other game was last told.
+        self._building = False
         # Texts of our own notifications on their way to our game client.
         self._notices = []
         # Guest: what it is doing about being stale, the request it waits on
@@ -250,6 +264,9 @@ class Session:
         self._whole_world = ""
         # Guest: we are loading our own zone again.
         self._reloading = False
+        # Guest: Create-a-Sim was opened for one of our sims while joined:
+        # (sim id, how it looked, when); its new look goes to the host.
+        self._cas = None
         # Guest: the travel to the host's lot our game ordered, held back
         # until the host's state is here: (message, zone of ours, the host's
         # name for it, its lot, the travellers).
@@ -456,6 +473,7 @@ class Session:
         self.remote_save = 0
         self.remote_world = ""
         self.remote_sim_id = 0
+        self.remote_building = False
         self._remote_version = PROTOCOL
         self._reported_sim_id = 0
 
@@ -1067,6 +1085,9 @@ class Session:
             self._reported_sim_id = 0
             self._zone_changed()
             self._announce()
+        if self._cas is not None and self._in_zone and self._clock() - self._cas[2] > CAS_SECONDS:
+            # Create-a-Sim did not open after all.
+            self._cas = None
         self._transfers.pump()
         if self.role == HOST:
             # A guest gives up on these after as long, and says nothing if
@@ -1106,6 +1127,8 @@ class Session:
         # Whatever our game client showed, it now shows our own simulation.
         self._world = ""
         self._shows_host = False
+        if self._cas is not None and self._in_zone:
+            self._closed_cas()
         if self._phase != IDLE and not self._in_zone:
             self._give_up("left the zone before the host's state arrived")
         elif self._phase == IDLE and self._in_zone:
@@ -1242,6 +1265,8 @@ class Session:
                 self._link_lost_at = 0.0
                 self._transfers.forget()
                 self._announce(want=True)
+                if self._building:
+                    self._send(frames.control("building", on=True))
         elif kind == "gone":
             self._lost("the other game is gone")
         elif kind == "state":
@@ -1280,6 +1305,18 @@ class Session:
         elif kind == "tell":
             if self.role == GUEST:
                 self._tell(str(message.get("text") or "")[:200])
+        elif kind == "cas":
+            line = str(message.get("line") or "")
+            if self.role == GUEST and line.startswith(CAS_SCREEN) and self._open_cas(_numbers(line)[:1]):
+                try:
+                    self._game.client_cheat(line)
+                except Exception as error:
+                    self._cas = None
+                    self._log("could not open Create-a-Sim: {}".format(error))
+        elif kind == "appearance":
+            self._appearance(message)
+        elif kind == "building":
+            self._remote_build_mode(message)
         elif kind == "active_sim":
             self.remote_sim_id = frames.number(message.get("sim_id"))
             if self.role == HOST and self.apart:
@@ -1360,7 +1397,7 @@ class Session:
                 if text in data:
                     self._notices.remove(text)
                     return data
-        if not (self.live or self._muted):
+        if not (self.live or self._muted) or self._cas is not None:
             return data
         if self.role == HOST:
             if msg_id in consts.owned:
@@ -1450,18 +1487,88 @@ class Session:
         does to open Create-a-Sim. Returns False to keep it from ours when it
         names a sim the guest plays: it would take our player's screen, and
         the guest's own client cannot edit a sim of the host's simulation."""
-        if self.role == GUEST and (self.live or self._muted) and line.startswith(CAS_SCREEN):
-            self._tell(CAS_REFUSED)
-            return False
+        if self.role == GUEST and line.startswith(CAS_SCREEN):
+            return self._open_cas(_numbers(line)[:1])
         if self.role != HOST or not self.live:
             return True
-        for word in line.split():
-            sim_id = frames.number(word)
-            if sim_id and self._guests(sim_id):
-                self._log("kept {!r} from our game client: it is for the other player's sim".format(line))
-                self._send(frames.control("tell", text=CAS_REFUSED))
+        for sim_id in _numbers(line):
+            if self._guests(sim_id):
+                # The guest's own client edits it, and we take the new look.
+                self._log("passing {!r} to the other player's game: it is for their sim".format(line))
+                self._send(frames.control("cas", line=line))
                 return False
         return True
+
+    def _build_mode(self, on):
+        """Our player enters or leaves build mode; the other is told, as two
+        players building one lot at once should edit different parts of it:
+        the same wall edited by both at the same instant may end up
+        differently in the two games."""
+        if on == self._building or self.role is None:
+            return
+        self._building = on
+        if self.remotes:
+            self._send(frames.control("building", on=on))
+        if on and self.remote_building and self.same_zone and self.same_save:
+            self._tell(BOTH_BUILDING)
+
+    def _remote_build_mode(self, message):
+        on = bool(message.get("on"))
+        if on == self.remote_building:
+            return
+        self.remote_building = on
+        if not (self.same_zone and self.same_save and self.remote_in_zone):
+            return
+        if not on:
+            self._tell("the other player left build mode")
+        elif self._building:
+            self._tell(BOTH_BUILDING)
+        else:
+            self._tell("the other player is in build mode")
+
+    def _open_cas(self, sim_ids):
+        """Guest: Create-a-Sim is to open for one of our sims. Joined, we let
+        it and note how the sim looks, to send its new look to the host;
+        while our client shows a host's world we are loading, it stays shut.
+        Returns whether it may open."""
+        if self._muted:
+            self._tell(CAS_REFUSED)
+            return False
+        if self.live and self._cas is None:
+            sim_id = sim_ids[0] if sim_ids else self._game.active_sim_id()
+            try:
+                before = self._game.appearance(sim_id)
+            except Exception as error:
+                self._log("could not note how sim {} looks: {}".format(sim_id, error))
+                before = b""
+            self._cas = (sim_id, before, self._clock())
+            self._log("Create-a-Sim opens for our sim {}; its new look goes to the host".format(sim_id))
+        return True
+
+    def _closed_cas(self):
+        """Guest: back from Create-a-Sim. The host has the sim as it was;
+        it takes the new look before it saves its state for us."""
+        sim_id, before, _ = self._cas
+        self._cas = None
+        try:
+            after = self._game.appearance(sim_id)
+        except Exception as error:
+            self._log("could not read how sim {} looks now: {}".format(sim_id, error))
+            return
+        if after and after != before and self.remotes:
+            self._send(frames.control("appearance", sim_id=str(sim_id), look=base64.b64encode(after).decode("ascii")))
+            self._log("sent the new look of sim {} to the host".format(sim_id))
+
+    def _appearance(self, message):
+        """Host: the guest edited one of its sims in Create-a-Sim."""
+        sim_id = frames.number(message.get("sim_id"))
+        if self.role != HOST or not sim_id or not (sim_id == self.remote_sim_id or sim_id in self._welcomed):
+            return
+        try:
+            look = base64.b64decode(str(message.get("look") or ""))
+            self._game.apply_appearance(sim_id, look)
+        except Exception as error:
+            self._log("could not give sim {} its new look: {}".format(sim_id, error))
 
     def _relay(self, msg_id, data):
         self.relayed += 1
@@ -1470,12 +1577,16 @@ class Session:
     def command(self, name, args):
         """The local game client issued a command. Returns False if it must
         not run locally."""
+        if name == BUILD_COMMAND:
+            self._build_mode(bool(args) and str(args[0]) not in ("0", "False", "false"))
         if self.role == HOST and self._hold_until and name in CLOCK_NAMES:
             self._log("{} refused: the other player is loading".format(name))
             return False
-        if self.role == GUEST and (self.live or self._muted) and name.startswith(CAS_PREFIXES):
-            self._tell(CAS_REFUSED)
-            return False
+        if self.role == GUEST and name.startswith(CAS_PREFIXES) and (self.live or self._muted):
+            return self._open_cas(_numbers(" ".join(args)))
+        if self._cas is not None:
+            # On its way to Create-a-Sim: our own simulation answers.
+            return True
         if self._muted:
             return not (_forwarded(name) or name.startswith(BLOCK_PREFIXES))
         if self.role != GUEST or not self.live:
@@ -1491,6 +1602,11 @@ class Session:
             self._seen_local.add(name)
             self._log("local command while live: {}".format(name))
         return True
+
+
+def _numbers(text):
+    """The numbers in a command line, as sim ids would be."""
+    return [number for number in (frames.number(word) for word in text.split()) if number]
 
 
 def _forwarded(name):

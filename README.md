@@ -53,9 +53,15 @@ it there; the host picks "Each with their own family" in the launcher for
 that, and then no save is copied, but both launchers back up their saves.
 All of this is new and not yet proven in two games.
 
-Not handled yet: Create-a-Sim with two players (the guest waits while the
-host is in it, and cannot open it for its own sim). In build mode, furniture
-and household funds have not been checked for double counting.
+A guest arriving on the host's lot sees one loading screen. Either player can
+edit their own sims in Create-a-Sim; the host's game takes the guest's new
+look. Relationships come along with a household brought from another save.
+Each player is told when the other is in build mode.
+
+Not handled yet: the guest waits while the host is in Create-a-Sim. When both
+build on one lot, an element both edit at the same moment may end up
+differently in the two games. In build mode, furniture and household funds
+have not been checked for double counting.
 
 ## How it works
 
