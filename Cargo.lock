@@ -5839,14 +5839,14 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tsmp-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "tsmp-core",
 ]
 
 [[package]]
 name = "tsmp-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "dirs 7.0.0",
@@ -5862,7 +5862,7 @@ dependencies = [
 
 [[package]]
 name = "tsmp-launcher"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -5883,7 +5883,7 @@ dependencies = [
 
 [[package]]
 name = "tsmp-net"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "getrandom 0.3.4",
@@ -5897,7 +5897,7 @@ dependencies = [
 
 [[package]]
 name = "tsmp-server"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "getrandom 0.3.4",
  "tempfile",

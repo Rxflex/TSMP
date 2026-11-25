@@ -2,7 +2,7 @@
 the files to download with their checksums, and every change since the last
 release, grouped by the part of the project it touched.
 
-    python .github/release/notes.py v0.1.0 DIST_DIR NOTES.md TITLE.txt
+    python .github/release/notes.py v0.0.1 DIST_DIR NOTES.md TITLE.txt
 
 DIST_DIR holds the files the release publishes. Fails when the changelog
 has no section for the version, so that no release goes out undescribed.

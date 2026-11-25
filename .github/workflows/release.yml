@@ -3,11 +3,15 @@ name: release
 # Pushing a tag v<version> builds the launcher, with the mod inside it, and
 # the session server, and publishes them as a release. Running launchers find
 # it and update. The release page is written from CHANGELOG.md and
-# CHANGELOG.ru.md by .github/release/notes.py: a tag whose version has no
-# section there is not released.
+# CHANGELOG.ru.md by .github/release/notes.py: a version with no section
+# there is not released.
+#
+# Started by hand (Actions, release, Run workflow), it does everything but
+# publish: the files and the page it would publish are kept with the run.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,13 +20,32 @@ jobs:
   # Session servers usually run on Linux.
   server:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: The release is described in the changelogs
+      # The version is the launcher's; a tag must name it.
+      - name: Version
+        id: version
         run: |
-          grep -q "^## $GITHUB_REF_NAME\b" CHANGELOG.md
-          grep -q "^## $GITHUB_REF_NAME\b" CHANGELOG.ru.md
+          version="v$(grep -m1 '^version' crates/tsmp-launcher/Cargo.toml | cut -d'"' -f2)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME is not the launcher's version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: The release is described in the changelogs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for changelog in CHANGELOG.md CHANGELOG.ru.md; do
+            if ! grep -qF "## $VERSION " "$changelog" && ! grep -qxF "## $VERSION" "$changelog"; then
+              echo "::error file=$changelog::$changelog has no section for $VERSION"
+              exit 1
+            fi
+          done
 
       - name: Test and build the session server
         run: |
@@ -38,17 +61,13 @@ jobs:
   release:
     needs: server
     runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.server.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           # The release page lists every change since the previous tag.
           fetch-depth: 0
-
-      - name: The tag is the launcher's version
-        shell: bash
-        run: |
-          version=$(grep -m1 '^version' crates/tsmp-launcher/Cargo.toml | cut -d'"' -f2)
-          test "v$version" = "$GITHUB_REF_NAME"
 
       # The game loads Python 3.7 bytecode only.
       - uses: actions/setup-python@v5
@@ -74,14 +93,28 @@ jobs:
         shell: bash
         run: |
           cp target/release/tsmp.exe dist/
-          python .github/release/notes.py "$GITHUB_REF_NAME" dist notes.md title.txt
+          python .github/release/notes.py "$VERSION" dist notes.md title.txt
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Keep what a run by hand would publish
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: |
+            dist/tsmp.exe
+            dist/tsmp.ts4script
+            dist/tsmp-server-linux-x86_64
+            dist/SHA256SUMS.txt
+            notes.md
+            title.txt
+
       - name: Publish
+        if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$VERSION" \
             dist/tsmp.exe dist/tsmp.ts4script dist/tsmp-server-linux-x86_64 dist/SHA256SUMS.txt \
             --title "$(cat title.txt)" --notes-file notes.md

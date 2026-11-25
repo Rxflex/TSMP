@@ -1,6 +1,6 @@
 [package]
 name = "tsmp-launcher"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 license = "MIT"
 description = "TSMP launcher: finds a host on the LAN, syncs mods and the save, starts the game"

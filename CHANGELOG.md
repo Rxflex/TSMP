@@ -3,7 +3,7 @@
 Each release is described here before its tag is pushed; the release page is
 made from this file. [Русская версия](CHANGELOG.ru.md).
 
-## v0.1.0 — Play together, anywhere
+## v0.0.1 — Play together, anywhere
 
 The first release: two people play one world of The Sims 4 together, on one
 local network or over the internet, and the launcher does the setup.
