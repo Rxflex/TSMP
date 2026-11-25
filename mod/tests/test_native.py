@@ -204,27 +204,87 @@ class RecorderTest(unittest.TestCase):
         self.assertEqual(self.recorder.errors, 1)
         self.assertEqual(len(self.calls), 1)
 
+    def stream(self, data, limit=None, position=0, size=None):
+        """A stream over `data` as the game's client hands it to the zone."""
+        size = len(data) if size is None else size
+        address = self.memory.buffer(data)
+        return self.memory.table([0, 0, 0, 0, size | position << 32, size if limit is None else limit, address, 0])
+
+    def replayed_stream(self):
+        name, zone, connection, call, third, fourth, stream = self.calls[-1]
+        self.assertEqual((name, zone, call), ("receive", self.zone, native.BUILD_OP))
+        return connection, third, fourth, stream
+
     def test_build_operation_is_queued_and_replayed(self):
         recorder = self.recorder
         recorder.sync = True
         recorder.start(receive=True)
-        self.assertFalse(recorder.replay(native.BUILD_OP, 3, 4, 0, b"early"))
-        data = self.memory.buffer(b"operation")
-        stream = self.memory.table([0, 0, 0, 0, 9 | 2 << 32, 9, data, 0])
+        theirs = native.Op(native.BUILD_OP, 5, 6, 2, True, b"theirs")
+        # No call of our client yet: there is no connection to replay on.
+        self.assertFalse(recorder.replay(theirs))
+        stream = self.stream(b"operation", position=2)
         self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, stream)
         self.call(self.zone, 7, 21, 0x1234, 0, 0, stream)
-        self.assertEqual(recorder.outbox, [(native.BUILD_OP, 3, 4, 2, b"operation")])
+        self.assertEqual(recorder.take(), ([native.Op(native.BUILD_OP, 3, 4, 2, True, b"operation")], []))
+        self.assertEqual(recorder.take(), ([], []))
         del self.calls[:]
         # The other game's call arrives: made on our connection, not recorded.
-        self.assertTrue(recorder.replay(native.BUILD_OP, 5, 6, 2, b"theirs"))
-        name, zone, connection, call, third, fourth, replayed = self.calls[0]
-        self.assertEqual((name, zone, connection, call, third, fourth), ("receive", self.zone, 21, native.BUILD_OP, 5, 6))
+        self.assertTrue(recorder.replay(theirs))
+        connection, third, fourth, replayed = self.replayed_stream()
+        self.assertEqual((connection, third, fourth), (21, 5, 6))
         self.assertEqual(self.memory.u32(replayed + 0x20), 6)
         self.assertEqual(self.memory.u32(replayed + 0x24), 2)
         self.assertEqual(self.memory.u32(replayed + 0x28), 6)
         self.assertEqual(self.memory.read(self.memory.u64(replayed + 0x30), 6), b"theirs")
-        self.assertEqual(len(recorder.outbox), 1)
-        self.assertEqual((recorder.replayed, recorder.dropped), (1, 1))
+        self.assertEqual(recorder.take(), ([], []))
+
+    def test_the_limit_kind_of_the_sender_is_replayed(self):
+        recorder = self.recorder
+        recorder.sync = True
+        recorder.start(receive=True)
+        self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, self.stream(b"operation", limit=0))
+        (op,), _ = recorder.take()
+        self.assertFalse(op.limit_is_size)
+        # Ours had its size as its limit, the sender's did not.
+        self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, self.stream(b"mine"))
+        self.assertTrue(recorder.take()[0][0].limit_is_size)
+        self.assertTrue(recorder.replay(op._replace(data=b"theirs")))
+        self.assertEqual(self.memory.u32(self.replayed_stream()[3] + 0x28), 0)
+
+    def test_a_connection_is_only_used_on_the_zone_object_it_was_seen_on(self):
+        recorder = self.recorder
+        recorder.start(receive=True)
+        op = native.Op(native.BUILD_OP, 5, 6, 0, True, b"theirs")
+        self.call(self.zone, 7, 21, 0x1234, 0, 0, self.stream(b"x"))
+        self.assertTrue(recorder.replay(op))
+        # The zone was loaded again: its new session has a new connection.
+        recorder.forget()
+        self.assertFalse(recorder.replay(op))
+        self.call(self.zone, 7, 22, 0x1234, 0, 0, self.stream(b"x"))
+        self.assertTrue(recorder.replay(op))
+        self.assertEqual(self.replayed_stream()[0], 22)
+        # A new zone object where the old one was has the game's own table.
+        self.memory.write_u64(self.zone, self.zone_table)
+        self.assertFalse(recorder.replay(op))
+        # That attempt hooked it, but its client has not called it yet.
+        self.assertNotEqual(self.memory.u64(self.zone), self.zone_table)
+        self.assertFalse(recorder.replay(op))
+        self.call(self.zone, 7, 23, 0x1234, 0, 0, self.stream(b"x"))
+        self.assertTrue(recorder.replay(op))
+        self.assertEqual(self.replayed_stream()[0], 23)
+
+    def test_an_operation_too_large_to_share_is_counted(self):
+        recorder = self.recorder
+        recorder.sync = True
+        recorder.start(receive=True)
+        size = native.MAX_SYNC_BYTES + 1
+        self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, self.stream(bytes(64), size=size))
+        self.assertEqual(recorder.take(), ([], [size]))
+
+    def test_nothing_is_kept_unless_syncing(self):
+        self.recorder.start(receive=True)
+        self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, self.stream(b"operation"))
+        self.assertEqual(self.recorder.take(), ([], []))
 
     def test_stop_restores_tables(self):
         self.recorder.start(receive=True)

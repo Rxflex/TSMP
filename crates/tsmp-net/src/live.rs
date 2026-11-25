@@ -12,7 +12,14 @@
 //!
 //! * `{"type":"link","remotes":N}` to the game when it connects and whenever
 //!   the number of remotes changes;
-//! * `{"type":"gone"}` to the remotes when the game disconnects.
+//! * `{"type":"gone"}` to the remotes when the game disconnects;
+//! * `{"type":"beat"}` between the relays, which never reaches a game. A relay
+//!   sends one to a remote as soon as it joins and whenever it has had nothing
+//!   else to send it for two seconds. A remote that has beaten and then sends
+//!   nothing at all for fifteen seconds is dropped, as is one that takes
+//!   nothing written to it for thirty. The connection may run through a
+//!   session server that acknowledges every byte itself, so without this a
+//!   far end that is gone would only be noticed after minutes, if at all.
 //!
 //! It also reads the `state` control frames passing through to know whether
 //! each game is in a zone, for display only.
@@ -20,7 +27,7 @@
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -42,6 +49,38 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL: Duration = Duration::from_secs(2);
 /// Lines of the mods' logs kept for display.
 const LOG_LINES: usize = 200;
+/// How long a relay may have nothing to send a remote before it sends a beat.
+const BEAT: Duration = Duration::from_secs(2);
+/// How long a remote that beats may send nothing before it counts as gone:
+/// several beats lost in a row, more than a busy network drops.
+const SILENCE: Duration = Duration::from_secs(15);
+/// How long a write to a remote may make no progress before the remote counts
+/// as gone. Its relay reads all the time, whatever its game does, so a stall
+/// this long means the far end is not there to read.
+const STALL: Duration = Duration::from_secs(30);
+
+/// How the relay tells a remote that is there from one that is gone. Remotes
+/// may be joined through a session server that splices the connection and
+/// acknowledges every byte itself, so TCP never learns that the far launcher
+/// vanished; only traffic from the launcher itself shows it is still there.
+/// The game on the loopback interface gets none of this: a game that is
+/// loading does not read for minutes and is not gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Timing {
+    beat: Duration,
+    silence: Duration,
+    stall: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            beat: BEAT,
+            silence: SILENCE,
+            stall: STALL,
+        }
+    }
+}
 
 /// What the relay knows about the session, for display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -77,8 +116,13 @@ fn control(value: serde_json::Value) -> Vec<u8> {
     frame(KIND_CONTROL, 0, value.to_string().as_bytes())
 }
 
+fn beat() -> Vec<u8> {
+    control(serde_json::json!({"type": "beat"}))
+}
+
 /// Reads one whole frame, header included. `Ok(None)` when the stream ended
-/// between frames.
+/// between frames. A read timeout is an error wherever it strikes, never the
+/// end of the stream, and the frame it interrupted is lost.
 pub fn read_frame(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut header = [0u8; HEADER];
     let mut filled = 0;
@@ -108,20 +152,28 @@ struct Peer {
     stream: TcpStream,
     queue: Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
+    /// For a remote, the silence it is held to once it has shown that it
+    /// beats; taken when the read timeout is set.
+    silence: Option<Duration>,
 }
 
 impl Peer {
-    fn new(id: u64, stream: &TcpStream) -> io::Result<Self> {
+    /// `timing` is given for a remote and `None` for the game.
+    fn new(id: u64, stream: &TcpStream, timing: Option<Timing>) -> io::Result<Self> {
         let mut writer = stream.try_clone()?;
+        if let Some(timing) = timing {
+            writer.set_write_timeout(Some(timing.stall))?;
+        }
         let stream = stream.try_clone()?;
         let (queue, frames) = mpsc::channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
+        let beats = timing.map(|timing| timing.beat);
         thread::spawn({
             let queued = queued.clone();
             move || {
-                for frame in frames {
+                while let Some((frame, from_queue)) = next_frame(&frames, beats) {
                     let written = writer.write_all(&frame);
-                    queued.fetch_sub(frame.len(), Ordering::Relaxed);
+                    queued.fetch_sub(from_queue, Ordering::Relaxed);
                     if written.is_err() {
                         let _ = writer.shutdown(Shutdown::Both);
                         break;
@@ -129,12 +181,29 @@ impl Peer {
                 }
             }
         });
-        Ok(Self {
+        let peer = Self {
             id,
             stream,
             queue,
             queued,
-        })
+            silence: timing.map(|timing| timing.silence),
+        };
+        if timing.is_some() {
+            // Straight away, so the far end learns that this launcher beats
+            // even if the game keeps it too busy to need another for long.
+            peer.send(beat());
+        }
+        Ok(peer)
+    }
+
+    /// A remote that beats can be held to it: from now on, silence ends it.
+    /// A launcher from before beats is left to TCP to notice, as it was then.
+    fn heard_beat(&mut self) {
+        if let Some(silence) = self.silence.take() {
+            // Options set on one handle of a stream apply to all of them, the
+            // reader thread's included.
+            let _ = self.stream.set_read_timeout(Some(silence));
+        }
     }
 
     fn send(&self, frame: Vec<u8>) {
@@ -150,6 +219,23 @@ impl Peer {
     fn close(&self) {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
+}
+
+/// Waits for the next frame to write to a peer: a queued one or, when `beats`
+/// is given, a beat once nothing else has come for that long. Also returns how
+/// many bytes of the queue the frame was, which is none for a beat. `None` once
+/// the peer is gone.
+fn next_frame(frames: &Receiver<Vec<u8>>, beats: Option<Duration>) -> Option<(Vec<u8>, usize)> {
+    let frame = match beats {
+        None => frames.recv().ok()?,
+        Some(idle) => match frames.recv_timeout(idle) {
+            Ok(frame) => frame,
+            Err(RecvTimeoutError::Timeout) => return Some((beat(), 0)),
+            Err(RecvTimeoutError::Disconnected) => return None,
+        },
+    };
+    let length = frame.len();
+    Some((frame, length))
 }
 
 #[derive(Default)]
@@ -188,6 +274,7 @@ enum Side {
 struct Inner {
     stop: AtomicBool,
     state: Mutex<State>,
+    timing: Timing,
 }
 
 impl Inner {
@@ -200,7 +287,7 @@ impl Inner {
         }
         state.next_id += 1;
         let id = state.next_id;
-        let peer = Peer::new(id, &stream)?;
+        let peer = Peer::new(id, &stream, (side == Side::Remote).then_some(self.timing))?;
         match side {
             Side::Game => {
                 // A game that reconnects without the old socket having died.
@@ -226,6 +313,8 @@ impl Inner {
         let inner = self.clone();
         thread::spawn(move || {
             let mut reader = io::BufReader::with_capacity(1 << 16, stream);
+            // A remote's read timeout, once set, ends this like any error:
+            // the remote has gone silent.
             while let Ok(Some(frame)) = read_frame(&mut reader) {
                 if !inner.forward(side, id, frame) {
                     break;
@@ -240,6 +329,16 @@ impl Inner {
     /// Returns false once the peer is no longer part of the relay.
     fn forward(&self, side: Side, id: u64, frame: Vec<u8>) -> bool {
         let mut state = self.state.lock().unwrap();
+        if side == Side::Remote && is_beat(&frame) {
+            // A beat only shows that the remote is there; the game never hears of it.
+            return match state.remotes.iter_mut().find(|remote| remote.id == id) {
+                Some(remote) => {
+                    remote.heard_beat();
+                    true
+                }
+                None => false,
+            };
+        }
         let in_zone = snoop_state(&frame);
         for line in snoop_log(&frame) {
             if state.log.len() == LOG_LINES {
@@ -348,8 +447,17 @@ fn snoop_log(frame: &[u8]) -> Vec<String> {
     lines().unwrap_or_default()
 }
 
+fn is_control(frame: &[u8], name: &str) -> bool {
+    control_type(frame).is_some_and(|value| value.get("type").and_then(|kind| kind.as_str()) == Some(name))
+}
+
 fn is_gone(frame: &[u8]) -> bool {
-    control_type(frame).is_some_and(|value| value.get("type").and_then(|kind| kind.as_str()) == Some("gone"))
+    is_control(frame, "gone")
+}
+
+fn is_beat(frame: &[u8]) -> bool {
+    // Beats are many and tiny: a longer frame is not one and is not parsed here.
+    frame.len() <= HEADER + 32 && is_control(frame, "beat")
 }
 
 /// A running relay. The mod connects to `port()` on the loopback interface;
@@ -362,12 +470,18 @@ pub struct Relay {
 
 impl Relay {
     pub fn start() -> Result<Self> {
+        Self::with_timing(Timing::default())
+    }
+
+    /// A relay that keeps its remotes to `timing`; tests shorten it.
+    pub(crate) fn with_timing(timing: Timing) -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         let inner = Arc::new(Inner {
             stop: AtomicBool::new(false),
             state: Mutex::new(State::default()),
+            timing,
         });
         let thread = thread::spawn({
             let inner = inner.clone();
@@ -527,6 +641,12 @@ mod tests {
     use crate::host::{Host, HostConfig};
 
     const WAIT: Duration = Duration::from_secs(10);
+    /// Short enough for tests, long enough for a loaded machine to keep up.
+    const QUICK: Timing = Timing {
+        beat: Duration::from_millis(50),
+        silence: Duration::from_millis(400),
+        stall: Duration::from_millis(500),
+    };
 
     fn hello(name: &str) -> Hello {
         Hello {
@@ -537,18 +657,32 @@ mod tests {
         }
     }
 
-    /// Stands in for the mod: a plain socket on the relay's loopback port.
-    struct Game(TcpStream);
+    /// Stands in for the mod: a plain socket on the relay's loopback port. Or
+    /// for the far launcher, on the other end of a remote connection.
+    struct Game {
+        stream: TcpStream,
+        /// The far launcher hears beats; a game must never.
+        remote: bool,
+    }
 
     impl Game {
         fn connect(port: u16) -> Self {
             let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
             stream.set_read_timeout(Some(WAIT)).unwrap();
-            Self(stream)
+            Self { stream, remote: false }
+        }
+
+        fn remote(stream: TcpStream) -> Self {
+            stream.set_read_timeout(Some(WAIT)).unwrap();
+            Self { stream, remote: true }
         }
 
         fn send(&mut self, kind: u8, id: u32, payload: &[u8]) {
-            self.0.write_all(&frame(kind, id, payload)).unwrap();
+            self.stream.write_all(&frame(kind, id, payload)).unwrap();
+        }
+
+        fn beat(&mut self) {
+            self.stream.write_all(&beat()).unwrap();
         }
 
         fn state(&mut self, role: &str, in_zone: bool) {
@@ -556,10 +690,17 @@ mod tests {
             self.send(KIND_CONTROL, 0, payload.as_bytes());
         }
 
+        /// The next frame, skipping the beats a far launcher hears.
         fn receive(&mut self) -> (u8, u32, Vec<u8>) {
-            let frame = read_frame(&mut self.0).unwrap().expect("the relay closed the connection");
-            let id = u32::from_le_bytes(frame[1..5].try_into().unwrap());
-            (frame[0], id, frame[HEADER..].to_vec())
+            loop {
+                let frame = read_frame(&mut self.stream).unwrap().expect("the relay closed the connection");
+                if is_beat(&frame) {
+                    assert!(self.remote, "a beat reached the game");
+                    continue;
+                }
+                let id = u32::from_le_bytes(frame[1..5].try_into().unwrap());
+                return (frame[0], id, frame[HEADER..].to_vec());
+            }
         }
 
         fn receive_control(&mut self) -> serde_json::Value {
@@ -617,6 +758,27 @@ mod tests {
         assert!(read_frame(&mut huge.as_slice()).is_err());
     }
 
+    /// Hands out some bytes, then times out as a socket with a read timeout does.
+    struct FallsSilent<'a>(&'a [u8]);
+
+    impl Read for FallsSilent<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            self.0.read(buf)
+        }
+    }
+
+    #[test]
+    fn a_timeout_inside_or_between_frames_is_an_error_not_an_end() {
+        let bytes = frame(KIND_MSG, 1, b"hello");
+        assert!(read_frame(&mut FallsSilent(&[])).is_err());
+        assert!(read_frame(&mut FallsSilent(&bytes[..4])).is_err());
+        assert!(read_frame(&mut FallsSilent(&bytes[..bytes.len() - 1])).is_err());
+        assert_eq!(read_frame(&mut FallsSilent(&bytes)).unwrap(), Some(bytes));
+    }
+
     #[test]
     fn relays_between_the_game_and_a_remote() {
         let relay = Relay::start().unwrap();
@@ -625,8 +787,7 @@ mod tests {
 
         let (near, far) = pair();
         relay.add_remote(near).unwrap();
-        let mut remote = Game(far);
-        remote.0.set_read_timeout(Some(WAIT)).unwrap();
+        let mut remote = Game::remote(far);
         assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 1}));
 
         game.send(KIND_MSG, 11, b"to the remote");
@@ -658,8 +819,7 @@ mod tests {
         let relay = Relay::start().unwrap();
         let (near, far) = pair();
         relay.add_remote(near).unwrap();
-        let mut remote = Game(far);
-        remote.0.set_read_timeout(Some(WAIT)).unwrap();
+        let mut remote = Game::remote(far);
 
         let mut game = Game::connect(relay.port());
         assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 1}));
@@ -681,11 +841,10 @@ mod tests {
         new.receive_control();
 
         // The old connection is closed by the relay.
-        assert!(matches!(read_frame(&mut old.0), Ok(None) | Err(_)));
+        assert!(matches!(read_frame(&mut old.stream), Ok(None) | Err(_)));
         let (near, far) = pair();
         relay.add_remote(near).unwrap();
-        let mut remote = Game(far);
-        remote.0.set_read_timeout(Some(WAIT)).unwrap();
+        let mut remote = Game::remote(far);
         new.receive_control();
         new.send(KIND_MSG, 1, b"x");
         assert_eq!(remote.receive(), (KIND_MSG, 1, b"x".to_vec()));
@@ -699,13 +858,12 @@ mod tests {
         game.receive_control();
         let (near, far) = pair();
         relay.add_remote(near).unwrap();
-        let mut remote = Game(far);
-        remote.0.set_read_timeout(Some(WAIT)).unwrap();
+        let mut remote = Game::remote(far);
         game.receive_control();
 
         let big: Vec<u8> = (0..4_000_000u32).map(|i| i as u8).collect();
         let writer = thread::spawn({
-            let mut stream = game.0.try_clone().unwrap();
+            let mut stream = game.stream.try_clone().unwrap();
             let big = big.clone();
             move || {
                 for id in 0..5 {
@@ -717,6 +875,79 @@ mod tests {
             assert_eq!(remote.receive(), (KIND_MSG, id, big.clone()));
         }
         writer.join().unwrap();
+    }
+
+    /// A relay with a game and a remote, past the link frames.
+    fn joined() -> (Relay, Game, Game) {
+        let relay = Relay::with_timing(QUICK).unwrap();
+        let mut game = Game::connect(relay.port());
+        assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 0}));
+        let (near, far) = pair();
+        relay.add_remote(near).unwrap();
+        assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 1}));
+        (relay, game, Game::remote(far))
+    }
+
+    #[test]
+    fn a_remote_that_falls_silent_is_dropped() {
+        let (relay, mut game, mut remote) = joined();
+        let since = Instant::now();
+        remote.beat();
+
+        // The far end stays open but writes and reads nothing more.
+        assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 0}));
+        assert!(since.elapsed() >= QUICK.silence);
+        assert_eq!(relay.status().remotes, 0);
+        drop(remote);
+    }
+
+    #[test]
+    fn a_remote_that_never_beats_is_not_held_to_silence() {
+        let (relay, mut game, mut remote) = joined();
+        thread::sleep(QUICK.silence * 3);
+        assert_eq!(relay.status().remotes, 1);
+        remote.send(KIND_MSG, 5, b"still here");
+        assert_eq!(game.receive(), (KIND_MSG, 5, b"still here".to_vec()));
+    }
+
+    #[test]
+    fn beats_from_a_remote_never_reach_the_game() {
+        let (relay, mut game, mut remote) = joined();
+        remote.beat();
+        remote.beat();
+        remote.send(KIND_MSG, 3, b"after the beats");
+        // `receive` fails on a beat for the game.
+        assert_eq!(game.receive(), (KIND_MSG, 3, b"after the beats".to_vec()));
+        assert_eq!(relay.logged(), 0);
+        assert_eq!(relay.status().remotes, 1);
+    }
+
+    #[test]
+    fn an_idle_remote_hears_beats_and_the_game_does_not() {
+        let (_relay, mut game, remote) = joined();
+        let since = Instant::now();
+        for _ in 0..3 {
+            let frame = read_frame(&mut &remote.stream).unwrap().unwrap();
+            assert!(is_beat(&frame));
+        }
+        // The first comes at once, the next two after the remote has been idle.
+        assert!(since.elapsed() >= QUICK.beat * 2);
+
+        game.stream.set_read_timeout(Some(QUICK.beat * 4)).unwrap();
+        let error = read_frame(&mut game.stream).unwrap_err();
+        assert!(matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut), "{error}");
+    }
+
+    #[test]
+    fn a_remote_that_stops_reading_is_dropped() {
+        let (_relay, mut game, remote) = joined();
+        // More than the sockets on the way hold, so the relay's writes stall.
+        let big = vec![7u8; 4 << 20];
+        for id in 0..16 {
+            game.send(KIND_MSG, id, &big);
+        }
+        assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 0}));
+        drop(remote);
     }
 
     #[test]

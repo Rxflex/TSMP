@@ -7,6 +7,7 @@ the launcher), `session` (who gets which message) and `hooks`.
 import functools
 import json
 import os
+import time
 
 from tsmp import bridge as bridge_module
 from tsmp import driver, frames, hooks, household, log, native, resync, session as session_module
@@ -21,11 +22,13 @@ _loaded_ticks = 0
 # simulation sent while finishing the load still reaches the game client.
 SETTLE_TICKS = 5
 # Build mode synchronisation (tsmp/native.py) is switched on by itself once
-# the session is live; these are the ticks between attempts and reports.
-_native_sync = True
+# a zone runs; these are the ticks between attempts and reports.
 _native_note = None
 _native_report = None
 _native_samples = 0
+# Whether the session was live at the last tick: each time it becomes live,
+# the two games tell each other how far they got with each other's edits.
+_native_was_live = False
 NATIVE_START_TICKS = 32
 NATIVE_REPORT_TICKS = 256
 # Log lines waiting to be sent to the launcher and the other game.
@@ -72,6 +75,7 @@ def _consts():
             _name(Consts_pb2, "MSG_TRAVEL_MENU_CREATE", 14): 1,
         },
         shared=[_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41)],
+        notice=_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41),
     )
 
 
@@ -102,6 +106,9 @@ class Game:
         # client, and both players share the host's client.
         self._remote_menu = None
         self._remote_parameters = None
+        # The local player's own sim while the client is made to look like
+        # the remote player's.
+        self._own_sim_info = None
 
     def in_zone(self):
         import services
@@ -132,12 +139,24 @@ class Game:
         except Exception:
             return 0
 
+    def lot(self):
+        try:
+            import services
+
+            return resync.lot_key(services.current_zone_id() or 0)
+        except Exception:
+            return ""
+
     def active_sim_id(self):
         try:
-            sim_info = _client().active_sim_info
+            sim_info = self._own_sim_info if self._executing else _client().active_sim_info
             return sim_info.id if sim_info is not None else 0
         except Exception:
             return 0
+
+    @property
+    def _executing(self):
+        return self._own_sim_info is not None
 
     def deliver(self, msg_id, data):
         import omega
@@ -161,6 +180,7 @@ class Game:
             log.info("remote command {} dropped: no sim {}".format(name, sim_id))
             return
         saved = (client._active_sim_info, client._choice_menu, client._interaction_parameters)
+        self._own_sim_info = client.active_sim_info
         if sim_info is not None:
             client._active_sim_info = sim_info
         client._choice_menu = self._remote_menu
@@ -168,17 +188,26 @@ class Game:
         try:
             sims4.commands.execute(" ".join([name] + [_quote(a) for a in args]), client.id)
         finally:
+            self._own_sim_info = None
             self._remote_menu = client._choice_menu
             self._remote_parameters = client._interaction_parameters
             client._active_sim_info, client._choice_menu, client._interaction_parameters = saved
 
-
-    def snapshot(self, done, zone_id=0):
+    def snapshot(self, done, zone_id=0, lot=""):
         resync.install()
-        resync.take(done, zone_id)
+        resync.take(done, zone_id, lot)
 
     def adopt(self, payload):
         resync.adopt(payload, self.active_sim_id())
+
+    def reload(self):
+        """Travel to the zone we are in: the game saves our own simulation
+        and builds its client again from it."""
+        import services
+        from world import travel_service
+
+        sim_id = self.active_sim_id()
+        travel_service.travel_sims_to_zone([sim_id] if sim_id else [], services.current_zone_id())
 
     def save_id(self):
         try:
@@ -192,12 +221,31 @@ class Game:
         resync.install()
         household.give(done)
 
-    def merge(self, payload):
+    def merge(self, payload, save_id=0):
         resync.install()
-        household.take_in(payload)
+        return household.take_in(payload, save_id)
 
-    def welcome(self, sim_id):
-        household.welcome(sim_id, _client())
+    def welcome(self, sim_id, before=()):
+        return household.welcome(sim_id, _client(), before)
+
+    def send_off(self, sim_ids):
+        household.send_off(sim_ids, _client())
+
+    def joined(self, sim_id):
+        import services
+
+        sim_info = services.sim_info_manager().get(sim_id)
+        if sim_info is not None:
+            household.note_joined([sim_info.household_id])
+
+    def notify(self, text):
+        from sims4.localization import LocalizationHelperTuning
+        from ui.ui_dialog_notification import UiDialogNotification
+
+        raw = LocalizationHelperTuning.get_raw_text
+        notification = UiDialogNotification.TunableFactory().default(
+            None, title=lambda *args, **kwargs: raw("Multiplayer"), text=lambda *args, **kwargs: raw(text))
+        notification.show_dialog()
 
     def same_household(self, a, b):
         import services
@@ -261,24 +309,47 @@ def _send_log():
         _bridge.send(frames.control("log", lines=lines))
 
 
+def _native_place():
+    """(save id, zone id) of the zone running here, the zone named as the
+    host names it, or None. A zone counts once its loading screen is gone,
+    without the settling ticks of `Game.in_zone`, which counts them as it is
+    asked and is left to the session."""
+    try:
+        import services
+
+        zone = services.current_zone()
+        if zone is None or not zone.is_zone_running or zone.id != _loaded_zone:
+            return None
+    except Exception:
+        return None
+    game = Game()
+    return game.save_id(), game.zone_id()
+
+
 def _native_tick():
-    global _native_note, _native_report, _native_samples
-    if _native_sync and _session.live and _ticks % NATIVE_START_TICKS == 0 and not native.syncing():
+    global _native_note, _native_report, _native_samples, _native_was_live
+    place = _native_place()
+    # From the moment a zone runs: edits made before the session is live are
+    # kept, and the other game's can be replayed as soon as it is.
+    if place is not None and _ticks % NATIVE_START_TICKS == 0 and native.wanted():
         note = "; ".join(native.command("sync"))
         if note != _native_note:
             _native_note = note
             log.info("native sync: " + note)
+    live = _session.live
+    if live and not _native_was_live:
+        native.joined(place)
+    _native_was_live = live
     # Build operations go both ways, whoever is the host.
-    for call, payload in native.tick():
-        if _session.live:
-            _bridge.send(frames.pack(frames.NATIVE, call, payload))
-        log.info("native call {:x} ({} bytes, header {}) {}".format(
-            call, len(payload), payload[:12].hex(), "sent" if _session.live else "not sent: session is not live"))
+    for frame in native.tick(place, live, time.monotonic()):
+        _bridge.send(frame)
+    for line in native.notes():
+        log.info(line)
     if _ticks % NATIVE_REPORT_TICKS == 0:
         lines = native.recorder_lines()
-        # The counts of everything else change all the time; only this line
-        # is worth repeating in the log.
-        report = [line for line in lines if line.startswith("native sync")]
+        # The recorder's counts change all the time; only the sync line is
+        # worth repeating in the log.
+        report = native.status_lines()
         if report != _native_report:
             _native_report = report
             for line in report:
@@ -299,10 +370,10 @@ def _tick():
                 if event[1] == frames.CONTROL and b'"type":"log"' in event[3]:
                     for line in (frames.parse_json(event[3]) or {}).get("lines") or []:
                         log.info(str(line)[:MAX_LOG_LINE + 16], forward=False)
+                elif event[1] == frames.CONTROL and b'"type":"native' in event[3]:
+                    native.control(frames.parse_json(event[3]) or {})
                 elif event[1] == frames.NATIVE:
-                    done = _session.live and native.incoming(event[2], event[3])
-                    log.info("native call {:x} ({} bytes) received, {}".format(
-                        event[2], len(event[3]), "replayed" if done else "not replayed"))
+                    native.incoming(event[2], event[3])
                 else:
                     _session.frame(event[1], event[2], event[3])
             except Exception:
@@ -312,8 +383,11 @@ def _tick():
         elif kind == bridge_module.DOWN:
             _session.bridge_down(event[1])
     _session.tick()
-    client = _client()
-    driver.tick(client.id if client is not None else None)
+    try:
+        client = _client()
+        driver.tick(client.id if client is not None else None)
+    except Exception:
+        log.exception("driver failed")
     try:
         _native_tick()
     except Exception:
@@ -322,13 +396,17 @@ def _tick():
 
 
 def start(directory, native_sync=True):
-    global _bridge, _session, _native_sync
-    _native_sync = native_sync
+    global _bridge, _session
+    native.configure(native_sync)
     log.set_forwarder(_forward_log)
     _bridge = bridge_module.Bridge(_endpoint(directory))
     _session = session_module.Session(Game(), _consts(), _bridge.send, log=log.info)
     hooks.set_outbound_router(lambda client, msg_id, data: _session.outbound(msg_id, data))
     hooks.set_inbound_gate(lambda name, args, session_id: _session.command(name, args))
+    try:
+        hooks.set_client_cheat_gate(lambda line, client_id: _session.client_cheat(line))
+    except Exception:
+        log.exception("screens of the other player's sims cannot be kept from this game")
     _watch_loading_screen()
     try:
         # From the start, so that the objects of the zone are known by the
@@ -370,4 +448,4 @@ def describe():
     ]
     if _session.role == session_module.HOST:
         lines.append("other player's sim: {}".format(_session.remote_sim_id or "none"))
-    return lines
+    return lines + native.status_lines()

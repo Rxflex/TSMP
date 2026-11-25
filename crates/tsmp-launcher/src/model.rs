@@ -1072,6 +1072,11 @@ fn start_host(
         install_mod(&source, &env.game.mods_dir())?;
     }
     let set_aside = set_rivals_aside(env)?;
+    if own_families {
+        // The other player's household is put into the save this game
+        // plays, and the game writes it on its next save.
+        back_up_saves(env, &backup_stamp(unix_now()))?;
+    }
     let mods = scan_mods(env)?;
     let mod_files = mods.files.len();
     let mod_bytes = mods.total_bytes();
@@ -1162,6 +1167,11 @@ fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, Str
             None => Ok(false),
         }
     })();
+    // The game goes on in the host's world, which a save of the guest's game
+    // would write over its own.
+    if result.is_ok() && session.own_families {
+        back_up_saves(env, &backup_stamp)?;
+    }
     match result {
         Ok(save_updated) => {
             let live = LiveLink::start(route, env.hello()).map_err(|e| e.to_string())?;
@@ -1191,6 +1201,27 @@ fn run_sync(env: &Env, plan: Plan, sender: &Sender<Event>) -> Result<Synced, Str
             Err(message)
         }
     }
+}
+
+/// Copies every save into `saves.tsmp-backup/<stamp>`, for a session in
+/// which saves of this game may be overwritten with what the other brings.
+fn back_up_saves(env: &Env, stamp: &str) -> Result<(), String> {
+    let saves = env.game.saves_dir();
+    let backup = env.game.user_dir.join("saves.tsmp-backup").join(stamp);
+    let failed = |e: std::io::Error| format!("could not back up the saves: {e}");
+    let entries = match fs::read_dir(&saves) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(failed(e)),
+    };
+    fs::create_dir_all(&backup).map_err(failed)?;
+    for entry in entries {
+        let entry = entry.map_err(failed)?;
+        if entry.file_type().map_err(failed)?.is_file() {
+            fs::copy(entry.path(), backup.join(entry.file_name())).map_err(failed)?;
+        }
+    }
+    Ok(())
 }
 
 /// `2026-11-13_22-42-54` (UTC), usable as a folder name.
@@ -1456,6 +1487,15 @@ mod tests {
         assert_eq!(
             fs::read_to_string(guest_user.join("saves/Slot_00000002.save")).unwrap(),
             "the guest's family"
+        );
+        // Both games may write over their saves with the other's family in
+        // them, so both keep a copy as they were.
+        let backup = guest_user.join("saves.tsmp-backup").join(&synced.backup_stamp);
+        assert_eq!(fs::read_to_string(backup.join("Slot_00000002.save")).unwrap(), "the guest's family");
+        let host_backup = fs::read_dir(host_user.join("saves.tsmp-backup")).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(
+            fs::read_to_string(host_backup.join("Slot_00000002.save")).unwrap(),
+            "the host's family"
         );
     }
 

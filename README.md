@@ -41,15 +41,20 @@ Tried with two computers and two copies of the game:
 - **One log for both games.** Each mod sends its log lines to the other side,
   and the launcher shows the latest ones under the session status.
 
-When the host's lot is loaded again (after Create-a-Sim or travel), the guest
-loads the host's world again and rejoins. Players can be on different lots,
+The guest loads the host's world when it arrives, and again whenever the two
+could have drifted apart: the host's lot was loaded again (after Create-a-Sim
+or travel), the guest's own was, or the connection dropped. Meanwhile the
+host's game stays paused, and both players are told what is going on. A
+dropped connection is noticed within seconds and the session picks up again
+by itself, on a LAN or over the internet. Players can be on different lots,
 each playing their own. A guest can also come with a household made in a save
 of their own: it is copied into the host's save, and the guest keeps playing
 it there; the host picks "Each with their own family" in the launcher for
-that, and then no save is copied. All of this is new and not yet proven in two games.
+that, and then no save is copied, but both launchers back up their saves.
+All of this is new and not yet proven in two games.
 
-Not handled yet: the guest following the host into Create-a-Sim (it waits
-instead). In build mode, furniture
+Not handled yet: Create-a-Sim with two players (the guest waits while the
+host is in it, and cannot open it for its own sim). In build mode, furniture
 and household funds have not been checked for double counting.
 
 ## How it works
@@ -100,8 +105,8 @@ network that is all; from different networks you also need a session server
 4. The other chooses **Join a session**, picks the host from the list, reads
    what will change and presses **Sync**.
 5. Both press **Start game** and load the shared save.
-6. The host pauses as soon as the lot loads and waits until the launcher says
-   **Live. Both games are joined.**
+6. The guest loads the host's world once more after its lot loads; the host's
+   game stays paused until the launcher says **Live. Both games are joined.**
 
 Keep the launcher open while playing; it carries the session.
 

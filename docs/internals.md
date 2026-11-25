@@ -253,12 +253,94 @@ header (hash, connection, payload size) has been read. The frame therefore
 carries the read position next to the bytes, and the replayed stream is
 built with the same position. Replaying from position 0 makes the simulation
 read the header as the operation, and it drops the zone session of the
-connection.
+connection. The stream's limit is either its size or something else; the
+frame says which, and the replayed stream gets the sender's kind of limit.
 
-Live mode switches this on by itself once the session is live (`"native":
-false` in `config.json` keeps it off). Every line a mod logs also travels as
-a `log` control frame: the launchers show the latest lines and the other mod
-writes them to its own `tsmp.log`, so one file tells what both games did.
+Live mode switches this on by itself as soon as a zone runs (its loading
+screen is gone), whether or not the session is live; `"native": false` in
+`config.json` keeps it off, and so does `tsmp.native off` until another mode
+is asked for. Every line a mod logs also travels as a `log` control frame:
+the launchers show the latest lines and the other mod writes them to its own
+`tsmp.log`, so one file tells what both games did.
+
+#### Journal and catch-up
+
+The host's state (`tsmp/resync.py`) carries no walls: the architecture of a
+lot is only in the save file the game client writes. An edit the other game
+does not replay is therefore lost there for good, and edits are made while
+the two are not playing together all the time: the host builds while the
+guest loads or reloads after a resync, during a link drop, or while the two
+are on different lots. So each game keeps its own edits (`native.Sync`,
+the same in both games, whoever is the host):
+
+- From the moment a zone runs, every `RequestBuildBuyOp` of this game's
+  client goes into a journal under the lot it was made on, `(save id, zone
+  id)`, the zone named as the host names it (`live.Game.zone_id`), and is
+  numbered 1, 2, ... per lot in the order the client made it. Calls the other
+  game's client made are replayed past the hook and never journaled, so an
+  edit is only ever sent by the game where it was made. A journal keeps at
+  most 20000 operations or 8 MiB per lot; beyond that the oldest are dropped,
+  with a line in the log (the first, then one per 1000).
+- Each game keeps, per lot, the number of the other game's last operation it
+  replayed (`applied`).
+- Each time the session becomes live (`live.py` sees `Session.live` go from
+  false to true), the game sends `native {ok, format}` and `native_have
+  {zone, save, run, seq, want}`: whether it takes part, and how far it got
+  with the other game's edits of the current lot. The answer to a
+  `native_have` is every kept operation of that lot numbered above `seq`, in
+  order and before any new one, at most 256 operations or 1 MiB per tick;
+  then new operations as they are made. `want` asks the other game for its
+  own `native_have`, so that a game that saw the session become live when
+  the other did not still learns where to start. A game whose `have` is
+  older than its oldest kept operation is sent what is left, flagged, and
+  both logs say how many edits cannot be replayed.
+- An operation is only replayed when it is for the lot and save of the
+  receiver, has the number after the last one replayed (a smaller one is a
+  duplicate and is ignored), and arrives while the session is live. One with
+  a gap in front of it is not replayed: the receiver sends `native_have`
+  again with its last number, once per number, and the sender starts over
+  from there.
+- An operation that cannot be replayed yet waits, for at most 30 s and up to
+  256 operations or 2 MiB, and is tried again every tick: before a recorder
+  exists, before the zone's object is hooked, and before the client has
+  called the zone since it was loaded, there is no connection to replay on.
+  The connection is kept per zone object and forgotten when the zone changes
+  or an object is hooked anew, because every load of a zone opens a new
+  session and an old connection id would be refused. What waits is dropped,
+  with a line in the log, when the zone changes or the session stops being
+  live (the next `native_have` gets it sent again), and after 30 s (asked
+  for again at once).
+- Numbers start at 1 each time a game starts, so `run`, drawn at random at
+  start, tells the runs apart: an operation of another run than the one
+  `applied` names starts that lot over, and a `have` naming another run of
+  ours is answered from the start.
+
+Both games share operations only while both say `ok`: allowed in
+`config.json`, not switched off with the cheat, and a build of the game the
+probe recognises. Otherwise each keeps journaling and logs once what holds
+it back; `tsmp.status` shows it in the `native sync` line, with counts of
+recorded, sent, replayed, waiting, duplicate, refused and too large
+operations. A game that turns sync back on sends `native` and `native_have`
+again and is caught up. An operation larger than 1 MiB is not shared; the
+log says so with its size.
+
+`NATIVE` payload, little endian: `u8 format` (1), `u8 flags` (1: the
+stream's limit was its size; 2: the operations just before this one are no
+longer kept by the sender), `u64 zone id`, `u64 save id`, `u32 run`, `u32
+number`, then the call's own `u32` third and fourth arguments, `u32` read
+position and the stream's bytes. The frame's id is the call's hash.
+
+Known limitations:
+
+- Two players editing the same element at nearly the same time may see the
+  edits applied in different orders: each simulation applies its own edit
+  first and the other's when it arrives. Making one game order all edits
+  would mean holding a guest's call back from its own simulation, which has
+  not been tried against the game.
+- The journal and `applied` live in memory for as long as the game runs. A
+  game that is started again has neither: it is sent the other game's whole
+  journal of the lot again, including edits its save may already hold, and
+  what it made itself before it was restarted is not sent at all.
 
 Answered by running it: a `_ctypes` callback may run on the game's threads
 (it takes the interpreter lock; no deadlock or crash was seen), and a client
@@ -270,8 +352,9 @@ Open:
   also travel as simulation messages.
 - Whether household funds are charged in both simulations, and what the
   other player's undo stack does with an edit it did not make.
-- Behaviour after travel to another lot. The hooks are put back every 64
-  ticks, which should cover a new zone; not yet tried.
+- Behaviour after travel to another lot. The zones are hooked again when the
+  zone changes and every 64 ticks, and edits wait until the new zone's
+  client has called it; not yet tried.
 - The hash of the call names is not one of the common ones; recorded calls
   are replayed by number, so it is not needed.
 
@@ -358,21 +441,46 @@ payload`, little endian.
 | 2 COMMAND | 0 | JSON `{"name": ..., "args": [...]}` |
 | 3 CONTROL | 0 | JSON `{"type": ...}` |
 | 4 NATIVE | hash of the call | a call a game client made into its simulation past Python |
-| 5 STATE | 0 | the host's save as it is now (`tsmp/resync.py`) |
-| 6 HOUSEHOLD | 0 | the guest's household, sims and home lot (`tsmp/household.py`) |
+| 7 PART | transfer id | `u32 offset`, then a piece of a large payload |
 
-Control messages: `link {remotes}` (launcher -> its game: how many other
-launchers are connected), `gone` (launcher -> the other side: the game here
-disconnected), `state {role, in_zone, zone?, want?}` (game -> game; `want` asks for
-the other's state in return), `active_sim {sim_id}` (guest -> host),
-`resync {zone?}` (guest -> host: send your state, for a guest on that lot), `resync_failed` (host -> guest), `merged {ok}` (host -> guest: your
-household is, or is not, in my save). `state` also carries `save`, the `guid`
-of the game's `SaveGameData`.
+Control messages:
+
+- `link {remotes}` (launcher -> its game: how many other launchers are
+  connected), `gone` (launcher -> the other side: the game here
+  disconnected), `beat` (launcher -> launcher, never passed to a game).
+- `state {role, in_zone, v, zone?, lot?, save?, world?, want?}` (game ->
+  game). `v` is the version of this protocol (games that speak another one
+  are not joined), `zone` the zone's id as the host names it, `lot` the lot
+  it is on (`"<lot_description_id>:<active_plex>"`), `save` the `guid` of
+  the game's `SaveGameData`, `world` the world its game client shows (see
+  below), `want` asks for the other's state in return.
+- `active_sim {sim_id}` (guest -> host).
+- `resync {id, zone?, lot?}` (guest -> host: send your state, for a guest on
+  that lot), answered by an `offer` of the state or `resync_failed {id}`.
+- `merged {id, ok, final?, outcome?}` (host -> guest: your household is, or
+  is not, in my save; `final` when trying again would not help).
+- `offer {id, what, size, ...}`, `got {id, have}`, `drop {id}`: a transfer
+  (`tsmp/transfer.py`). `what` is `state` (with the `world` it shows) or
+  `household` (with the `save` it comes from).
+- `tell {text}` (host -> guest: a notification for the guest's player).
+- `native {...}`, `native_have {...}`: build mode sync, see above.
+
+Every request carries an `id` of the guest's, and every answer the id of the
+request it answers, so a late answer to a request the guest gave up on is
+told from the answer it waits for.
+
+Snapshots and households run to megabytes. Sent whole they would hold up
+everything behind them for as long as they take to cross a slow link, and
+the launchers refuse frames past 64 MiB. So they go as `PART` frames of
+128 KiB after an `offer`; the receiver confirms with `got` every 256 KiB,
+and no more than 2 MiB is sent and not yet confirmed. Control frames pass in
+between, and both sides see the transfer move.
 
 The launchers only relay; the guest's launcher opens a second connection to
 the host's with `JoinLive` and after the `Hello` reply the socket carries raw
 frames. Policy lives in `tsmp/session.py`. The session is *live* while both
-games have a zone loaded. While live:
+games have the same zone loaded and their game clients show the same world
+(below). While live:
 
 - Host: every message its simulation sends goes to its own client and to the
   guest, except: replies to a command (`PIE_MENU_CREATE`,
@@ -395,10 +503,26 @@ again (it edits a sim in CAS, travels, loads a save) its client is rebuilt
 and the guest's is not; joining again as before leaves the guest with a
 broken interface on a world that no longer exists.
 
-So a guest whose host leaves its zone while live becomes *stale*: it reports
-itself as not in a zone, shows its client nothing new, and once the host is
-back asks for its state with `resync`. What makes the rest possible is that
-the whole save lives in Python:
+So every load of the host's zone is a *world*, named by the host (a number
+drawn when the game starts and a count of loads), and each game says in
+`state` which world its client shows: the host its own, a guest the one of
+the state it last loaded, none when its client was built from its own
+simulation or may have missed a message. A guest whose client does not show
+the host's world is *stale*: it reports itself as not in a zone, shows its
+client nothing new, and once the host is there asks for its state with
+`resync`. That covers every way the two can part:
+
+- the guest's first arrival: the save it loaded is the one the host loaded,
+  but the host may have played since;
+- the host's zone is loaded again;
+- the guest's own zone is loaded again (CAS on the guest, the player
+  loading the same save, its game restarting);
+- the link between the two is lost: what the host sent meanwhile is gone.
+  The guest holds, tells its player, and waits `LINK_SECONDS` (two
+  minutes, as long as the session server keeps a session) for the host;
+  once back, it loads the host's state.
+
+What makes the rest possible is that the whole save lives in Python:
 
 - `services.get_persistence_service()` owns one `SaveGameData` message; the
   game client reads it through `c_api_get_data_readonly`, and a zone is built
@@ -435,8 +559,8 @@ to both as before. The guest's own simulation may send its client
 `MSG_TRAVEL_SIMS_TO_ZONE`, which is how a destination picked in the guest's
 travel picker takes effect. Not yet seen in two games.
 
-The host pauses, saves to the scratch slot and sends both messages in a
-`STATE` frame (`u8[4] "TSS1", u8 flags, u64 zone id, u32 save size, u32
+The host pauses, saves to the scratch slot and sends both messages as a
+transfer (`u8[4] "TSS1", u8 flags, u64 zone id, u32 save size, u32
 objects size`, then the two, deflated when flag 1 is set). The guest keeps
 them and asks its client to travel to the host's zone
 (`travel_service.travel_sims_to_zone`). When the client disconnects to do so,
@@ -445,10 +569,28 @@ and giving the save to the client with `kPersistenceOpSave` for the scratch
 slot, as the game's own save ends (without that, a zone the guest's save
 never had loads as a void: interface, no world),
 and `disable_shutdown` is skipped so that everything is read again. After
-its loading screen the guest joins as on a fresh start. If any step fails
-(the host cannot save, nothing arrives in `RESYNC_TICKS`, the snapshot cannot
-be read, the client does not reload) the guest joins as it is, which is what
-happened before. The `tsmp.resync` cheat makes a guest do all this on request.
+its loading screen the guest's client shows the world the snapshot was
+taken in, and it joins. If the host loaded its zone again meanwhile, the
+worlds differ and the guest loads once more.
+
+From the request on, the host keeps its game paused: what it simulates
+before the guest is in would be missing on the guest. It pauses again every
+second and refuses `clock.setspeed` and `clock.toggle_pause_unpause` from
+its own player, whom it tells why, until the guest is in, the guest shows no
+sign of life for `HOLD_SECONDS`, or the link has been down for
+`LINK_SECONDS`.
+
+Every wait is in seconds and counts from the last sign of progress, not from
+the request: a save gets `SAVE_SECONDS`, a transfer may take as long as it
+needs while it moves and is given up after `STALL_SECONDS` without a part
+or a confirmation, the host gets `MERGE_SECONDS` to answer for a household,
+the game client `RELOAD_SECONDS` to start loading, and the loading screen
+itself as long as it takes. A guest that gives up (the host cannot save,
+the snapshot cannot be read, something stops moving) plays on by itself and
+tries again after 15 s, 1, 3, then every 5 minutes. When its client showed
+the host's world, it first loads its own zone again (`Game.reload`, a travel
+to the zone it is in) so that the client shows the simulation it now plays.
+The `tsmp.resync` cheat makes a guest load the host's state on request.
 
 ### Different lots
 
@@ -465,6 +607,20 @@ connected, not muted, each playing its lot by itself.
   and then plays alone.
 - The guest arrives on the host's lot: it gives its household to the host
   (below), loads the host's state and joins.
+- The guest leaves the host's lot: the host takes the sims it played off its
+  lot (`household.send_off`): out of the host client's selectable sims
+  unless they are of the host's household, and made to leave
+  (`make_sim_leave_now_must_run` of the zone situation manager, else
+  `make_sim_leave`, else `schedule_destroy_asap`). Otherwise the host goes
+  on simulating them, and its next save overwrites what the guest does with
+  them apart.
+
+Two saves of different new games give the same lot different zone ids, so
+a zone is compared by its lot: `"<lot_description_id>:<active_plex>"` of
+its `ZoneData` (`resync.lot_key`). A guest asking for the host's state names
+its zone and that lot, and the host sends the zone of its own save on the
+same lot, else the zone of that id, else the zone it led that id to when it
+took the guest's household in, else its own zone.
 
 ### Households from different saves
 
@@ -476,8 +632,11 @@ saves. Instead:
 
 1. The guest saves (the save the game makes before a travel) and sends a
    partial `SaveGameData`: the `HouseholdData` of the household it plays, the
-   `SimData` of its sims, the `ZoneData` of its home lot, and the
-   `ZoneObjectData` of that lot.
+   `SimData` of its sims, the `ZoneData` of its home lot, of the lot it is
+   on and of every lot one of its sims is on, and the `ZoneObjectData` of
+   its home lot. A guest playing in a copy of the host's save (step 3) knows
+   the host's lots by its own ids, so it renames them back to the host's
+   first.
 2. The host copies those into its own save through the persistence service
    (`add_sim_proto_buff`, `add_household_proto_buff`, the zone's message in
    place) and calls `HouseholdManager.load_household`, which is what the game
@@ -486,15 +645,30 @@ saves. Instead:
    Zone ids are made up by every new game, so the guest's home is looked
    up in the host's save by `ZoneData.lot_description_id` (and
    `active_plex`), which name the lot of the world; the contents are copied
-   under the host's ids. Sims that stand in zones the host's save does not
-   have are put on that lot, or on the host's lot when the household gets
-   no home, and the host remembers to send a guest asking for such a zone
-   there (the snapshot names the zone the guest loads).
+   under the host's ids. A sim that stands in a zone the host's save does
+   not have is put on the same lot in the host's save, found from the
+   `ZoneData` sent along, so a guest standing on the host's lot finds its
+   sims there; only when that lot is not in the host's save does the sim go
+   to the household's home, or to the host's lot when it has no home. The
+   host remembers to send a guest asking for such a zone there (the
+   snapshot names the zone the guest loads).
    The lot is only handed over when it has no owner in the host's save and
    the host is not standing on it; ownership is written both to
    `ZoneData.household_id` and to the lot's `lot_owner` in its neighbourhood.
-   A household whose lot is taken arrives homeless. The household the host
-   itself plays is never replaced.
+   A household whose lot is taken arrives homeless.
+   The household the host itself plays is never replaced: when the guest
+   plays the same family and played some of its sims apart, only the
+   `SimData` of those of its sims the host does not have on its lot is
+   copied, and its money, home and lot stay the host's.
+   A guest that comes back from a save of its own with a household it
+   played joined in the host's save since it was last given brings an older
+   copy, which is not taken in. The host keeps, in
+   `<user dir>/tsmp/households.json`, the host save each household was last
+   merged into and whether it has been played joined there since.
+   `take_in` answers `took in`, `updated`, `partial` or `kept`, or raises
+   `Refusal`, which is `final` when the payload itself can never be taken
+   (unreadable, not one household, no household id) and otherwise may pass
+   later.
 3. The host answers `merged`, and the guest asks for the host's state as
    after any reload. The game client only travels to zones it was started
    with: asked for an id from the host's save it drops the world and shows
@@ -502,35 +676,54 @@ saves. Instead:
    matches the host's zones to its own by `lot_description_id` and
    `active_plex` and renames every 64-bit field of the snapshot that holds
    a host zone id to the guest's id for that lot. From then on the guest
-   reports its zone to the host under the host's id. The game client reconnects with the household it was
+   reports its zone to the host under the host's id. That table belongs to
+   the host's save it was made for (by `SaveGameData.guid`): once the guest
+   plays another save it is dropped, so that a later session reports its
+   zones as they are. The game client reconnects with the household it was
    playing, which the host's save now has, so the guest goes on playing its
    own household in the host's world.
 
-When the host refuses, or the guest cannot save, both keep playing their own
-saves unjoined, and it is not tried again for that save.
+When the host refuses for good (`final`: what came cannot be read, or holds
+no household), both keep playing their own saves unjoined, and it is not
+tried again for that save. Any other failure (the host is between zones,
+the game did not load the household, the link dropped, the guest's save
+failed) is tried again later, as above.
 
 The same message keeps the host up to date afterwards: a guest that plays by
-itself gives its household every `GIVE_TICKS` ticks and before it joins the
-host on a lot. While joined nothing is given, as the host's simulation is the
-one that runs.
+itself gives its household every `GIVE_SECONDS` seconds and before it joins
+the host on a lot. While joined nothing is given, as the host's simulation is
+the one that runs. A guest that was joined and gives up does not give its
+household when it comes back: the host's copy is the newer one.
 
 When the guest reports the sim it controls and that sim belongs to another
-household than the host's, the host adds it to its client's selectable sims
-and spawns it if it is not on the lot, so that it is simulated as a played
-sim.
+household than the host's, the host adds it, and every sim of its household
+whose `zone_id` is the host's zone (those that came along), to its client's
+selectable sims and spawns those not on the lot, so that they are simulated
+as played sims. A guest that has played another household is refused a sim
+of the host's own household.
 
 Not merged: relationships (they live in a service of the save, not in the
 sims), the clock (each game keeps its own while apart), and whatever happened
 on the guest's lot between its last gift and the host walking onto that lot.
 
 This has only been run against fakes (`mod/tests/test_session.py`,
-`test_relay.py`, `test_resync.py`); it has not been seen working in two games
+`test_relay.py`, `test_resync.py`, `test_household.py`); it has not been seen working in two games
 yet.
 
-Known gaps: there is no replay, so the host should stay paused until the
-guest is in; the guest does not
-follow the host into CAS, it waits; replies to commands that still run
-locally on the guest (hovertips, for one) never arrive.
+Create-a-Sim and other screens the host's simulation opens with
+`sims4.commands.client_cheat` for a sim the guest plays are kept from the
+host's client (they would take the host's screen) and the guest is told
+they cannot be opened yet.
+
+Both launchers copy every save into `saves.tsmp-backup/<time>` before a
+session with households of their own: the host's save takes in the guest's
+household, and the guest plays on in the host's world, which a save of its
+game writes over its own slot.
+
+Known gaps: the guest does not follow the host into CAS, it waits, and it
+cannot open CAS for its own sim; replies to commands that still run locally
+on the guest (hovertips, for one) never arrive; arriving on the host's lot
+takes two loading screens, the travel and then the host's state.
 
 ## Meeting through a session server
 

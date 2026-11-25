@@ -16,6 +16,14 @@ class TakeTest(unittest.TestCase):
             self.assertEqual(driver.take(directory), ["tsmp.selftest", "clock.setspeed one"])
             self.assertEqual(driver.take(directory), [])
 
+    def test_a_file_from_any_editor_or_shell_is_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for data in ("tsmp.selftest\r\n".encode("utf-16"), b"\xef\xbb\xbftsmp.selftest\n", b"tsmp.selftest \xff\n"):
+                with open(os.path.join(directory, driver.FILE), "wb") as f:
+                    f.write(data)
+                self.assertEqual(driver.take(directory)[0][:13], "tsmp.selftest")
+                self.assertFalse(os.path.exists(os.path.join(directory, driver.FILE)))
+
     def test_nothing_runs_until_it_is_switched_on(self):
         driver.tick(1)
 

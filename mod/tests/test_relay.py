@@ -81,13 +81,15 @@ class RelayTest(unittest.TestCase):
         self.until("the host to hear of the guest", lambda: host.session.remote_in_zone)
         self.assertFalse(guest.session.live)
         host.game.zone = True
-        self.until("the session", lambda: host.session.live and guest.session.live)
+        # On arrival the guest loads the host's state, which crosses in
+        # parts, large as it is.
+        big = bytes(range(256)) * 4096
+        self.loads(big)
         self.until("the guest's sim", lambda: host.session.remote_sim_id == 222)
 
         # Host simulation -> both clients, minus the host's sim selection.
         update = view_update(5, SET_SIM_ACTIVE, 7)
         self.assertEqual(host.session.outbound(VIEW_UPDATE, update), update)
-        big = bytes(range(256)) * 4096
         self.assertEqual(host.session.outbound(40, big), big)
         self.until("the stream", lambda: len(guest.game.delivered) == 2)
         self.assertEqual(guest.game.delivered, [(VIEW_UPDATE, view_update(5, 7)), (40, big)])
@@ -106,19 +108,12 @@ class RelayTest(unittest.TestCase):
         self.until("the end", lambda: not guest.session.live and guest.session.stale)
         self.assertIsNone(guest.session.outbound(40, b"local"))
         host.game.zone = True
-        self.until("the request", lambda: host.game.snapshots)
-        host.game.snapshots[0](big)
-        self.until("the snapshot", lambda: guest.game.adopted)
-        self.assertEqual(guest.game.adopted, [big])
-        guest.game.zone = False
-        self.until("the guest to leave", lambda: not guest.session._in_zone)
-        guest.game.zone = True
-        self.until("the session again", lambda: host.session.live and guest.session.live)
+        self.loads(b"another save")
 
     def test_a_game_that_restarts_rejoins(self):
         host, guest = self.host, self.guest
         host.game.zone = guest.game.zone = True
-        self.until("the session", lambda: host.session.live and guest.session.live)
+        self.loads(b"save")
 
         guest.bridge.close()
         self.until("the host to notice", lambda: not host.session.live)
@@ -126,7 +121,22 @@ class RelayTest(unittest.TestCase):
         self.guest = guest = Player(guest.bridge._endpoint()[0], session.GUEST)
         self.addCleanup(guest.bridge.close)
         guest.game.zone = True
-        self.until("the session again", lambda: host.session.live and guest.session.live)
+        # Its game client shows nothing of the host's any more.
+        self.loads(b"save")
+
+    def loads(self, payload):
+        """The guest asks for the host's state, gets it, loads it and joins."""
+        host, guest = self.host, self.guest
+        asked = len(host.game.snapshots)
+        adopted = len(guest.game.adopted)
+        self.until("the request", lambda: len(host.game.snapshots) > asked)
+        host.game.snapshots[-1](payload)
+        self.until("the snapshot", lambda: len(guest.game.adopted) > adopted)
+        self.assertEqual(guest.game.adopted[-1], payload)
+        guest.game.zone = False
+        self.until("the guest to leave", lambda: not guest.session._in_zone)
+        guest.game.zone = True
+        self.until("the session", lambda: host.session.live and guest.session.live)
 
 
 class OnlineRelayTest(RelayTest):

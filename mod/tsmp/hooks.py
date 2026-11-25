@@ -21,6 +21,9 @@ _inbound_gate = None
 _inbound_installed = False
 _block_next = False
 
+_client_cheat_gate = None
+_client_cheat_installed = False
+
 _tick_callbacks = []
 _tick_installed = False
 _in_tick = False
@@ -148,6 +151,33 @@ def _install_inbound():
     sims4.commands.parse_args = parse_args
     sims4.commands.is_command_available = is_command_available
     _inbound_installed = True
+
+
+def set_client_cheat_gate(gate):
+    """`gate(line, client_id)` returns False to keep a command the
+    simulation passes on to the game client (`sims4.commands.client_cheat`,
+    which is how it opens Create-a-Sim) from reaching it."""
+    global _client_cheat_gate, _client_cheat_installed
+    _client_cheat_gate = gate
+    if _client_cheat_installed:
+        return
+    import sims4.commands
+
+    original = sims4.commands.client_cheat
+
+    @functools.wraps(original)
+    def client_cheat(line, client_id, *args, **kwargs):
+        try:
+            allowed = _client_cheat_gate is None or _client_cheat_gate(line, client_id) is not False
+        except Exception:
+            log.exception("client cheat gate failed")
+            allowed = True
+        if allowed:
+            return original(line, client_id, *args, **kwargs)
+        return None
+
+    sims4.commands.client_cheat = client_cheat
+    _client_cheat_installed = True
 
 
 def install_tick(callback):

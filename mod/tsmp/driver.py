@@ -20,16 +20,27 @@ _ticks = 0
 
 
 def take(directory):
-    """The commands waiting in the file, which is removed."""
+    """The commands waiting in the file, which is removed once read."""
     path = os.path.join(directory, FILE)
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
-        os.remove(path)
+        with open(path, "rb") as f:
+            data = f.read()
     except OSError:
         return []
-    lines = (line.strip() for line in text.splitlines())
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    lines = (line.strip() for line in _text(data).splitlines())
     return [line for line in lines if line and not line.startswith("#")]
+
+
+def _text(data):
+    """Whatever wrote the file: Windows PowerShell 5 writes UTF-16 with `>`,
+    most editors UTF-8, some with a byte order mark."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
 
 
 def start(directory):

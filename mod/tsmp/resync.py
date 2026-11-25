@@ -18,7 +18,13 @@ objects of a zone to the game client as a `ZoneObjectData` message. So:
   are shut down as on a full load rather than kept as on a travel, so that
   sims and households are read again too.
 
-`pack` and `unpack` are pure; the rest only runs inside the game.
+Two saves of different new games name the same lot with different zone
+ids, so zones are matched by lot (`lot_of`), and a guest renames the host's
+ids to its own (`_as_ours`) and back (`as_host`).
+
+`pack`, `unpack`, `rename`, `lot_of`, `ZoneNames`, and `on_lot` and
+`_zone_for` given a persistence service, are pure; the rest only runs
+inside the game.
 """
 
 import struct
@@ -44,8 +50,6 @@ _objects = {}
 # Host: zones of a guest's own save, by id, and the zone of ours it loads
 # in their place.
 _leads = {}
-# Guest: the host's id of each zone that has another id here, by ours.
-_theirs = {}
 # (zone id, save bytes, objects bytes, deadline) waiting for the game client
 # to disconnect.
 _pending = None
@@ -79,6 +83,115 @@ def unpack(payload):
     if len(body) != save_size + objects_size:
         raise ValueError("snapshot has the wrong size")
     return zone_id, body[:save_size], body[save_size:]
+
+
+class ZoneNames:
+    """Guest: the host's id of each zone that has another id here, by ours,
+    and the guid of the host's save they were made for.
+
+    The table only means something in that save (or in ours while it is
+    being replaced by it): a later session in another save has other zones,
+    and reporting them under the old host's ids would make the new host
+    send the wrong lot."""
+
+    def __init__(self):
+        self.save = 0
+        self._theirs = {}
+
+    def adopt(self, save, names):
+        """`names` maps the host's ids to ours, as a snapshot was renamed."""
+        self.save = save
+        self._theirs = dict((ours, theirs) for theirs, ours in names.items())
+
+    def forget(self):
+        self.save = 0
+        self._theirs = {}
+
+    def to_host(self, save):
+        """Our id -> the host's, for a game in the save `save`. Forgotten
+        as soon as that is not the save they were made for."""
+        if self.save and save != self.save:
+            self.forget()
+        return self._theirs
+
+
+_names = ZoneNames()
+_save_unknown = False
+
+
+def current_save():
+    """The guid of the save this game plays (`SaveGameData.guid`), which
+    tells saves of different new games apart; 0 when it cannot be read."""
+    global _save_unknown
+    try:
+        import services
+
+        return services.get_persistence_service().get_save_slot_proto_guid() or 0
+    except Exception:
+        # Asked every tick: one line in the log is enough.
+        if not _save_unknown:
+            _save_unknown = True
+            log.exception("resync: cannot tell which save is played")
+        return 0
+
+
+def _host_names():
+    # While the host's save waits to be put in place ours is still loaded,
+    # and the table is the one just made for it.
+    return _names.to_host(_names.save if _pending is not None else current_save())
+
+
+def host_zone(zone_id):
+    """Guest: the id the host has for our zone `zone_id`."""
+    return _host_names().get(zone_id, zone_id)
+
+
+def forget_names():
+    """Guest: our zones are no longer named after any host's."""
+    _names.forget()
+
+
+def adopted_save():
+    """Guest: the guid of the host's save our zone names were matched to,
+    0 when none was."""
+    return _names.save
+
+
+def lot_of(zone):
+    """"<lot_description_id>:<active_plex>" of a ZoneData, "" for none.
+    It says which lot of the world (and which unit of it) a zone is, the
+    same in every save of every new game, whereas zone ids are made up anew
+    by each new game; so this is how zones of two saves are matched."""
+    if zone is None or not zone.lot_description_id:
+        return ""
+    return "{}:{}".format(zone.lot_description_id, getattr(zone, "active_plex", 0))
+
+
+def on_lot(persistence, lot, zone_id=0):
+    """The ZoneData of `persistence` on the lot `lot` (see `lot_of`), None
+    for none. The zone `zone_id` is checked first, as it usually is the one."""
+    if not lot:
+        return None
+    zone = persistence.get_zone_proto_buff(zone_id) if zone_id else None
+    if zone is not None and lot_of(zone) == lot:
+        return zone
+    for zone in persistence.zone_proto_buffs_gen():
+        if lot_of(zone) == lot:
+            return zone
+    return None
+
+
+def lot_key(zone_id):
+    """`lot_of` the zone `zone_id` of this game's save, "" when unknown."""
+    if not zone_id:
+        return ""
+    try:
+        import services
+
+        return lot_of(services.get_persistence_service().get_zone_proto_buff(zone_id))
+    except Exception:
+        log.exception("resync: could not read the lot of zone {:#x}".format(zone_id))
+        return ""
 
 
 def pending():
@@ -185,12 +298,18 @@ def lead(zone_id, ours):
         _leads[zone_id] = ours
 
 
-def _zone_for(persistence, zone_id):
-    """The zone of our save a guest in `zone_id` is to load. Zone ids are
-    made up anew by every new game, so a guest that comes from a save of its
-    own names a zone we do not have."""
-    import services
-
+def _zone_for(persistence, zone_id, lot, current):
+    """The zone of our save a guest in `zone_id`, on the lot `lot` (see
+    `lot_of`), is to load. Zone ids are made up anew by every new game, so a
+    guest that comes from a save of its own names a zone we do not have, or
+    even one we have for another lot; the lot is what both saves agree on.
+    Then comes the id, then where `lead` sent that zone, then our own zone
+    `current`."""
+    zone = on_lot(persistence, lot, zone_id)
+    if zone is not None:
+        if zone.zone_id != zone_id:
+            log.info("resync: the guest's lot {} is our zone {:#x}".format(lot, zone.zone_id))
+        return zone.zone_id
     if zone_id and persistence.get_zone_proto_buff(zone_id) is None:
         led = _leads.get(zone_id, 0)
         if led and persistence.get_zone_proto_buff(led) is None:
@@ -198,7 +317,7 @@ def _zone_for(persistence, zone_id):
         log.info("resync: zone {:#x} is not in this save; the guest loads {} instead".format(
             zone_id, "{:#x}".format(led) if led else "our zone"))
         zone_id = led
-    return zone_id or services.current_zone_id() or 0
+    return zone_id or current or 0
 
 
 def objects_of(zone_id):
@@ -245,10 +364,11 @@ def save_then(done):
     persistence.save_using(save_gen)
 
 
-def take(done, zone_id=0):
+def take(done, zone_id=0, lot=""):
     """Host: save, then call `done(payload)`, or `done(None)` on failure.
-    The snapshot is for a guest in `zone_id`, or in the host's own zone when
-    that is 0."""
+    The snapshot is for a guest in `zone_id` on the lot `lot` (`lot_key` of
+    that zone in the guest's save), or in the host's own zone when neither
+    is known here."""
     import services
     from clock import ClockSpeedMode
 
@@ -263,7 +383,7 @@ def take(done, zone_id=0):
         payload = None
         try:
             if persistence is not None:
-                target = _zone_for(persistence, zone_id)
+                target = _zone_for(persistence, zone_id, lot, services.current_zone_id())
                 save = persistence.get_save_game_data_proto().SerializeToString()
                 objects = _objects.get(target, b"")
                 payload = pack(target, save, objects)
@@ -299,9 +419,33 @@ def rename(message, names):
     return count
 
 
-def host_zone(zone_id):
-    """Guest: the id the host has for our zone `zone_id`."""
-    return _theirs.get(zone_id, zone_id)
+def _renamed(names, data, objects):
+    """Rename zone ids by `names` in `data` (a message, changed in place)
+    and in `objects` (bytes of a ZoneObjectData). Returns (ids renamed,
+    objects)."""
+    if not names:
+        return 0, objects
+    count = rename(data, names)
+    if objects:
+        from protocolbuffers import FileSerialization_pb2 as serialization
+
+        contents = serialization.ZoneObjectData()
+        contents.MergeFromString(objects)
+        count += rename(contents, names)
+        objects = contents.SerializeToString()
+    return count, objects
+
+
+def as_host(data, zone_id, objects=b""):
+    """Guest: a part of our save as the host names it, the other way round
+    from `_as_ours`. Once we play in a copy of the host's save, its lots go
+    by our ids here, which the host does not know. `data` is renamed in
+    place; returns (the host's id for `zone_id`, `objects` renamed)."""
+    names = _host_names()
+    count, objects = _renamed(names, data, objects)
+    if count:
+        log.info("resync: {} ids renamed to the host's".format(count))
+    return names.get(zone_id, zone_id), objects
 
 
 def _as_ours(zone_id, save, objects):
@@ -309,31 +453,25 @@ def _as_ours(zone_id, save, objects):
     here. Every new game makes zone ids up, and the game client can only
     travel to the ones it was started with; what does not change between
     saves is which lot of the world a zone is."""
-    global _theirs
     import services
     from protocolbuffers import FileSerialization_pb2 as serialization
 
     here = {}
     for zone in services.get_persistence_service().zone_proto_buffs_gen():
-        if zone.lot_description_id:
-            here[(zone.lot_description_id, zone.active_plex)] = zone.zone_id
+        here.setdefault(lot_of(zone), zone.zone_id)
+    here.pop("", None)
     data = serialization.SaveGameData()
     data.MergeFromString(save)
     names = {}
     for zone in data.zones:
-        ours = here.get((zone.lot_description_id, zone.active_plex))
+        ours = here.get(lot_of(zone))
         if ours and ours != zone.zone_id:
             names[zone.zone_id] = ours
-    _theirs = dict((ours, theirs) for theirs, ours in names.items())
+    _names.adopt(getattr(data, "guid", 0) or 0, names)
     if not names:
         return zone_id, save, objects
-    replaced = rename(data, names)
+    replaced, objects = _renamed(names, data, objects)
     save = data.SerializeToString()
-    if objects:
-        contents = serialization.ZoneObjectData()
-        contents.MergeFromString(objects)
-        rename(contents, names)
-        objects = contents.SerializeToString()
     log.info("resync: the host's save names {} of its {} zones differently; {} ids renamed to ours".format(
         len(names), len(data.zones), replaced))
     if zone_id not in names:

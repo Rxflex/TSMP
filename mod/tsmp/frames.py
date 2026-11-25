@@ -15,8 +15,10 @@ CONTROL  any direction  UTF-8 JSON {"type": ..., ...}
 NATIVE   any direction  a call a game client made into its simulation without
                         passing through Python, to be repeated in the other
                         simulation; id is the call's hash (see tsmp/native.py)
-STATE    host -> guest  the host's save as it is now, for the guest to load
-                        (see tsmp/resync.py)
+PART     any direction  a piece of a large payload: the host's snapshot for a
+                        guest (see tsmp/resync.py), a guest's household (see
+                        tsmp/household.py); id is the transfer's (see
+                        tsmp/transfer.py)
 
 Pure Python, no game imports. crates/tsmp-net/src/live.rs is the other
 implementation of this format.
@@ -29,8 +31,7 @@ MSG = 1
 COMMAND = 2
 CONTROL = 3
 NATIVE = 4
-STATE = 5
-HOUSEHOLD = 6
+PART = 7
 
 MAX_PAYLOAD = 64 * 1024 * 1024
 
@@ -52,6 +53,15 @@ def control(type_, **fields):
 
 def command(name, args):
     return pack_json(COMMAND, {"name": name, "args": [str(a) for a in args]})
+
+
+def number(value):
+    """An id or count from a CONTROL frame: ids are 64 bits wide and travel
+    as text. 0 for anything that is not a number."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def parse_json(payload):
