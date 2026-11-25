@@ -279,9 +279,13 @@ the same step. The requests carry the program's name and version and nothing
 about you or your computer. Set the environment variable `TSMP_NO_UPDATE` to
 switch this off.
 
-A release is made by pushing a tag `v<version>` that matches the version in
-`crates/tsmp-launcher/Cargo.toml`; `.github/workflows/release.yml` builds and
-publishes it.
+A release is made by describing it in [CHANGELOG.md](CHANGELOG.md) and
+[CHANGELOG.ru.md](CHANGELOG.ru.md), then pushing a tag `v<version>` that
+matches the version in `crates/tsmp-launcher/Cargo.toml`.
+`.github/workflows/release.yml` tests and builds everything and publishes the
+release; its page, with the picture, what is new, the files with their
+checksums and every change since the last release, is written by
+`.github/release/notes.py`.
 
 ## Building
 
