@@ -790,8 +790,14 @@ sims), the clock (each game keeps its own while apart), and whatever happened
 on the guest's lot between its last gift and the host walking onto that lot.
 
 This has only been run against fakes (`mod/tests/test_session.py`,
-`test_relay.py`, `test_resync.py`, `test_household.py`); it has not been seen working in two games
-yet.
+`test_relay.py`, `test_resync.py`, `test_household.py`, `test_transfer.py`);
+it has not been seen working in two games yet. `mod/tests/test_fuzz.py`
+drives a host and a guest through random runs of reloads, travels, dropped
+links, failed saves and refusals, games and launchers starting again, and
+players pressing play, and checks that the two always fall quiet, only join
+on a guest client built from the host's current state, and join once things
+calm down; `TSMP_FUZZ_RUNS` and `TSMP_FUZZ_STEPS` make it search longer
+(30 000 runs of 150 steps found nothing).
 
 Create-a-Sim and other screens the host's simulation opens with
 `sims4.commands.client_cheat` for a sim the guest plays are kept from the
