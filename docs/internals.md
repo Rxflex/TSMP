@@ -688,11 +688,11 @@ saves. Instead:
 
 1. The guest saves (the save the game makes before a travel) and sends a
    partial `SaveGameData`: the `HouseholdData` of the household it plays, the
-   `SimData` of its sims, the `ZoneData` of its home lot, of the lot it is
-   on and of every lot one of its sims is on, and the `ZoneObjectData` of
-   its home lot. A guest playing in a copy of the host's save (step 3) knows
-   the host's lots by its own ids, so it renames them back to the host's
-   first.
+   `SimData` of its sims, the relationships those sims are in, the
+   `ZoneData` of its home lot, of the lot it is on and of every lot one of
+   its sims is on, and the `ZoneObjectData` of its home lot. A guest playing
+   in a copy of the host's save (step 3) knows the host's lots by its own
+   ids, so it renames them back to the host's first.
 2. The host copies those into its own save through the persistence service
    (`add_sim_proto_buff`, `add_household_proto_buff`, the zone's message in
    place) and calls `HouseholdManager.load_household`, which is what the game
@@ -721,6 +721,7 @@ saves. Instead:
    copy, which is not taken in. The host keeps, in
    `<user dir>/tsmp/households.json`, the host save each household was last
    merged into and whether it has been played joined there since.
+   Relationships are carried as described below.
    `take_in` answers `took in`, `updated`, `partial` or `kept`, or raises
    `Refusal`, which is `final` when the payload itself can never be taken
    (unreadable, not one household, no household id) and otherwise may pass
@@ -785,9 +786,55 @@ selectable sims and spawns those not on the lot, so that they are simulated
 as played sims. A guest that has played another household is refused a sim
 of the host's own household.
 
-Not merged: relationships (they live in a service of the save, not in the
-sims), the clock (each game keeps its own while apart), and whatever happened
-on the guest's lot between its last gift and the host walking onto that lot.
+Relationships between sims are not kept in `SimData` (its old
+`attributes.relationship_tracker` is only read from old saves) but for the
+whole save, one `PersistableServiceRelationship` per pair of sims (`sim_id_a`
+the smaller id, the bits, tracks, knowledge and compatibility of the pair and
+of each side), in
+`SaveGameData.save_slot.gameplay_data.relationship_service.relationships`.
+The relationship service holds them in memory: it reads them when a save is
+loaded in full, writes them all over that field at every save, and is not
+reloaded by a travel or by `HouseholdManager.load_household`. So:
+
+- The guest, after its save (which wrote the service's state into the save),
+  copies every entry that one of the sims it gives (those in its gift's
+  `sims`) is in into the same field of the gift,
+  `save_slot.gameplay_data.relationship_service.relationships`, so the gift
+  stays one `SaveGameData`. Sim ids are the same in both saves; the zone
+  renaming runs over these too, though they hold no zone ids. Reading them
+  can fail without stopping the gift.
+- The host, once `load_household` has read the sims (when it takes the
+  household in or updates it, not when it keeps its own), takes the entries
+  that one of the sims it took in is in (for the household it plays, only
+  the sims it updated) and both of whose sims it has in its
+  `sim_info_manager`. Inside the service's
+  `suppress_client_updates_context_manager`, for each pair it calls
+  `destroy_relationship(a, b, notify_client=False)`, `create_relationship(a,
+  b)` and `load_relationship(entry)` on what that returns, which replaces
+  its relationship of that pair rather than adding to it, then what the
+  service does after a load: `enable_player_sim_track_decay` when one of the
+  two is a played sim, `refresh_knowledge` and `update_compatibility`, each
+  only where the game has it. A pair that fails is logged and skipped. Then
+  `send_relationship_info` goes to the client for each sim taken in, with
+  `allow_sending_npc_info=True` where the game takes that keyword. The host
+  never writes the field of its own save: its next save would overwrite it.
+  The guest's copy of a pair wins over the host's, even when the other sim
+  is the host's.
+
+Relationships with NPCs that only the guest's save has are dropped (and
+counted in the host's log): those NPCs do not come along, and the game
+throws away a relationship whose sim it lacks. Family relationship bits
+(sibling, cousin, in-law and the like) may not hold: since a 2026 update of
+the game a family tree service (`gameplay_data.family_tree_service`) works
+those out and removes, at load, family bits it has no relation for, and it
+is not carried or updated. The direct family relations in each sim's
+`genealogy_tracker` come along with the `SimData`. The names of the
+service's calls come from decompiles of earlier builds and have not been
+checked in the current game; one that is missing is logged and skipped.
+
+Not merged: the clock (each game keeps its own while apart), and whatever
+happened on the guest's lot between its last gift and the host walking onto
+that lot.
 
 This has only been run against fakes (`mod/tests/test_session.py`,
 `test_relay.py`, `test_resync.py`, `test_household.py`, `test_transfer.py`);
@@ -811,10 +858,20 @@ session with households of their own: the host's save takes in the guest's
 household, and the guest plays on in the host's world, which a save of its
 game writes over its own slot.
 
+A guest that travels to the host's lot loads it once. Its simulation
+orders the travel with `MSG_TRAVEL_SIMS_TO_ZONE` (`TravelSimsToZone`: the
+zone in fixed64 field 1, the travellers in packed fixed64 field 2); the
+session holds that message back when the zone is the host's lot (by lot,
+else by id), gives the household if the guest played by itself, asks for
+the host's state of that lot, and travels into it with the same sims. Should
+anything fail, the message goes to the client as it was, and the travel
+happens as before.
+
 Known gaps: the guest does not follow the host into CAS, it waits, and it
 cannot open CAS for its own sim; replies to commands that still run locally
-on the guest (hovertips, for one) never arrive; arriving on the host's lot
-takes two loading screens, the travel and then the host's state.
+on the guest (hovertips, for one) never arrive. A travel held back loses the
+travel situation the guest's game made for it (its seed is in the guest's
+save, which the host's replaces).
 
 ## Meeting through a session server
 

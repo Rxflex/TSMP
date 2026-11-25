@@ -12,11 +12,13 @@ guest coming back with a copy older than the host's (`Merges`) and sims of
 the household the host plays that are on the host's lot.
 
 What is sent (`give`) is a partial `SaveGameData` with the guest's household,
-its sims, the zones of its home lot, of the lot it is on and of the lots its
-sims are on, and the objects of the home lot, all under the host's zone ids.
-The host (`take_in`) puts those in its own save and has its household
-manager read them, the way the game does when a household is loaded from a
-save. Zones the host does not have are matched to its own by lot.
+its sims, the relationships those sims are in, the zones of its home lot, of
+the lot it is on and of the lots its sims are on, and the objects of the home
+lot, all under the host's zone ids. The host (`take_in`) puts those in its
+own save and has its household manager read them, the way the game does when
+a household is loaded from a save, and hands the relationships to its
+relationship service. Zones the host does not have are matched to its own by
+lot.
 
 `welcome` and `send_off` hand the guest's sims to the host's simulation and
 take them back when the guest leaves the host's lot.
@@ -25,6 +27,7 @@ Only runs inside the game; the format is the one of a snapshot. `Merges` and
 the helpers that take their game objects as arguments are pure.
 """
 
+import contextlib
 import json
 import os
 
@@ -191,6 +194,7 @@ def give(done, whole=False):
             zone = persistence.get_zone_proto_buff(zone_id)
             if zone is not None:
                 part.zones.add().CopyFrom(zone)
+        relationships = _give_relationships(persistence, part)
         has_home = home and persistence.get_zone_proto_buff(home) is not None
         # In the host's save, the objects of our home are ours to give only
         # if we ran that lot since loading the host's state and the host gave
@@ -201,8 +205,9 @@ def give(done, whole=False):
         home, objects = resync.as_host(part, home, objects)
         save = part.SerializePartialToString()
         payload = resync.pack(home, save, objects)
-        log.info("household: giving {:#x} with {} sims, home {:#x}, {} zones, {} bytes ({} to send)".format(
-            household_id, len(part.sims), home, len(part.zones), len(save) + len(objects), len(payload)))
+        log.info("household: giving {:#x} with {} sims, {} relationships, home {:#x}, {} zones, "
+                 "{} bytes ({} to send)".format(household_id, len(part.sims), relationships, home,
+                                                len(part.zones), len(save) + len(objects), len(payload)))
         return payload
 
     def finished(persistence):
@@ -214,6 +219,36 @@ def give(done, whole=False):
         done(payload)
 
     resync.save_then(finished)
+
+
+def _relationships(slot):
+    """The sim-to-sim relationships of a `SaveSlotData`. The game keeps them
+    for the whole save, one entry per pair of sims, and not with either sim;
+    a gift keeps them in the same place as a whole save."""
+    return slot.gameplay_data.relationship_service.relationships
+
+
+def relationships_of(entries, sim_ids):
+    """The relationships of `entries` (PersistableServiceRelationship, or
+    anything with `sim_id_a` and `sim_id_b`) that one of `sim_ids` is in."""
+    return [entry for entry in entries if entry.sim_id_a in sim_ids or entry.sim_id_b in sim_ids]
+
+
+def _give_relationships(persistence, part):
+    """Guest: copy into `part` the relationships of the sims it holds. Our
+    save has just been made, and making it wrote the relationship service's
+    state into it. Returns how many were copied; a failure is logged and
+    the household is given without them."""
+    try:
+        sims = set(sim.sim_id for sim in part.sims)
+        ours = _relationships(persistence.get_save_slot_proto_buff())
+        given = _relationships(part.save_slot)
+        for entry in relationships_of(ours, sims):
+            given.add().CopyFrom(entry)
+        return len(given)
+    except Exception:
+        log.exception("household: could not give the relationships of its sims")
+        return 0
 
 
 def lacking_sims(sim_ids, given, persistence):
@@ -320,6 +355,7 @@ def _take(persistence, part, given, home, objects, known):
             log.exception("household: could not set the funds")
     if manager.load_household(household_id) is None:
         raise Refusal("the game did not load the household", final=False)
+    _take_relationships(part, sims)
     outcome = UPDATED if known else TOOK_IN
     log.info("household: {} {:#x} ({} sims, home {:#x})".format(
         outcome, household_id, len(part.sims), ours.home_zone))
@@ -355,6 +391,7 @@ def _update_played(persistence, part, household_id):
     _place(persistence, sims, part.zones, household.home_zone, household.home_zone)
     if manager.load_household(household_id) is None:
         raise Refusal("the game did not load the household", final=False)
+    _take_relationships(part, sims)
     log.info("household: {:#x} is played here; {} of its {} sims updated".format(
         household_id, len(sims), len(part.sims)))
     return PARTIAL
@@ -364,6 +401,111 @@ def _sims_to_update(sims, members, here):
     """The SimData of `sims` that are `members` of the household and not
     `here(sim_id)`."""
     return [sim for sim in sims if sim.sim_id in members and not here(sim.sim_id)]
+
+
+def relationships_to_apply(entries, taken, exists):
+    """(the relationships of `entries` to put in place, how many of them are
+    left out). Only those of the sims `taken` in: of any other sim, ours are
+    the truth. One whose other sim is not in our game (`exists(sim_id)` is
+    false) is left out: that is an NPC of the guest's own save, which does
+    not come along, and the game would throw the relationship away at its
+    next load anyway."""
+    theirs = relationships_of(entries, taken)
+    kept = [entry for entry in theirs if exists(entry.sim_id_a) and exists(entry.sim_id_b)]
+    return kept, len(theirs) - len(kept)
+
+
+def _take_relationships(part, sims):
+    """Host: put in place the guest's relationships of `sims`, the SimData
+    just loaded. Loading a household does not read relationships, and the
+    relationship service writes its own over the save's at every save, so
+    they go to the service, the way its own load hands them over. A failure
+    is only logged: the household stays taken in."""
+    import services
+
+    try:
+        given = _relationships(part.save_slot)
+        if not given:
+            return
+        infos = services.sim_info_manager()
+        taken = set(sim.sim_id for sim in sims)
+        chosen, missing = relationships_to_apply(given, taken, lambda sim_id: infos.get(sim_id) is not None)
+        carried = put_relationships(services.relationship_service(), infos, chosen, taken)
+        log.info("household: {} of {} relationships carried, {} left out for a sim not in this save".format(
+            carried, len(chosen), missing))
+    except Exception:
+        log.exception("household: could not take the relationships in")
+
+
+def put_relationships(service, infos, entries, taken):
+    """Have the relationship service `service` hold the relationships
+    `entries` in place of its own of those pairs, then send the game client
+    those of the sims `taken`. `infos` is the sim info manager. Returns how
+    many were put in place."""
+    carried = 0
+    with _quietly(service):
+        for entry in entries:
+            if _replace_relationship(service, infos, entry):
+                carried += 1
+    # Sent once the service talks to the client again: while it is quiet it
+    # drops what it is asked to send.
+    for sim_id in taken:
+        _send_relationships(service, sim_id)
+    return carried
+
+
+def _quietly(service):
+    """Keep the service from telling the game client about each bit and
+    track as a relationship loads, as its own load does; nothing for a game
+    without that."""
+    quiet = getattr(service, "suppress_client_updates_context_manager", None)
+    return quiet() if quiet is not None else contextlib.nullcontext()
+
+
+# What the game does to a relationship once loaded, as after loading a save;
+# a game that lacks one goes without.
+_AFTER_LOAD = ("refresh_knowledge", "update_compatibility")
+
+
+def _replace_relationship(service, infos, entry):
+    """Make the relationship of the pair of `entry` the one it describes.
+    Ours is destroyed first: loading over it would only add the guest's
+    bits and tracks to ours, and keep those the guest lost. Returns whether
+    it is in place; a failure is logged and the pair skipped."""
+    a, b = entry.sim_id_a, entry.sim_id_b
+    try:
+        service.destroy_relationship(a, b, notify_client=False)
+        relationship = service.create_relationship(a, b)
+        if relationship is None:
+            log.info("household: the game makes no relationship of {:#x} and {:#x}".format(a, b))
+            return False
+        relationship.load_relationship(entry)
+        steps = _AFTER_LOAD
+        if any(getattr(infos.get(sim_id), "is_player_sim", False) for sim_id in (a, b)):
+            # Played sims' relationships decay; the game turns that on at load.
+            steps = ("enable_player_sim_track_decay",) + steps
+        for name in steps:
+            step = getattr(relationship, name, None)
+            if step is not None:
+                step()
+        return True
+    except Exception:
+        log.exception("household: could not carry the relationship of {:#x} and {:#x}".format(a, b))
+        return False
+
+
+def _send_relationships(service, sim_id):
+    """Send the game client the relationships of `sim_id`, those with NPCs
+    too: a sim of the guest's may be an NPC here, and is to show its
+    relationships once the other player plays it."""
+    try:
+        try:
+            service.send_relationship_info(sim_id, allow_sending_npc_info=True)
+        except TypeError:
+            # Older games know no such keyword, and send them all.
+            service.send_relationship_info(sim_id)
+    except Exception:
+        log.exception("household: could not send the relationships of {:#x}".format(sim_id))
 
 
 def _copy_sims(persistence, sims):

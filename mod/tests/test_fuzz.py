@@ -18,9 +18,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from tsmp import session  # noqa: E402
+from tsmp import session, wire  # noqa: E402
 
-from test_session import Player, settle  # noqa: E402
+from test_session import TRAVEL, Player, settle, travel_to  # noqa: E402
 
 RUNS = int(os.environ.get("TSMP_FUZZ_RUNS", "300"))
 STEPS = int(os.environ.get("TSMP_FUZZ_STEPS", "80"))
@@ -39,6 +39,8 @@ class Pair:
         guest.shows = None
         self.linked = True
         self.was_joined = False
+        # Where a travel the guest's game ordered and the session held goes.
+        self.travelling_to = None
         self.host = self.new_host()
         self.guest.session.bridge_up(session.GUEST)
         self.host.link(1)
@@ -98,6 +100,9 @@ class Pair:
         was asked to and puts it in place, else its own simulation."""
         guest = self.guest
         loading = guest.session._phase == session.LOADING and guest.game.adopted
+        if loading and guest.game.travellers[-1] and self.travelling_to is not None:
+            # The held travel, into the host's state.
+            lot, self.travelling_to = self.travelling_to, None
         guest.leave()
         self.settle()
         if loading and not guest.game.loads_its_own:
@@ -135,6 +140,25 @@ class Pair:
             self.guest.link(1)
             self.settle()
 
+    def travels_let_go(self):
+        """A travel the session held and then let go: the client travels."""
+        delivered = self.guest.game.delivered
+        orders = [data for msg_id, data in delivered if msg_id == TRAVEL]
+        if orders:
+            delivered[:] = [item for item in delivered if item[0] != TRAVEL]
+            self.travelling_to = None
+            self.reload(self.guest, wire.travel(orders[-1])[0])
+
+    def guest_orders_travel(self):
+        """The guest's game orders its client to travel to the host's lot."""
+        lot = self.host.game.zone_number
+        order = travel_to(lot, 222)
+        if self.guest.session.outbound(TRAVEL, order) is None:
+            self.travelling_to = lot
+            self.settle()
+        else:
+            self.reload(self.guest, lot)
+
     def restart_host(self):
         self.host = self.new_host(self.host.now)
         if self.linked:
@@ -165,7 +189,7 @@ class Pair:
 
     def step(self):
         rng = self.rng
-        choice = rng.randrange(17)
+        choice = rng.randrange(18)
         if choice == 0:
             self.tick(rng.choice([0.5, 5, 20, 60, 200]))
         elif choice == 1:
@@ -195,6 +219,8 @@ class Pair:
             self.guest_launcher_restarts()
         elif choice == 15:
             self.host_refuses()
+        elif choice == 16:
+            self.guest_orders_travel()
         else:
             self.tick(1)
 
@@ -212,6 +238,9 @@ class Pair:
         self.answer_contribution()
         if self.guest.session._phase == session.LOADING:
             self.guest_loads()
+        elif not self.guest.session.stale and self.guest.game.zone_number != self.host.game.zone_number:
+            # The guest goes where the host is.
+            self.guest_orders_travel()
         self.tick(5)
 
     # -- what must hold -----------------------------------------------------
@@ -238,12 +267,14 @@ class FuzzTest(unittest.TestCase):
         for step in range(STEPS):
             try:
                 pair.step()
+                pair.travels_let_go()
             except AssertionError as error:
                 self.fail("{} step {}: {}".format(where, step, error))
             pair.check(self, "{} step {}".format(where, step))
         pair.calm()
         for _ in range(80):
             pair.calm_step()
+            pair.travels_let_go()
             pair.check(self, where + " calm")
             if pair.joined():
                 return

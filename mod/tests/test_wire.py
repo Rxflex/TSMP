@@ -97,6 +97,19 @@ class SplitViewUpdateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             wire.split_view_update(b"\x0a\x05\x01", 21)
 
+class TravelTest(unittest.TestCase):
+    def test_reads_where_to_and_who(self):
+        out = bytearray()
+        wire.put_field(out, 1, wire.FIXED64, 0x1122334455667788)
+        wire.put_field(out, 2, wire.BYTES, (5).to_bytes(8, "little") + (6).to_bytes(8, "little"))
+        wire.put_field(out, 3, wire.FIXED64, 5)
+        self.assertEqual(wire.travel(bytes(out)), (0x1122334455667788, [5, 6]))
+
+    def test_what_is_not_a_travel(self):
+        self.assertEqual(wire.travel(b"\xff"), (0, []))
+        self.assertEqual(wire.travel(b""), (0, []))
+
+
 if __name__ == "__main__":
     unittest.main()
 

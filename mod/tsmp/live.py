@@ -76,6 +76,7 @@ def _consts():
         },
         shared=[_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41)],
         notice=_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41),
+        travel=_name(Consts_pb2, "MSG_TRAVEL_SIMS_TO_ZONE", 239),
     )
 
 
@@ -200,8 +201,15 @@ class Game:
         resync.install()
         resync.take(done, zone_id, lot)
 
-    def adopt(self, payload):
-        resync.adopt(payload, self.active_sim_id(), session_module.RELOAD_SECONDS)
+    def adopt(self, payload, travellers=()):
+        sims = list(travellers) or [self.active_sim_id()]
+        resync.adopt(payload, sims, session_module.RELOAD_SECONDS)
+
+    def host_zone(self, zone_id):
+        return resync.host_zone(zone_id)
+
+    def lot_of(self, zone_id):
+        return resync.lot_key(zone_id)
 
     def adoptions(self):
         return resync.snapshots_put()

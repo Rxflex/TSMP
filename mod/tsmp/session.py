@@ -114,7 +114,7 @@ class Consts:
     from the game's protocol modules."""
 
     def __init__(self, view_update, pie_menu, interactable, set_sim_active, host_only=(), guest_local=(),
-                 owned=None, shared=(), notice=None):
+                 owned=None, shared=(), notice=None, travel=None):
         self.view_update = view_update
         # Replies to a command, wanted only by the client that issued it.
         self.replies = frozenset([pie_menu, interactable])
@@ -132,6 +132,8 @@ class Consts:
         # The message that shows a notification, which is how the session
         # tells its own player what it is doing.
         self.notice = notice
+        # The message that orders the game client to travel to a lot.
+        self.travel = travel
 
 
 class Session:
@@ -145,8 +147,9 @@ class Session:
         execute(name, args, sim_id)    run a command as the remote player
         snapshot(done, zone_id, lot)   host: save, then done(bytes or None);
                                        the snapshot is for a guest there
-        adopt(payload)                 guest: load the host's snapshot by
-                                       reloading the zone; raises on failure
+        adopt(payload, travellers)     guest: load the host's snapshot by
+                                       reloading the zone, or travelling with
+                                       those sims; raises on failure
         adoptions()                    guest: how many snapshots the game has
                                        loaded so far
         reload()                       guest: load our own zone again, so that
@@ -158,6 +161,8 @@ class Session:
                                        host's state and plays it
         snapshot_zone(zone_id, lot)    host: the zone of ours a snapshot for
                                        a guest there would be of, or 0
+        host_zone(zone_id)             guest: the host's id for a zone of ours
+        lot_of(zone_id)                what names that zone's lot, or ""
         loaded_by_hand()               guest: the zone just loaded is not the
                                        end of a travel but of a load from the
                                        menu; forgets what came from the host
@@ -245,6 +250,10 @@ class Session:
         self._whole_world = ""
         # Guest: we are loading our own zone again.
         self._reloading = False
+        # Guest: the travel to the host's lot our game ordered, held back
+        # until the host's state is here: (message, zone of ours, the host's
+        # name for it, its lot, the travellers).
+        self._travel = None
         # Guest: whether what we sent under a request held all of the
         # household.
         self._sent_whole = {}
@@ -644,6 +653,7 @@ class Session:
         if self._shows_host and self._in_zone:
             self._reload()
         self._shows_host = False
+        self._let_travel_go()
         self._announce()
 
     def _reload(self):
@@ -763,15 +773,17 @@ class Session:
 
     def _ask(self):
         # Lots compare across saves; we may still be in a save of our own.
-        self._joining = self.same_zone
+        # A guest about to travel asks for the lot it travels to.
+        self._joining = self.same_zone or self._travel is not None
         self._asked_world = self.remote_world
         request = self._next(ASKING, SAVE_SECONDS)
         self._log("asking the host for its state")
         fields = {"id": request}
-        if self._zone:
-            fields["zone"] = str(self._zone)
-        if self._lot:
-            fields["lot"] = self._lot
+        zone, lot = (self._travel[2], self._travel[3]) if self._travel is not None else (self._zone, self._lot)
+        if zone:
+            fields["zone"] = str(zone)
+        if lot:
+            fields["lot"] = lot
         household = self._call("household_id", 0)
         if household:
             fields["household"] = str(household)
@@ -794,14 +806,17 @@ class Session:
         if self.role != GUEST or self._phase != RECEIVING or not self._in_zone:
             return
         self._put_before = self._call("adoptions", 0)
+        travellers = self._travel[4] if self._travel is not None else ()
         try:
-            self._game.adopt(payload)
+            self._game.adopt(payload, travellers)
         except Exception as error:
             self._give_up("could not load the host's state ({}); playing on by ourselves".format(error))
             return
         self._phase = LOADING
         self._left = False
         self._lost_loading = False
+        # The game travels into the host's state now.
+        self._travel = None
         self._deadline = self._clock() + RELOAD_SECONDS
 
     def _loaded(self):
@@ -1338,6 +1353,8 @@ class Session:
         Returns what the local client should receive instead, or None for
         nothing."""
         consts = self._consts
+        if msg_id == consts.travel and consts.travel is not None and self._holds_travel(data):
+            return None
         if self._notices and msg_id == consts.notice:
             for text in self._notices:
                 if text in data:
@@ -1380,6 +1397,36 @@ class Session:
                 return None
             return selection or None
         return None
+
+    def _holds_travel(self, data):
+        """Guest: our game orders its client to travel. To the lot the host
+        is on, that would be two loading screens: our own copy of the lot,
+        then the host's state. So the order is held back, the host's state
+        fetched, and the game travels once, into it."""
+        if (self.role != GUEST or self._phase != IDLE or self.live or not self.remotes or not self.remote_in_zone
+                or not self.speaks_our_version or self._travel is not None):
+            return False
+        zone_id, sims = wire.travel(data)
+        if not zone_id:
+            return False
+        theirs = self._call("host_zone", 0, zone_id)
+        lot = self._call("lot_of", "", zone_id)
+        if not (lot == self.remote_lot if lot and self.remote_lot else theirs and theirs == self.remote_zone):
+            return False
+        self._travel = (data, zone_id, theirs, lot, sims)
+        self._tell("travelling to the other player's lot; bringing their game along")
+        self._go_stale("travelling to the host's lot", give=self._alone or not self.same_save)
+        return True
+
+    def _let_travel_go(self):
+        """Guest: the held travel goes ahead as our game ordered it."""
+        travel, self._travel = self._travel, None
+        if travel is not None and self._in_zone:
+            self._log("travelling as our game ordered")
+            try:
+                self._game.deliver(self._consts.travel, travel[0])
+            except Exception as error:
+                self._log("could not travel: {}".format(error))
 
     def _guests(self, sim_id):
         """Whether `sim_id` is played by the guest: the sim it controls, or

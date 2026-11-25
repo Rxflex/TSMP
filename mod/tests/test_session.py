@@ -54,7 +54,9 @@ class FakeGame:
         self.snapshot_zones = []
         self.zone_number = 7
         self.lot_name = ""
+        self.lot_names = {}
         self.adopted = []
+        self.travellers = []
         self.adopt_error = None
         # The game reloads the zone from its own save instead.
         self.loads_its_own = False
@@ -90,6 +92,12 @@ class FakeGame:
     def lot(self):
         return self.lot_name
 
+    def host_zone(self, zone_id):
+        return zone_id
+
+    def lot_of(self, zone_id):
+        return self.lot_names.get(zone_id, "")
+
     def active_sim_id(self):
         return self.sim_id
 
@@ -108,10 +116,11 @@ class FakeGame:
         self.snapshots.append(done)
         self.snapshot_zones.append(zone_id)
 
-    def adopt(self, payload):
+    def adopt(self, payload, travellers=()):
         if self.adopt_error is not None:
             raise self.adopt_error
         self.adopted.append(payload)
+        self.travellers.append(list(travellers))
         if not self.loads_its_own:
             self.put += 1
 
@@ -196,6 +205,7 @@ class Player:
             owned={DIALOG: 5, NOTIFICATION: 5},
             shared=[NOTIFICATION],
             notice=NOTIFICATION,
+            travel=TRAVEL,
         )
         self.session = session.Session(self.game, consts, self._send, log=self.logged.append, clock=lambda: self.now)
         self.role = role
@@ -272,6 +282,14 @@ def joined():
 def strangers():
     """A host and a guest on the same lot, each in a save of their own."""
     return connected(guest_save=2)
+
+
+def travel_to(zone_id, *sim_ids):
+    """A TravelSimsToZone message."""
+    out = bytearray()
+    wire.put_field(out, 1, wire.FIXED64, zone_id)
+    wire.put_field(out, 2, wire.BYTES, b"".join(sim_id.to_bytes(8, "little") for sim_id in sim_ids))
+    return bytes(out)
 
 
 def owned(sim_id):
@@ -1514,6 +1532,52 @@ class LotsTest(unittest.TestCase):
         self.assertTrue(guest.session.resync())
         both(host, guest)
         self.assertEqual(guest.game.contributions, [])
+
+    def test_a_guest_travelling_to_the_hosts_lot_loads_it_once(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        loads_before = len(guest.game.adopted)
+        # The guest's game orders its client to travel to the host's lot.
+        order = travel_to(7, 222, 333)
+        self.assertIsNone(guest.session.outbound(TRAVEL, order))
+        self.assertTrue(guest.session.stale)
+        settle(host, guest)
+        # Played by itself, so its household goes first; then the state of
+        # the lot it travels to.
+        guest.game.contributions[-1](b"household")
+        settle(host, guest)
+        self.assertEqual(host.game.snapshot_zones[-1], 7)
+        self.assertTrue(host.session.holding)
+        answers(host, guest)
+        self.assertEqual(len(guest.game.adopted), loads_before + 1)
+        self.assertEqual(guest.game.travellers[-1], [222, 333])
+        # One loading screen: from lot 8 straight into the host's lot.
+        guest.leave()
+        guest.arrive(7)
+        settle(host, guest)
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+
+    def test_a_travel_elsewhere_goes_as_it_is(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        order = travel_to(9, 222)
+        self.assertEqual(guest.session.outbound(TRAVEL, order), order)
+        self.assertFalse(guest.session.stale)
+
+    def test_a_held_travel_goes_as_it_was_ordered_when_the_host_cannot_save(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        reloads_from_host(host, guest)
+        guest.session._alone = False
+        order = travel_to(7, 222)
+        self.assertIsNone(guest.session.outbound(TRAVEL, order))
+        settle(host, guest)
+        answers(host, guest, None)
+        self.assertFalse(guest.session.stale)
+        self.assertEqual(guest.game.delivered[-1], (TRAVEL, order))
 
     def test_a_guest_playing_by_itself_can_ask_to_reload(self):
         host, guest = joined()

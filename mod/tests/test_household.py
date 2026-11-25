@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import shutil
@@ -207,6 +208,130 @@ class SendOffTest(unittest.TestCase):
         self.assertEqual(household._first_that_works(ways), "b")
         self.assertEqual(calls, ["a", "b"])
         self.assertIsNone(household._first_that_works([("a", fails)]))
+
+
+class Pair:
+    """A relationship entry of a save, as far as picking it goes."""
+
+    def __init__(self, a, b):
+        self.sim_id_a = a
+        self.sim_id_b = b
+
+
+class Info:
+    def __init__(self, player=False):
+        self.is_player_sim = player
+
+
+class Relationship:
+    """A relationship of the game that has no `update_compatibility`, as a
+    game might not."""
+
+    def __init__(self, calls, pair):
+        self.calls = calls
+        self.pair = pair
+
+    def load_relationship(self, entry):
+        if entry.sim_id_b == 99:
+            raise KeyError("damaged")
+        self.calls.append(("load", self.pair, entry))
+
+    def enable_player_sim_track_decay(self):
+        self.calls.append(("decay", self.pair))
+
+    def refresh_knowledge(self):
+        self.calls.append(("knowledge", self.pair))
+
+
+class RelationshipService:
+    """The relationship service of an older game: `send_relationship_info`
+    takes no keyword for NPCs."""
+
+    def __init__(self, refused=()):
+        self.calls = []
+        self.quiet = False
+        self.refused = refused
+
+    def destroy_relationship(self, a, b, notify_client=True):
+        self.calls.append(("destroy", (a, b), notify_client, self.quiet))
+
+    def create_relationship(self, a, b):
+        if (a, b) in self.refused:
+            return None
+        return Relationship(self.calls, (a, b))
+
+    def send_relationship_info(self, sim_id, target_sim_id=None):
+        self.calls.append(("send", sim_id, self.quiet))
+
+    @contextlib.contextmanager
+    def suppress_client_updates_context_manager(self):
+        self.quiet = True
+        try:
+            yield
+        finally:
+            self.quiet = False
+
+
+class RelationshipsTest(unittest.TestCase):
+    def test_the_relationships_a_sim_is_in_are_given(self):
+        entries = [Pair(1, 2), Pair(2, 3), Pair(3, 4), Pair(4, 1)]
+        self.assertEqual(household.relationships_of(entries, {1}), [entries[0], entries[3]])
+        self.assertEqual(household.relationships_of(entries, {2, 3}), entries[:3])
+        self.assertEqual(household.relationships_of(entries, set()), [])
+
+    def test_only_those_of_sims_taken_in_whose_sims_are_all_here_are_applied(self):
+        entries = [Pair(1, 2), Pair(1, 50), Pair(2, 3), Pair(3, 4), Pair(51, 2)]
+        here = {1, 2, 3, 4}
+        chosen, missing = household.relationships_to_apply(entries, {1, 2}, lambda sim_id: sim_id in here)
+        # 3 and 4 were not taken in: ours of them stay.
+        self.assertEqual(chosen, [entries[0], entries[2]])
+        self.assertEqual(missing, 2)
+
+    def test_each_pair_is_replaced_quietly_then_sent(self):
+        service = RelationshipService(refused={(5, 6)})
+        infos = {1: Info(player=True), 2: Info(), 3: Info(), 5: Info(), 6: Info()}
+        entries = [Pair(1, 2), Pair(2, 3), Pair(5, 6)]
+        self.assertEqual(household.put_relationships(service, infos, entries, [1, 2]), 2)
+        self.assertEqual(service.calls, [
+            ("destroy", (1, 2), False, True),
+            ("load", (1, 2), entries[0]),
+            ("decay", (1, 2)),
+            ("knowledge", (1, 2)),
+            # Neither is a played sim: theirs does not decay.
+            ("destroy", (2, 3), False, True),
+            ("load", (2, 3), entries[1]),
+            ("knowledge", (2, 3)),
+            # The game makes no relationship of these.
+            ("destroy", (5, 6), False, True),
+            ("send", 1, False),
+            ("send", 2, False),
+        ])
+
+    def test_a_pair_that_fails_is_skipped(self):
+        service = RelationshipService()
+        infos = {1: Info(), 2: Info(), 99: Info()}
+        entries = [Pair(1, 99), Pair(1, 2)]
+        self.assertEqual(household.put_relationships(service, infos, entries, [1]), 1)
+        self.assertIn(("load", (1, 2), entries[1]), service.calls)
+        self.assertNotIn(("knowledge", (1, 99)), service.calls)
+
+    def test_a_game_without_a_quiet_mode_still_takes_them(self):
+        class Plain(RelationshipService):
+            suppress_client_updates_context_manager = None
+
+        service = Plain()
+        self.assertEqual(household.put_relationships(service, {1: Info(), 2: Info()}, [Pair(1, 2)], [1]), 1)
+        self.assertEqual(service.calls[-1], ("send", 1, False))
+
+    def test_npc_relationships_are_sent_where_the_game_asks_for_them(self):
+        sent = []
+
+        class Newer:
+            def send_relationship_info(self, sim_id, target_sim_id=None, allow_sending_npc_info=False):
+                sent.append((sim_id, allow_sending_npc_info))
+
+        household._send_relationships(Newer(), 7)
+        self.assertEqual(sent, [(7, True)])
 
 
 class Message:

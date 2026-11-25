@@ -577,11 +577,12 @@ def _as_ours(zone_id, save, objects):
     return names.get(zone_id, zone_id), save, objects
 
 
-def adopt(payload, sim_id, seconds=PENDING_SECONDS):
+def adopt(payload, sim_ids, seconds=PENDING_SECONDS):
     """Guest: keep the host's snapshot and ask the game client to load the
-    zone it was made for: the one we are in, or the host's choice when its
-    save does not have ours; the client has `seconds` to start. Raises
-    ValueError for a snapshot that cannot be read."""
+    zone it was made for, with the sims `sim_ids`: the one we are in or are
+    travelling to, or the host's choice when its save does not have ours;
+    the client has `seconds` to start. Raises ValueError for a snapshot that
+    cannot be read."""
     global _pending
     zone_id, save, objects = unpack(payload)
     if not zone_id or not save:
@@ -592,4 +593,4 @@ def adopt(payload, sim_id, seconds=PENDING_SECONDS):
 
     _pending = (zone_id, save, objects, time.time() + seconds)
     log.info("resync: loading zone {:#x} from the host's save".format(zone_id))
-    travel_service.travel_sims_to_zone([sim_id] if sim_id else [], zone_id)
+    travel_service.travel_sims_to_zone([sim_id for sim_id in sim_ids if sim_id], zone_id)

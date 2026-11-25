@@ -69,6 +69,24 @@ def first_varint(data, number):
     return 0
 
 
+def travel(data):
+    """(zone id, [sim ids]) of a TravelSimsToZone message: the zone in
+    fixed64 field 1, the travellers in packed fixed64 field 2. (0, []) for
+    what cannot be read."""
+    zone_id, sim_ids = 0, []
+    try:
+        for number, wire_type, value in fields(data):
+            if number == 1 and wire_type == FIXED64:
+                zone_id = value
+            elif number == 2 and wire_type == BYTES and len(value) % 8 == 0:
+                sim_ids.extend(struct.unpack("<{}Q".format(len(value) // 8), value))
+            elif number == 2 and wire_type == FIXED64:
+                sim_ids.append(value)
+    except ValueError:
+        return 0, []
+    return zone_id, sim_ids
+
+
 def _put_varint(out, value):
     while value > 0x7F:
         out.append((value & 0x7F) | 0x80)
