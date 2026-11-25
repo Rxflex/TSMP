@@ -254,6 +254,23 @@ class MergesTest(unittest.TestCase):
         merges.merged(5, 9)
         self.assertFalse(merges.keeps_ours(5, 8, 9))
 
+    def test_a_copy_played_in_our_own_save_makes_others_older(self):
+        merges = household.Merges(self.path)
+        merges.took(5, 8, 9, household.TOOK_IN)
+        self.assertFalse(merges.keeps_ours(5, 8, 9))
+        # The guest plays it apart in our save and gives it again.
+        merges.took(5, 9, 9, household.UPDATED)
+        self.assertTrue(merges.keeps_ours(5, 8, 9))
+        # Kept means nothing came in.
+        merges.took(5, 8, 9, household.KEPT)
+        self.assertTrue(merges.keeps_ours(5, 8, 9))
+
+    def test_from_the_hosts_save_only_sims_on_our_lot_are_given(self):
+        on_lot, elsewhere = Sim(1, zone_id=7), Sim(2, zone_id=8)
+        self.assertTrue(household.ran_here(elsewhere, False, 7))
+        self.assertTrue(household.ran_here(on_lot, True, 7))
+        self.assertFalse(household.ran_here(elsewhere, True, 7))
+
     def test_is_kept_in_a_file(self):
         household.Merges(self.path).joined([5, 6], 9)
         with open(self.path, encoding="utf-8") as f:

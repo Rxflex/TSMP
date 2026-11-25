@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from tsmp import frames, session, wire  # noqa: E402
+from tsmp import frames, session, transfer, wire  # noqa: E402
 
 VIEW_UPDATE = 11
 PIE_MENU = 6
@@ -56,6 +56,9 @@ class FakeGame:
         self.lot_name = ""
         self.adopted = []
         self.adopt_error = None
+        # The game reloads the zone from its own save instead.
+        self.loads_its_own = False
+        self.put = 0
         self.save = 1
         self.contributions = []
         self.merged = []
@@ -97,6 +100,11 @@ class FakeGame:
         if self.adopt_error is not None:
             raise self.adopt_error
         self.adopted.append(payload)
+        if not self.loads_its_own:
+            self.put += 1
+
+    def adoptions(self):
+        return self.put
 
     def reload(self):
         self.reloads += 1
@@ -486,6 +494,57 @@ class LinkTest(unittest.TestCase):
         reloads_from_host(host, guest)
         self.assertTrue(guest.session.live)
 
+    def test_a_host_back_in_another_save_has_our_household_brought_in(self):
+        host, guest = joined()
+        host.leave()
+        settle(host, guest)
+        host.game.save = 99
+        host.arrive()
+        settle(host, guest)
+        both(host, guest)
+        self.assertEqual(len(guest.game.contributions), 1)
+        self.assertEqual(len(host.game.snapshots), 1)
+        guest.game.contributions[0](b"household")
+        settle(host, guest)
+        self.assertEqual(host.game.merged, [(b"household", 1)])
+        reloads_from_host(host, guest)
+        self.assertTrue(guest.session.live)
+
+    def test_a_new_peer_finds_nothing_of_the_old_ones_transfers(self):
+        host, guest = connected()
+        both(host, guest)
+        host.game.snapshots[0](b"x" * (transfer.WINDOW * 2))
+        self.assertIsNotNone(host.session._transfers.outgoing(1))
+        # The guest's launcher dialled again; the host's saw no gap.
+        host.link(1)
+        self.assertIsNone(host.session._transfers.outgoing(1))
+
+    def test_a_transfer_nobody_takes_is_dropped(self):
+        host, guest = connected()
+        both(host, guest)
+        host.game.snapshots[0](b"x" * (transfer.WINDOW * 2))
+        host.take()
+        host.tick(session.STALL_SECONDS + 1)
+        self.assertIsNone(host.session._transfers.outgoing(1))
+
+    def test_a_save_under_way_when_the_link_dropped_is_not_sent_for_a_new_request(self):
+        host, guest = connected()
+        both(host, guest)
+        host.link(0)
+        guest.link(0)
+        host.link(1)
+        guest.link(1)
+        settle(host, guest)
+        both(host, guest, 30)
+        # The first save still runs: no second one at the same time.
+        self.assertEqual(len(host.game.snapshots), 1)
+        host.game.snapshots[0](b"old")
+        settle(host, guest)
+        self.assertEqual(guest.game.adopted, [])
+        self.assertEqual(len(host.game.snapshots), 2)
+        answers(host, guest, b"new")
+        self.assertEqual(guest.game.adopted, [b"new"])
+
     def test_a_link_lost_while_loading_changes_nothing(self):
         host, guest = connected()
         both(host, guest)
@@ -675,6 +734,50 @@ class HoldTest(unittest.TestCase):
         self.assertIsNone(guest.session.outbound(NOTIFICATION, notice))
 
 
+    def test_the_host_is_not_held_for_a_guest_that_plays_another_lot(self):
+        host, guest = joined()
+        guest.leave()
+        settle(host, guest)
+        guest.arrive(8)
+        settle(host, guest)
+        both(host, guest)
+        self.assertTrue(host.session.holding)
+        answers(host, guest)
+        loads(host, guest)
+        self.assertTrue(guest.session.apart)
+        host.tick()
+        self.assertFalse(host.session.holding)
+        self.assertTrue(host.session.command("clock.setspeed", ["1"]))
+
+    def test_the_host_is_not_held_once_its_save_failed(self):
+        host, guest = connected()
+        both(host, guest)
+        host.game.snapshots[0](None)
+        settle(host, guest)
+        self.assertFalse(host.session.holding)
+        # Every try of the guest's holds again, and only for that try.
+        both(host, guest, session.RETRY_SECONDS[0] + 1)
+        gives(host, guest)
+        self.assertTrue(host.session.holding)
+
+    def test_a_guest_that_gets_in_after_the_hold_lapsed_loads_again(self):
+        host, guest = connected()
+        both(host, guest)
+        answers(host, guest)
+        guest.leave()
+        host.tick(session.HOLD_SECONDS + 1)
+        self.assertFalse(host.session.holding)
+        # The host's player may play on now; the guest's state is older.
+        guest.game.save = host.game.save
+        guest.arrive()
+        settle(host, guest)
+        self.assertFalse(guest.session.live)
+        self.assertTrue(guest.session.stale)
+        reloads_from_host(host, guest)
+        self.assertTrue(guest.session.live)
+        self.assertTrue(host.session.live)
+
+
 class GuestTest(unittest.TestCase):
     def test_local_simulation_is_muted(self):
         _, guest = joined()
@@ -801,6 +904,25 @@ class LotsTest(unittest.TestCase):
         self.assertEqual(host.game.snapshot_zones, [7, 8, 7])
         self.assertTrue(guest.session.live)
         self.assertTrue(host.session.live)
+
+    def test_a_joined_guest_that_gives_up_on_another_lot_tries_again_and_gives_nothing(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        both(host, guest)
+        answers(host, guest, None)
+        self.assertFalse(guest.session.stale)
+        for _ in range(4):
+            both(host, guest, session.RETRY_SECONDS[-1] + 1)
+            answers(host, guest, None)
+        self.assertEqual(guest.game.contributions, [])
+        self.assertEqual(len(host.game.snapshots), 6)
+        both(host, guest, session.RETRY_SECONDS[-1] + 1)
+        answers(host, guest)
+        loads(host, guest)
+        self.assertTrue(guest.session.apart)
+        guest.tick(session.GIVE_SECONDS + 1)
+        guest.tick()
+        self.assertEqual(len(guest.game.contributions), 1)
 
     def test_a_guest_playing_by_itself_gives_its_household_now_and_then(self):
         host, guest = joined()
@@ -1157,6 +1279,16 @@ class ResyncTest(unittest.TestCase):
         self.assertTrue(guest.session.stale)
         guest.tick(2)
         self.assertFalse(guest.session.stale)
+
+    def test_a_game_that_loads_its_own_state_instead_is_not_joined(self):
+        host, guest = joined()
+        guest.game.loads_its_own = True
+        host_reloads(host, guest)
+        answers(host, guest)
+        loads(host, guest)
+        self.assertFalse(guest.session.live)
+        self.assertFalse(guest.session.stale)
+        self.assertFalse(host.session.live)
 
     def test_a_long_loading_screen_is_waited_for(self):
         host, guest = joined()

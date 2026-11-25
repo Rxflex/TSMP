@@ -198,7 +198,10 @@ class Game:
         resync.take(done, zone_id, lot)
 
     def adopt(self, payload):
-        resync.adopt(payload, self.active_sim_id())
+        resync.adopt(payload, self.active_sim_id(), session_module.RELOAD_SECONDS)
+
+    def adoptions(self):
+        return resync.snapshots_put()
 
     def reload(self):
         """Travel to the zone we are in: the game saves our own simulation

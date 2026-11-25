@@ -576,9 +576,18 @@ worlds differ and the guest loads once more.
 From the request on, the host keeps its game paused: what it simulates
 before the guest is in would be missing on the guest. It pauses again every
 second and refuses `clock.setspeed` and `clock.toggle_pause_unpause` from
-its own player, whom it tells why, until the guest is in, the guest shows no
-sign of life for `HOLD_SECONDS`, or the link has been down for
-`LINK_SECONDS`.
+its own player, whom it tells why, until the guest is in or says it plays
+on by itself (it is in a zone and not joined: on another lot, or it gave
+up), the host's save fails, the guest takes none of the snapshot for
+`HOLD_SECONDS`, or the link has been down for `LINK_SECONDS`. In the last
+two cases the host's game may run on before the guest is in, so the host
+starts a new world: a guest that gets in later with the snapshot sees that
+it is behind and loads again. A guest whose game reloaded the zone from its
+own save instead of the snapshot (the client took longer than
+`RELOAD_SECONDS` to start, and the snapshot was dropped) does not join
+either. The host never runs two saves for guests at once; one asked for
+while another runs is taken when it ends, as the first may be older than
+what the guest asks after.
 
 Every wait is in seconds and counts from the last sign of progress, not from
 the request: a save gets `SAVE_SECONDS`, a transfer may take as long as it
@@ -693,7 +702,12 @@ The same message keeps the host up to date afterwards: a guest that plays by
 itself gives its household every `GIVE_SECONDS` seconds and before it joins
 the host on a lot. While joined nothing is given, as the host's simulation is
 the one that runs. A guest that was joined and gives up does not give its
-household when it comes back: the host's copy is the newer one.
+household again until it has loaded the host's state: the host's copy is the
+newer one. A guest playing in the host's save gives only the sims on its
+lot, and its home lot's objects only while it stands there: the rest of what
+it has is the host's copy as it loaded it, older than the host's own. A
+household given from the host's own save counts as played there, so a copy
+from any other save is older.
 
 When the guest reports the sim it controls and that sim belongs to another
 household than the host's, the host adds it, and every sim of its household

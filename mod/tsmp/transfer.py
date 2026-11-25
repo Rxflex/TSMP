@@ -36,8 +36,9 @@ _OFFSET = struct.Struct("<I")
 
 
 class Outgoing:
-    def __init__(self, ident, payload, now):
+    def __init__(self, ident, what, payload, now):
         self.ident = ident
+        self.what = what
         self.payload = payload
         self.sent = 0
         self.acked = 0
@@ -121,7 +122,7 @@ class Transfers:
         self.drop(ident)
         fields.update(id=ident, what=what, size=len(payload))
         self._send(frames.control("offer", **fields))
-        self._out[ident] = Outgoing(ident, payload, self._clock())
+        self._out[ident] = Outgoing(ident, what, payload, self._clock())
         self.pump()
 
     def pump(self):
@@ -200,6 +201,14 @@ class Transfers:
         """Stop sending or receiving `ident`, and tell the other side."""
         if self._out.pop(ident, None) is not None or self._in.pop(ident, None) is not None:
             self._send(frames.control("drop", id=ident))
+
+    def expire(self, seconds):
+        """Drop, quietly, every transfer that has not moved for `seconds`:
+        the other side gave it up or never knew of it."""
+        before = self._clock() - seconds
+        for transfers in (self._out, self._in):
+            for ident in [ident for ident, moving in transfers.items() if moving.progressed < before]:
+                del transfers[ident]
 
     def forget(self):
         """The other game is gone: whatever was under way is lost."""

@@ -762,6 +762,9 @@ class Sync:
         self._said_ok = None
         self._shown = None
         self._asked = None
+        # Operations were refused for want of room; asked for again once
+        # the queue is empty.
+        self._overflow = False
         self._inbox = []
         self._frames = []
         self._notes = []
@@ -894,7 +897,9 @@ class Sync:
         """While live: tell the other game when this one starts or stops
         taking part, and log once what the two agree on."""
         if self.ok != self._said_ok:
-            self.greet(self.place, want=False)
+            # Taking part again, the other game's edits refused meanwhile
+            # are to be sent again: it is asked where it stands.
+            self.greet(self.place, want=self.ok)
         state = self.state()
         if state != self._shown and state != "waiting for the other game":
             self._shown = state
@@ -923,6 +928,10 @@ class Sync:
         if self._pending.expired(now):
             self._drop_pending("none could be replayed for {:.0f} s".format(PENDING_SECONDS))
             # Asked for at once: nothing else might ask for them.
+            self._ask(self.place)
+        elif self._overflow and not len(self._pending):
+            # What did not fit is asked for once what did is replayed.
+            self._overflow = False
             self._ask(self.place)
 
     def _accept(self, shared, now):
@@ -954,6 +963,7 @@ class Sync:
                 )
             )
         if not self._pending.add(shared, now):
+            self._overflow = True
             return "too many are waiting"
         return None
 
@@ -972,6 +982,8 @@ class Sync:
     def _drop_pending(self, reason):
         count = self._pending.clear()
         self._asked = None
+        # Every caller asks again or greets again.
+        self._overflow = False
         if count:
             self._note("{} build op(s) of the other game dropped before replay: {}".format(count, reason))
 

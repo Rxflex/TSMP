@@ -40,8 +40,9 @@ except ImportError:  # the game's Python is cut down
 MAGIC = b"TSS1"
 _HEADER = struct.Struct("<4sBQII")
 _COMPRESSED = 1
-# Seconds the game client is given to start the reload once asked.
-PENDING_SECONDS = 60
+# Seconds the game client is given to start the reload once asked, unless
+# the caller says otherwise.
+PENDING_SECONDS = 90
 
 # Bytes of the last ZoneObjectData the simulation gave the game client for
 # each zone it saved, by zone id. A guest on a lot the host has left needs
@@ -117,6 +118,9 @@ class ZoneNames:
 
 _names = ZoneNames()
 _save_unknown = False
+# Guest: how many of the host's snapshots were put in place, which tells a
+# reload into the host's state from one of our own.
+_put = 0
 
 
 def current_save():
@@ -149,6 +153,18 @@ def host_zone(zone_id):
 def forget_names():
     """Guest: our zones are no longer named after any host's."""
     _names.forget()
+
+
+def snapshots_put():
+    """Guest: how many of the host's snapshots have been put in place."""
+    return _put
+
+
+def playing_adopted():
+    """Guest: the save we play came from the host, so what our simulation
+    has of anything it did not run itself is the host's copy, as it was
+    when we loaded it."""
+    return bool(_names.save) and _names.save == current_save()
 
 
 def adopted_save():
@@ -278,9 +294,10 @@ def _hand_over_gen(persistence, timeline):
 
 
 def _put_in_place(persistence):
-    global _pending
+    global _pending, _put
     zone_id, save, objects, _ = _pending
     _pending = None
+    _put += 1
     data = persistence.get_save_game_data_proto()
     data.Clear()
     data.MergeFromString(save)
@@ -479,11 +496,11 @@ def _as_ours(zone_id, save, objects):
     return names.get(zone_id, zone_id), save, objects
 
 
-def adopt(payload, sim_id):
+def adopt(payload, sim_id, seconds=PENDING_SECONDS):
     """Guest: keep the host's snapshot and ask the game client to load the
     zone it was made for: the one we are in, or the host's choice when its
-    save does not have ours. Raises ValueError for a snapshot that cannot be
-    read."""
+    save does not have ours; the client has `seconds` to start. Raises
+    ValueError for a snapshot that cannot be read."""
     global _pending
     zone_id, save, objects = unpack(payload)
     if not zone_id or not save:
@@ -492,6 +509,6 @@ def adopt(payload, sim_id):
     zone_id, save, objects = _as_ours(zone_id, save, objects)
     from world import travel_service
 
-    _pending = (zone_id, save, objects, time.time() + PENDING_SECONDS)
+    _pending = (zone_id, save, objects, time.time() + seconds)
     log.info("resync: loading zone {:#x} from the host's save".format(zone_id))
     travel_service.travel_sims_to_zone([sim_id] if sim_id else [], zone_id)

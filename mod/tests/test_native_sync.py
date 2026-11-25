@@ -238,6 +238,19 @@ class CatchUpTest(Pair):
         self.assertEqual(len(self.guest.replayed()), native.PENDING_OPS + 1)
 
 
+    def test_a_catch_up_larger_than_the_queue_while_replay_waits_arrives_whole(self):
+        # The guest's zone is not ready to replay yet when it joins.
+        count = native.PENDING_OPS + 40
+        self.host.recorder.made += [op(str(index)) for index in range(count)]
+        self.host.tick()
+        self.guest.recorder.ready = False
+        self.join()
+        self.tick(5)
+        self.guest.recorder.ready = True
+        self.tick(10)
+        self.assertEqual(self.guest.replayed(), [str(index) for index in range(count)])
+
+
 class PendingTest(Pair):
     def test_an_operation_waits_until_it_can_be_replayed(self):
         self.guest.recorder.ready = False
@@ -345,6 +358,21 @@ class NegotiationTest(Pair):
     def test_a_malformed_have_is_noted(self):
         self.host.sync.control({"type": "native_have", "zone": "x"})
         self.assertTrue(self.host.sync.notes())
+
+
+    def test_edits_refused_while_off_are_sent_once_on_again(self):
+        self.join()
+        self.guest.recorder.made.append(op("wall"))
+        self.guest.tick()
+        # Turned off in the same tick as the edit reaches the host.
+        self.guest.sync.user_off = True
+        self.guest.tick()
+        deliver(self.guest, self.host)
+        self.host.tick()
+        self.assertEqual(self.host.replayed(), [])
+        self.guest.sync.user_off = False
+        self.tick(5)
+        self.assertEqual(self.host.replayed(), ["wall"])
 
 
 class JournalTest(Pair):

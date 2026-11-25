@@ -85,6 +85,15 @@ class Merges:
         self._set(household_id, save, False)
         self._write()
 
+    def took(self, household_id, origin_save, save, outcome):
+        """A copy of `household_id` from `origin_save` was taken into our
+        save `save` with `outcome`."""
+        if origin_save and origin_save == save:
+            # Played in our own save: copies from any other are older.
+            self.joined([household_id], save)
+        elif outcome != KEPT:
+            self.merged(household_id, save)
+
     def _set(self, household_id, save, joined):
         entries = self._load()
         key = str(household_id)
@@ -159,22 +168,29 @@ def give(done):
             return None
         part = serialization.SaveGameData()
         part.households.add().CopyFrom(household)
+        here = services.current_zone_id() or 0
+        # In the host's save, our simulation only ran what is on our lot;
+        # the rest of what we have is the host's copy as we loaded it, and
+        # older than the host's own.
+        ours_only = resync.playing_adopted()
         stands = []
         for sim_id in household.sims.ids:
             sim = persistence.get_sim_proto_buff(sim_id)
-            if sim is not None:
+            if sim is not None and ran_here(sim, ours_only, here):
                 part.sims.add().CopyFrom(sim)
                 stands.append(sim.zone_id)
         home = household.home_zone
         # A host in another save matches by lot the zones it does not have,
         # which needs their ZoneData: where we live, where we are, and
         # where each sim is.
-        for zone_id in _unique([home, services.current_zone_id()] + stands):
+        for zone_id in _unique([home, here] + stands):
             zone = persistence.get_zone_proto_buff(zone_id)
             if zone is not None:
                 part.zones.add().CopyFrom(zone)
         has_home = home and persistence.get_zone_proto_buff(home) is not None
-        objects = resync.objects_of(home) if has_home else b""
+        # What we keep of a lot we are not on is only as new as our last
+        # visit, or the host's copy when it came with its save.
+        objects = resync.objects_of(home) if has_home and (not ours_only or home == here) else b""
         home, objects = resync.as_host(part, home, objects)
         save = part.SerializePartialToString()
         payload = resync.pack(home, save, objects)
@@ -183,6 +199,12 @@ def give(done):
         return payload
 
     resync.save_then(lambda persistence: done(packed(persistence)))
+
+
+def ran_here(sim, ours_only, here):
+    """Whether to give the SimData `sim`: all of them from a save of our
+    own, only those on our lot `here` from the host's save."""
+    return not ours_only or sim.zone_id == here
 
 
 def _unique(zone_ids):
@@ -223,8 +245,7 @@ def take_in(payload, origin_save=0):
     except Exception as error:
         log.exception("household: could not take {:#x} in".format(household_id))
         raise Refusal("could not take the household in: {}".format(error), final=False)
-    if outcome != KEPT:
-        _record().merged(household_id, save)
+    _record().took(household_id, origin_save, save, outcome)
     return outcome
 
 
