@@ -58,6 +58,11 @@ FORWARD_NAMES = CLOCK_NAMES
 # the host's own game client already reports it. The rest of `clock.*` would
 # pause the host whenever the guest opens a menu.
 BLOCK_PREFIXES = ("animation.", "clock.")
+# Commands that open Create-a-Sim. On a joined guest they would edit a sim of
+# its muted simulation, and the edits would be lost.
+CAS_PREFIXES = ("sims.modify_in_cas", "sims.modify_outfit_in_cas", "cas.")
+CAS_SCREEN = "sims.exit2cas"
+CAS_REFUSED = "Create-a-Sim cannot be opened for your sim while you are joined to the host's game"
 
 # Seconds, not ticks: over the internet most of the waiting is for the
 # network, and a game that is loading does not tick at all.
@@ -151,6 +156,8 @@ class Session:
         has_household(household_id)    host: whether our save has it
         playing_adopted()              guest: whether this game loaded the
                                        host's state and plays it
+        snapshot_zone(zone_id, lot)    host: the zone of ours a snapshot for
+                                       a guest there would be of, or 0
         progress()                     host: text that changes whenever the
                                        game moves on (its clock, its
                                        objects), "" when it cannot tell
@@ -203,6 +210,8 @@ class Session:
         self._reported_sim_id = 0
         self._remote_depth = 0
         self._seen_local = set()
+        # What we last told the other game of ourselves.
+        self._announced = None
         # Texts of our own notifications on their way to our game client.
         self._notices = []
         # Guest: what it is doing about being stale, the request it waits on
@@ -238,8 +247,9 @@ class Session:
         # simulation, which it was not built from.
         self._shows_host = False
         # Guest: the state we asked for is the one of the host's own lot,
-        # which we will join.
+        # which we will join, and the host's world when we asked.
         self._joining = False
+        self._asked_world = ""
         # Guest: we gave up while behind, so the host's copy of our sims is
         # the one to load, not ours to give.
         self._owes = False
@@ -262,6 +272,9 @@ class Session:
         # does. The game finishes a save it began whatever happens to the
         # request, and two must not run at once.
         self._taking = 0.0
+        # Host: how many saves for guests were begun; only the latest one
+        # answers.
+        self._takes = 0
         # Host: until when the game is held paused for a guest that loads,
         # and when it was last paused for it.
         self._hold_until = 0.0
@@ -422,6 +435,13 @@ class Session:
         own, which a game that has just (re)connected needs."""
         if self.role is None:
             return
+        fields = self._state_fields()
+        self._announced = dict(fields)
+        if want:
+            fields["want"] = True
+        self._send(frames.control("state", **fields))
+
+    def _state_fields(self):
         # A stale guest is in a zone, but not in one the host can play with.
         in_zone = self._in_zone and not self.stale
         fields = {"role": self.role, "in_zone": in_zone, "v": PROTOCOL,
@@ -436,9 +456,7 @@ class Session:
             fields["save"] = str(self._save)
         if in_zone and self._world:
             fields["world"] = self._world
-        if want:
-            fields["want"] = True
-        self._send(frames.control("state", **fields))
+        return fields
 
     def _tell(self, text):
         """Tell the local player, and only them, past the muting of a stale
@@ -456,6 +474,9 @@ class Session:
         if self.role == GUEST:
             self._follow()
         self._watch_live()
+        if self.role is not None and self._state_fields() != self._announced:
+            # What the other game and the launchers know of us is out of date.
+            self._announce()
 
     def _follow(self):
         """Guest: from what both games are doing, what to do next."""
@@ -588,7 +609,9 @@ class Session:
         # Behind, the host's copy of our household is newer than ours, and
         # it is the one to keep.
         self._owes = self._owes or self._behind
-        self._alone = not self._owes
+        # What a game that never loaded the host's state has of the host's
+        # save is older than the host's own: not ours to give.
+        self._alone = not self._owes and (not self.same_save or self._call("playing_adopted", True))
         if final:
             self._glued = self.remote_save
         else:
@@ -652,14 +675,20 @@ class Session:
         if self._phase != SAVING or request != self._request:
             return
         if payload is None:
-            if self.same_save:
+            if self.same_save and not self._alone:
                 self._log("could not save our household; loading the host's state as it is")
                 self._ask()
+            elif self.same_save:
+                self._give_up("could not save our household; playing on by ourselves")
             else:
                 self._give_up("could not save our household; each plays their own save")
         elif not self.remotes:
             self._phase = WAITING
         else:
+            if self._gift and self._gift != request:
+                # Older than this one, and not to be merged after it.
+                self._transfers.drop(self._gift)
+                self._gift = 0
             self._phase = GIVING
             self._deadline = 0.0
             self._transfers.send("household", request, payload, save=str(self._save))
@@ -668,6 +697,10 @@ class Session:
         request = frames.number(message.get("id"))
         if self.role == GUEST and message.get("missing"):
             # The host lacks sims we gave only in part: it is to have all.
+            if self._whole:
+                # It was all of it.
+                self._give_up("the host lacks sims of our household that we do not have either", final=True)
+                return
             self._whole = True
             if self._phase == GIVING and request == self._request:
                 self._go_stale("the host does not have all of our household; giving it again", give=True)
@@ -680,9 +713,12 @@ class Session:
             self._alone = False
             self._log("the host has our household ({})".format(message.get("outcome") or "taken in"))
             self._ask()
-        elif self.same_save:
+        elif self.same_save and not self._alone:
             self._log("the host did not take our household; loading its state as it is")
             self._ask()
+        elif self.same_save and not message.get("final"):
+            # Loading the host's state now would undo what we played.
+            self._give_up("the host could not take our household for now; playing on by ourselves")
         else:
             self._give_up("the host did not take our household; each plays their own save",
                           final=bool(message.get("final")))
@@ -690,7 +726,9 @@ class Session:
     # -- a guest loading the host's state -------------------------------
 
     def _ask(self):
-        self._joining = self.same_zone and self.same_save
+        # Lots compare across saves; we may still be in a save of our own.
+        self._joining = self.same_zone
+        self._asked_world = self.remote_world
         request = self._next(ASKING, SAVE_SECONDS)
         self._log("asking the host for its state")
         fields = {"id": request}
@@ -783,7 +821,8 @@ class Session:
             self._log("the other player's household is not in our save; asking for it")
             self._send(frames.control("resync_failed", id=request[0], missing=True))
             return
-        if self._on_our_lot(request[1], request[2]):
+        target = self._call("snapshot_zone", 0, request[1], request[2])
+        if target == self._zone if target else self._on_our_lot(request[1], request[2]):
             self._hold()
             self._held_for = request[0]
         self._asked = request
@@ -801,15 +840,20 @@ class Session:
         request, self._asked = self._asked, None
         self._saving = request
         self._taking = self._clock()
+        self._takes += 1
+        number = self._takes
         world = self._world
         self._log("the other player is loading; saving for them")
         try:
-            self._game.snapshot(lambda payload: self._taken(request, world, payload), request[1], request[2])
+            self._game.snapshot(lambda payload: self._taken(number, request, world, payload), request[1], request[2])
         except Exception as error:
             self._log("could not save for the other player: {}".format(error))
-            self._taken(request, world, None)
+            self._taken(number, request, world, None)
 
-    def _taken(self, request, world, payload):
+    def _taken(self, number, request, world, payload):
+        if number != self._takes:
+            # A later save runs, and answers.
+            return
         self._taking = 0.0
         current, self._saving = self._saving, None
         if self.role != HOST:
@@ -826,10 +870,17 @@ class Session:
         if current is not request or not self.remotes:
             # Asked for by a guest that has gone since.
             return
-        if payload is None or world != self._world:
+        if payload is not None and world != self._world and self._in_zone:
+            # Our zone was loaded again while we saved: save it as it is now.
+            self._asked = request
+            self._take()
+        elif payload is None or world != self._world:
             self._refuse_resync(request[0])
         else:
-            self._transfers.send("state", request[0], payload, world=world)
+            # Only a guest we held for joins on this world; one we did not
+            # hold for, as it asked for another lot, finds out it is on ours
+            # and asks again.
+            self._transfers.send("state", request[0], payload, world=world if request[0] == self._held_for else "")
 
     def _refuse_resync(self, request):
         """The guest gives up on this answer; it holds us again if it asks
@@ -1113,11 +1164,16 @@ class Session:
             self._resync(message)
         elif kind == "resync_failed":
             if self.role == GUEST and self._phase == ASKING and frames.number(message.get("id")) == self._request:
-                if message.get("missing"):
+                if message.get("missing") and self._whole:
+                    self._give_up("the host lacks our household although we gave all of it", final=True)
+                elif message.get("missing"):
                     # The host's game started again from a save without our
                     # household: all of it is given again, however old.
                     self._whole = True
                     self._go_stale("the host does not have our household; giving it again", give=True)
+                elif not self.remote_in_zone or self.remote_world != self._asked_world:
+                    # The host left the state it was saving; wait for its new one.
+                    self._go_stale("the host's lot changed while it saved; waiting for it")
                 else:
                     self._give_up("the host could not save; playing on by ourselves")
         elif kind == "merged":
@@ -1244,14 +1300,16 @@ class Session:
         does to open Create-a-Sim. Returns False to keep it from ours when it
         names a sim the guest plays: it would take our player's screen, and
         the guest's own client cannot edit a sim of the host's simulation."""
+        if self.role == GUEST and (self.live or self._muted) and line.startswith(CAS_SCREEN):
+            self._tell(CAS_REFUSED)
+            return False
         if self.role != HOST or not self.live:
             return True
         for word in line.split():
             sim_id = frames.number(word)
             if sim_id and self._guests(sim_id):
                 self._log("kept {!r} from our game client: it is for the other player's sim".format(line))
-                self._send(frames.control("tell", text="Create-a-Sim and other screens of the host's game "
-                                                       "cannot be opened for your sim yet"))
+                self._send(frames.control("tell", text=CAS_REFUSED))
                 return False
         return True
 
@@ -1264,6 +1322,9 @@ class Session:
         not run locally."""
         if self.role == HOST and self._hold_until and name in CLOCK_NAMES:
             self._log("{} refused: the other player is loading".format(name))
+            return False
+        if self.role == GUEST and (self.live or self._muted) and name.startswith(CAS_PREFIXES):
+            self._tell(CAS_REFUSED)
             return False
         if self._muted:
             return not (_forwarded(name) or name.startswith(BLOCK_PREFIXES))

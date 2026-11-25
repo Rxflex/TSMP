@@ -193,6 +193,9 @@ class Game:
             self._remote_parameters = client._interaction_parameters
             client._active_sim_info, client._choice_menu, client._interaction_parameters = saved
 
+    def snapshot_zone(self, zone_id, lot):
+        return resync.snapshot_zone(zone_id, lot)
+
     def snapshot(self, done, zone_id=0, lot=""):
         resync.install()
         resync.take(done, zone_id, lot)

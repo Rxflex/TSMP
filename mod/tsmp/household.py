@@ -192,9 +192,12 @@ def give(done, whole=False):
             if zone is not None:
                 part.zones.add().CopyFrom(zone)
         has_home = home and persistence.get_zone_proto_buff(home) is not None
-        # What we keep of a lot we are not on is only as new as our last
-        # visit, or the host's copy when it came with its save.
-        objects = resync.objects_of(home) if has_home and (not ours_only or home in ran) else b""
+        # In the host's save, the objects of our home are ours to give only
+        # if we ran that lot since loading the host's state and the host gave
+        # us its objects then; otherwise our game began from its own, older
+        # copy of them.
+        theirs = home in ran and home in resync.provided_zones()
+        objects = resync.objects_of(home) if has_home and (not ours_only or theirs) else b""
         home, objects = resync.as_host(part, home, objects)
         save = part.SerializePartialToString()
         payload = resync.pack(home, save, objects)
@@ -202,7 +205,15 @@ def give(done, whole=False):
             household_id, len(part.sims), home, len(part.zones), len(save) + len(objects), len(payload)))
         return payload
 
-    resync.save_then(lambda persistence: done(packed(persistence)))
+    def finished(persistence):
+        try:
+            payload = packed(persistence)
+        except Exception:
+            log.exception("household: could not pack the household")
+            payload = None
+        done(payload)
+
+    resync.save_then(finished)
 
 
 def lacking_sims(sim_ids, given, persistence):

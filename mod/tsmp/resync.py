@@ -126,6 +126,10 @@ _put = 0
 # host's copy. While objects are put in place of a zone's, they are not ours.
 _ran = set()
 _placing = False
+# Guest: zones whose objects came with a snapshot of the host's save, and
+# that save. Of any other, what our game client loads is our own older copy.
+_provided = set()
+_provided_save = 0
 
 
 def current_save():
@@ -163,6 +167,20 @@ def forget_names():
 def snapshots_put():
     """Guest: how many of the host's snapshots have been put in place."""
     return _put
+
+
+def _note_provided(zone_id, objects):
+    global _provided_save
+    if _names.save != _provided_save:
+        _provided.clear()
+        _provided_save = _names.save
+    if objects:
+        _provided.add(zone_id)
+
+
+def provided_zones():
+    """Guest: the zones whose objects the host gave us in its save."""
+    return frozenset(_provided)
 
 
 def ran_zones():
@@ -312,6 +330,7 @@ def _put_in_place(persistence):
     _pending = None
     _put += 1
     _ran.clear()
+    _note_provided(zone_id, objects)
     data = persistence.get_save_game_data_proto()
     data.Clear()
     data.MergeFromString(save)
@@ -329,7 +348,16 @@ def lead(zone_id, ours):
         _leads[zone_id] = ours
 
 
-def _zone_for(persistence, zone_id, lot, current):
+def snapshot_zone(zone_id, lot):
+    """Host: the zone of ours a snapshot for a guest in `zone_id` on `lot`
+    would be of, 0 when that cannot be told."""
+    import services
+
+    return _zone_for(services.get_persistence_service(), zone_id, lot, services.current_zone_id(),
+                     say=lambda text: None)
+
+
+def _zone_for(persistence, zone_id, lot, current, say=log.info):
     """The zone of our save a guest in `zone_id`, on the lot `lot` (see
     `lot_of`), is to load. Zone ids are made up anew by every new game, so a
     guest that comes from a save of its own names a zone we do not have, or
@@ -339,13 +367,13 @@ def _zone_for(persistence, zone_id, lot, current):
     zone = on_lot(persistence, lot, zone_id)
     if zone is not None:
         if zone.zone_id != zone_id:
-            log.info("resync: the guest's lot {} is our zone {:#x}".format(lot, zone.zone_id))
+            say("resync: the guest's lot {} is our zone {:#x}".format(lot, zone.zone_id))
         return zone.zone_id
     if zone_id and persistence.get_zone_proto_buff(zone_id) is None:
         led = _leads.get(zone_id, 0)
         if led and persistence.get_zone_proto_buff(led) is None:
             led = 0
-        log.info("resync: zone {:#x} is not in this save; the guest loads {} instead".format(
+        say("resync: zone {:#x} is not in this save; the guest loads {} instead".format(
             zone_id, "{:#x}".format(led) if led else "our zone"))
         zone_id = led
     return zone_id or current or 0

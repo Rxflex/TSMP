@@ -105,10 +105,22 @@ pub(crate) struct Limits {
     pub waiting_per_session: usize,
 }
 
+/// How long the code of a session whose host stayed away too long is kept
+/// for that host. An invite outlives a long outage of the host's network:
+/// the host gets its code back when it is back, and nobody else is given it.
+pub(crate) const FORGET_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// A session whose host stayed away too long: its code, kept for its host.
+struct Lapsed {
+    token: String,
+    since: Instant,
+}
+
 pub(crate) struct Registry {
     limits: Limits,
     sessions: HashMap<SessionCode, Session>,
     tokens: HashMap<String, SessionCode>,
+    lapsed: HashMap<SessionCode, Lapsed>,
     next_tunnel: u64,
 }
 
@@ -118,12 +130,14 @@ impl Registry {
             limits,
             sessions: HashMap::new(),
             tokens: HashMap::new(),
+            lapsed: HashMap::new(),
             next_tunnel: 1,
         }
     }
 
     /// Give a host's control line a session: the one it resumes, if that is
-    /// still here and the token is right, or a new one.
+    /// still here, or still kept for it, and the token is right, or a new
+    /// one.
     pub fn open(&mut self, line: Line, owner: IpAddr, resume: Option<&Resume>) -> Result<Opened, Refusal> {
         let resumable = resume.filter(|resume| {
             self.sessions
@@ -150,30 +164,49 @@ impl Registry {
         if owned >= self.limits.sessions_per_address {
             return Err(Refusal::TooManyFromAddress);
         }
+        let kept = resume.filter(|resume| {
+            self.lapsed
+                .get(&resume.code)
+                .is_some_and(|lapsed| lapsed.token == resume.token)
+        });
+        if let Some(resume) = kept {
+            self.lapsed.remove(&resume.code);
+            self.insert(resume.code.clone(), resume.token.clone(), owner, line);
+            return Ok(Opened {
+                code: resume.code.clone(),
+                token: resume.token.clone(),
+                resumed: true,
+                replaced: None,
+            });
+        }
         let code = loop {
             let code = SessionCode::random();
-            if !self.sessions.contains_key(&code) {
+            if !self.sessions.contains_key(&code) && !self.lapsed.contains_key(&code) {
                 break code;
             }
         };
         let token = new_token();
-        self.tokens.insert(token.clone(), code.clone());
-        self.sessions.insert(
-            code.clone(),
-            Session {
-                token: token.clone(),
-                owner,
-                line: Some(line),
-                detached_since: None,
-                waiting: HashMap::new(),
-            },
-        );
+        self.insert(code.clone(), token.clone(), owner, line);
         Ok(Opened {
             code,
             token,
             resumed: false,
             replaced: None,
         })
+    }
+
+    fn insert(&mut self, code: SessionCode, token: String, owner: IpAddr, line: Line) {
+        self.tokens.insert(token.clone(), code.clone());
+        self.sessions.insert(
+            code,
+            Session {
+                token,
+                owner,
+                line: Some(line),
+                detached_since: None,
+                waiting: HashMap::new(),
+            },
+        );
     }
 
     /// The control line `line` was lost. The session waits for its host to
@@ -209,6 +242,10 @@ impl Registry {
     /// A guest asks for the session `code`.
     pub fn knock(&mut self, code: &SessionCode) -> Result<Knock, Refusal> {
         let Some(session) = self.sessions.get_mut(code) else {
+            // Its host may still come back for it.
+            if self.lapsed.contains_key(code) {
+                return Err(Refusal::HostAway(code.clone()));
+            }
             return Err(Refusal::Unknown(code.clone()));
         };
         let Some(line) = session.line.clone() else {
@@ -238,8 +275,11 @@ impl Registry {
         self.sessions.get_mut(code)?.waiting.remove(&tunnel)
     }
 
-    /// Forget sessions whose host has been away longer than `grace`.
+    /// Close sessions whose host has been away longer than `grace`, keeping
+    /// their codes for their hosts for [`FORGET_AFTER`], and forget the codes
+    /// kept longer.
     pub fn expire(&mut self, now: Instant, grace: Duration) -> Vec<SessionCode> {
+        self.lapsed.retain(|_, lapsed| now.duration_since(lapsed.since) < FORGET_AFTER);
         let expired: Vec<SessionCode> = self
             .sessions
             .iter()
@@ -251,7 +291,14 @@ impl Registry {
             .map(|(code, _)| code.clone())
             .collect();
         for code in &expired {
-            self.remove(code);
+            if let Some(session) = self.sessions.remove(code) {
+                self.tokens.remove(&session.token);
+                let lapsed = Lapsed {
+                    token: session.token,
+                    since: now,
+                };
+                self.lapsed.insert(code.clone(), lapsed);
+            }
         }
         expired
     }
@@ -351,8 +398,21 @@ mod tests {
             code: first.code.clone(),
             token: first.token.clone(),
         };
-        assert!(!registry.open(line(3), HOME, Some(&late)).unwrap().resumed);
-        assert!(registry.answer(&first.token, 1).is_none());
+        // Its code is kept for it: a guest hears the host is away, and the
+        // host gets the same code back.
+        assert!(matches!(registry.knock(&first.code), Err(Refusal::HostAway(_))));
+        let back = registry.open(line(3), HOME, Some(&late)).unwrap();
+        assert!(back.resumed);
+        assert_eq!(back.code, first.code);
+        assert!(registry.knock(&first.code).is_ok());
+
+        // Kept no longer than FORGET_AFTER.
+        registry.detach(&first.code, 3, now);
+        let later = now + Duration::from_secs(60);
+        assert_eq!(registry.expire(later, Duration::from_secs(60)).len(), 1);
+        assert!(registry.expire(later + FORGET_AFTER, Duration::from_secs(60)).is_empty());
+        assert!(matches!(registry.knock(&first.code), Err(Refusal::Unknown(_))));
+        assert!(!registry.open(line(4), HOME, Some(&late)).unwrap().resumed);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use tsmp_net::host::{Host, HostConfig, HostEvent};
 use tsmp_net::live::{KIND_COMMAND, KIND_CONTROL, KIND_MSG, LiveLink, frame, read_frame};
 use tsmp_net::protocol::{Hello, PROTOCOL_VERSION, write_message};
 use tsmp_net::rendezvous::{
-    Invite, ListingStatus, Reply, Request, SERVER_PROTOCOL, ServerAddress, SessionCode, expect, send,
+    Invite, ListingStatus, Reply, Request, Resume, SERVER_PROTOCOL, ServerAddress, SessionCode, expect, send,
 };
 use tsmp_net::route::Route;
 use tsmp_server::{Config, Journal, Server};
@@ -296,7 +296,12 @@ fn a_session_outlives_a_silent_host_only_for_a_while() {
         resume: None,
     };
     send(&line, &open).unwrap();
-    let Reply::Opened { code, ping_seconds, .. } = expect(&line).unwrap() else {
+    let Reply::Opened {
+        code,
+        token,
+        ping_seconds,
+    } = expect(&line).unwrap()
+    else {
         panic!("not opened");
     };
     assert_eq!(ping_seconds, 1);
@@ -304,14 +309,29 @@ fn a_session_outlives_a_silent_host_only_for_a_while() {
     wait_for("the server to give up on the host", || server.stats().hosted == 0);
 
     let invite = Invite {
-        code,
+        code: code.clone(),
         server: address_of(&server),
     };
     let away = refusal(Connection::connect(&Route::Invite(invite.clone()), &hello("guest")));
     assert!(away.contains("lost the session server"), "{away}");
     wait_for("the session to expire", || server.stats().sessions == 0);
-    let gone = refusal(Connection::connect(&Route::Invite(invite), &hello("guest")));
-    assert!(gone.starts_with("No session has the code"), "{gone}");
+    // Its code is kept for its host, so the invite still says to wait.
+    let still = refusal(Connection::connect(&Route::Invite(invite), &hello("guest")));
+    assert!(still.contains("lost the session server"), "{still}");
+
+    // The host is back, long after: it gets its code again.
+    let again = address_of(&server).connect().unwrap();
+    let resume = Request::Open {
+        protocol: SERVER_PROTOCOL,
+        name: "silent".into(),
+        game_version: None,
+        resume: Some(Resume { code: code.clone(), token }),
+    };
+    send(&again, &resume).unwrap();
+    let Reply::Opened { code: back, .. } = expect(&again).unwrap() else {
+        panic!("not opened again");
+    };
+    assert_eq!(back, code);
 }
 
 #[test]

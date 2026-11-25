@@ -47,6 +47,16 @@ const MAX_PAYLOAD: usize = 64 << 20;
 const MAX_QUEUED: usize = 256 << 20;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL: Duration = Duration::from_secs(2);
+/// Redials that keep failing slow down to this: a host that stays away is
+/// still found soon after it is back, without knocking on a session server
+/// many times a minute meanwhile.
+const MAX_REDIAL: Duration = Duration::from_secs(16);
+
+/// How long to wait before the next dial after `failures` failed ones in a
+/// row.
+fn redial_after(failures: u32) -> Duration {
+    REDIAL.saturating_mul(1 << failures.min(4)).min(MAX_REDIAL)
+}
 /// Lines of the mods' logs kept for display.
 const LOG_LINES: usize = 200;
 /// How long a relay may have nothing to send a remote before it sends a beat.
@@ -601,13 +611,18 @@ impl LiveLink {
             let relay = relay.clone();
             let stop = stop.clone();
             move || {
+                let mut failures = 0;
                 while !stop.load(Ordering::Relaxed) {
-                    if relay.status().remotes == 0
-                        && let Ok(stream) = dial(&host, &hello)
-                    {
-                        let _ = relay.add_remote(stream);
+                    if relay.status().remotes == 0 {
+                        match dial(&host, &hello) {
+                            Ok(stream) => {
+                                failures = 0;
+                                let _ = relay.add_remote(stream);
+                            }
+                            Err(_) => failures += 1,
+                        }
                     }
-                    sleep_unless(REDIAL, &stop);
+                    sleep_unless(redial_after(failures), &stop);
                 }
             }
         });
@@ -773,6 +788,14 @@ mod tests {
             own_families: false,
         };
         (Host::start(config, port, false).unwrap(), dir)
+    }
+
+    #[test]
+    fn redials_slow_down_while_they_fail() {
+        assert_eq!(redial_after(0), REDIAL);
+        assert_eq!(redial_after(1), REDIAL * 2);
+        assert_eq!(redial_after(3), MAX_REDIAL);
+        assert_eq!(redial_after(40), MAX_REDIAL);
     }
 
     #[test]
