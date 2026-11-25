@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::protocol::{Hello, Message, PROTOCOL_VERSION, expect_message, write_message};
 use crate::route::Route;
@@ -199,6 +199,68 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(frame))
 }
 
+/// Whether a read gave up because its timeout passed: `TimedOut` on Windows,
+/// `WouldBlock` elsewhere.
+fn timed_out(error: &io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+/// Reads frames from a stream whose reads time out now and then. Unlike
+/// [`read_frame`], a timeout loses nothing: a frame it cut in two is finished
+/// by the next call.
+struct FrameReader<R> {
+    reader: R,
+    /// The start of the next frame, or more than one.
+    pending: Vec<u8>,
+    chunk: Box<[u8]>,
+    /// When the stream last gave bytes.
+    heard: Instant,
+}
+
+impl<R: Read> FrameReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            chunk: vec![0; 1 << 16].into_boxed_slice(),
+            heard: Instant::now(),
+        }
+    }
+
+    /// The next whole frame, header included. `Ok(None)` when the stream
+    /// ended between frames; a timed-out read is returned as its error.
+    fn next(&mut self) -> io::Result<Option<Vec<u8>>> {
+        loop {
+            if let Some(length) = self.complete()? {
+                let rest = self.pending.split_off(length);
+                return Ok(Some(std::mem::replace(&mut self.pending, rest)));
+            }
+            match self.reader.read(&mut self.chunk) {
+                Ok(0) if self.pending.is_empty() => return Ok(None),
+                Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
+                Ok(read) => {
+                    self.heard = Instant::now();
+                    self.pending.extend_from_slice(&self.chunk[..read]);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// The length of the frame at the start of `pending`, once all of it is there.
+    fn complete(&self) -> io::Result<Option<usize>> {
+        let Some(header) = self.pending.get(..HEADER) else {
+            return Ok(None);
+        };
+        let length = u32::from_le_bytes([header[5], header[6], header[7], header[8]]) as usize;
+        if length > MAX_PAYLOAD {
+            return Err(io::Error::new(ErrorKind::InvalidData, "frame too large"));
+        }
+        Ok((self.pending.len() >= HEADER + length).then_some(HEADER + length))
+    }
+}
+
 /// One connection of the relay. Writes go through a queue and a thread of
 /// their own so a peer that is slow to read never holds up the others.
 struct Peer {
@@ -206,14 +268,17 @@ struct Peer {
     stream: TcpStream,
     queue: Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
-    /// For a remote, the silence it is held to once it has shown that it
-    /// beats; taken when the read timeout is set.
-    silence: Option<Duration>,
+    /// Set once the relay is done with the peer. Its reader thread looks at
+    /// it between reads: on Windows, shutting a socket down does not wake a
+    /// read on another handle of it.
+    closed: Arc<AtomicBool>,
 }
 
 impl Peer {
     /// `timing` is given for a remote and `None` for the game.
     fn new(id: u64, stream: &TcpStream, timing: Option<Timing>) -> io::Result<Self> {
+        // Options are set on the handle they are for: on Windows they do not
+        // carry over to other handles of the same socket.
         let mut writer = stream.try_clone()?;
         if let Some(timing) = timing {
             writer.set_write_timeout(Some(timing.stall))?;
@@ -221,14 +286,17 @@ impl Peer {
         let stream = stream.try_clone()?;
         let (queue, frames) = mpsc::channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
         let beats = timing.map(|timing| timing.beat);
         thread::spawn({
             let queued = queued.clone();
+            let closed = closed.clone();
             move || {
                 while let Some((frame, from_queue)) = next_frame(&frames, beats) {
                     let written = writer.write_all(&frame);
                     queued.fetch_sub(from_queue, Ordering::Relaxed);
                     if written.is_err() {
+                        closed.store(true, Ordering::Relaxed);
                         let _ = writer.shutdown(Shutdown::Both);
                         break;
                     }
@@ -240,7 +308,7 @@ impl Peer {
             stream,
             queue,
             queued,
-            silence: timing.map(|timing| timing.silence),
+            closed,
         };
         if timing.is_some() {
             // Straight away, so the far end learns that this launcher beats
@@ -248,16 +316,6 @@ impl Peer {
             peer.send(beat());
         }
         Ok(peer)
-    }
-
-    /// A remote that beats can be held to it: from now on, silence ends it.
-    /// A launcher from before beats is left to TCP to notice, as it was then.
-    fn heard_beat(&mut self) {
-        if let Some(silence) = self.silence.take() {
-            // Options set on one handle of a stream apply to all of them, the
-            // reader thread's included.
-            let _ = self.stream.set_read_timeout(Some(silence));
-        }
     }
 
     fn send(&self, frame: Vec<u8>) {
@@ -271,6 +329,7 @@ impl Peer {
     }
 
     fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
@@ -341,7 +400,9 @@ impl Inner {
         }
         state.next_id += 1;
         let id = state.next_id;
-        let peer = Peer::new(id, &stream, (side == Side::Remote).then_some(self.timing))?;
+        let timing = (side == Side::Remote).then_some(self.timing);
+        let peer = Peer::new(id, &stream, timing)?;
+        let closed = peer.closed.clone();
         match side {
             Side::Game => {
                 // A game that reconnects without the old socket having died.
@@ -366,18 +427,43 @@ impl Inner {
         drop(state);
         let inner = self.clone();
         thread::spawn(move || {
-            let mut reader = io::BufReader::with_capacity(1 << 16, stream);
-            // A remote's read timeout, once set, ends this like any error:
-            // the remote has gone silent.
-            while let Ok(Some(frame)) = read_frame(&mut reader) {
-                if !inner.forward(side, id, frame) {
-                    break;
-                }
-            }
-            let _ = reader.get_ref().shutdown(Shutdown::Both);
+            inner.read(side, id, stream, timing, &closed);
             inner.detach(side, id);
         });
         Ok(())
+    }
+
+    /// Forwards what a peer sends until it is gone: its connection ends or
+    /// fails, the relay is done with it, or, for a remote that has shown it
+    /// beats, nothing comes from it for the silence it is held to. A launcher
+    /// from before beats is left to TCP to notice, as it was then.
+    fn read(&self, side: Side, id: u64, stream: TcpStream, timing: Option<Timing>, closed: &AtomicBool) {
+        // Short reads, so that a peer the relay closed is let go soon.
+        if stream.set_read_timeout(Some(POLL)).is_err() {
+            return;
+        }
+        let mut frames = FrameReader::new(&stream);
+        let mut silence = None;
+        loop {
+            match frames.next() {
+                Ok(Some(frame)) => {
+                    if side == Side::Remote && is_beat(&frame) {
+                        silence = timing.map(|timing| timing.silence);
+                    }
+                    if !self.forward(side, id, frame) {
+                        break;
+                    }
+                }
+                Err(e) if timed_out(&e) => {
+                    let silent = silence.is_some_and(|silence| frames.heard.elapsed() >= silence);
+                    if silent || closed.load(Ordering::Relaxed) || self.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = stream.shutdown(Shutdown::Both);
     }
 
     /// Returns false once the peer is no longer part of the relay.
@@ -385,13 +471,7 @@ impl Inner {
         let mut state = self.state.lock().unwrap();
         if side == Side::Remote && is_beat(&frame) {
             // A beat only shows that the remote is there; the game never hears of it.
-            return match state.remotes.iter_mut().find(|remote| remote.id == id) {
-                Some(remote) => {
-                    remote.heard_beat();
-                    true
-                }
-                None => false,
-            };
+            return state.remotes.iter().any(|remote| remote.id == id);
         }
         let game_state = snoop_state(&frame);
         for line in snoop_log(&frame) {
@@ -823,6 +903,50 @@ mod tests {
         assert_eq!(read_frame(&mut reader).unwrap(), Some(frame(KIND_COMMAND, 0, b"")));
         assert_eq!(read_frame(&mut reader).unwrap(), None);
         assert_eq!(frame(KIND_MSG, 11, b"abc"), [1, 11, 0, 0, 0, 3, 0, 0, 0, b'a', b'b', b'c']);
+    }
+
+    /// Gives its bytes a few at a time, timing out between them as a socket
+    /// with a short read timeout does on a slow link.
+    struct Trickle {
+        bytes: Vec<u8>,
+        at: usize,
+        pause: bool,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.pause = !self.pause;
+            if self.pause {
+                return Err(ErrorKind::TimedOut.into());
+            }
+            let read = buf.len().min(3).min(self.bytes.len() - self.at);
+            buf[..read].copy_from_slice(&self.bytes[self.at..self.at + read]);
+            self.at += read;
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn a_timeout_inside_a_frame_loses_nothing_of_it() {
+        let mut bytes = frame(KIND_MSG, 11, b"a frame cut by timeouts");
+        bytes.extend(frame(KIND_COMMAND, 0, b""));
+        let mut frames = FrameReader::new(Trickle { bytes, at: 0, pause: false });
+        let mut read = Vec::new();
+        loop {
+            match frames.next() {
+                Ok(Some(frame)) => read.push(frame),
+                Ok(None) => break,
+                Err(e) => assert!(timed_out(&e), "{e}"),
+            }
+        }
+        assert_eq!(read, [frame(KIND_MSG, 11, b"a frame cut by timeouts"), frame(KIND_COMMAND, 0, b"")]);
+
+        let whole = frame(KIND_MSG, 1, b"hello");
+        let mut cut = FrameReader::new(&whole[..6]);
+        assert_eq!(cut.next().unwrap_err().kind(), ErrorKind::UnexpectedEof);
+        let mut huge = vec![KIND_MSG, 0, 0, 0, 0];
+        huge.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(FrameReader::new(huge.as_slice()).next().unwrap_err().kind(), ErrorKind::InvalidData);
     }
 
     #[test]
