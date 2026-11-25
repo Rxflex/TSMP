@@ -151,6 +151,7 @@ live-on = En directo. Los dos juegos están unidos.
 live-syncing = Poniendo los dos juegos al día. Mantén ambos abiertos; puede tardar uno o dos minutos.
 live-apart = Los dos juegos están en marcha, cada uno en su propio solar o en su propia partida.
 live-retrying = Por ahora cada juego sigue por su cuenta; se volverán a unir en breve.
+live-stopped = No se pudieron unir las dos partidas. Cada juego sigue en la suya; vuelve a cargar una partida para intentarlo otra vez.
 
 ## Sizes and times
 

@@ -51,5 +51,38 @@ class RenameTest(unittest.TestCase):
         self.assertEqual(resync.host_zone(7), 7)
 
 
+class GuestStateTest(unittest.TestCase):
+    def setUp(self):
+        resync._names.forget()
+        resync._provided.clear()
+        resync._ran.clear()
+        resync._travelled = False
+
+    def test_a_lot_is_the_hosts_only_while_its_latest_snapshot_brought_it(self):
+        resync._names.adopt(9, {})
+        resync._note_provided(5, b"objects")
+        self.assertIn(5, resync.provided_zones())
+        # A later snapshot of that lot without its objects.
+        resync._note_provided(5, b"")
+        self.assertNotIn(5, resync.provided_zones())
+
+    def test_a_load_from_the_menu_forgets_what_came_from_the_host(self):
+        resync._names.adopt(9, {})
+        resync._note_provided(5, b"objects")
+        resync._ran.add(5)
+        self.assertTrue(resync.loaded_by_hand())
+        self.assertEqual(resync.provided_zones(), frozenset())
+        self.assertEqual(resync.ran_zones(), frozenset())
+        self.assertEqual(resync.adopted_save(), 0)
+
+    def test_a_travel_is_not_a_load_from_the_menu(self):
+        resync._names.adopt(9, {})
+        resync._travelled = True
+        self.assertFalse(resync.loaded_by_hand())
+        self.assertEqual(resync.adopted_save(), 9)
+        # Once: the next load without a travel is one from the menu.
+        self.assertTrue(resync.loaded_by_hand())
+
+
 if __name__ == "__main__":
     unittest.main()

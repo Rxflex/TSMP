@@ -338,7 +338,7 @@ class HandshakeTest(unittest.TestCase):
         host.session.bridge_up(session.HOST)
         self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": False, "v": 2, "loaded": False,
                                             "syncing": False, "joined": False, "apart": False,
-                                            "want": True}])
+                                            "stopped": False, "want": True}])
         self.assertFalse(host.session.live)
 
     def test_announces_zone_changes_on_tick(self):
@@ -733,17 +733,26 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
 
     def test_a_household_the_host_lacks_in_part_is_given_whole(self):
-        host, guest = strangers()
+        # In the host's save a gift holds only what the guest ran.
+        host, guest = joined()
+        guest.leave()
+        settle(host, guest)
+        guest.arrive(8)
+        settle(host, guest)
+        reloads_from_host(host, guest)
         missing = Refused("sims came without their data", final=False)
         missing.missing = True
         host.game.merge_error = missing
         host.game.merge_error_stays = False
-        gives(host, guest)
-        both(host, guest)
-        self.assertEqual(len(guest.game.contributions), 2)
+        guest.tick(session.GIVE_SECONDS + 1)
+        self.assertEqual(guest.game.whole, [False])
+        guest.game.contributions[0](b"part of it")
+        settle(host, guest)
+        guest.tick(1)
+        self.assertEqual(guest.game.whole, [False, True])
         guest.game.contributions[1](b"all of it")
         settle(host, guest)
-        self.assertEqual(host.game.merged, [(b"all of it", 2)])
+        self.assertEqual(host.game.merged, [(b"all of it", 1)])
 
     def test_the_launchers_hear_of_being_apart_after_the_link_returns(self):
         host, guest = joined()
@@ -793,13 +802,11 @@ class LinkTest(unittest.TestCase):
         missing.missing = True
         host.game.merge_error = missing
         gives(host, guest)
-        both(host, guest)
-        guest.game.contributions[-1](b"all of it")
-        settle(host, guest)
+        # From its own save it gave all of it at once: nothing more to give.
         self.assertFalse(guest.session.stale)
         for _ in range(3):
             both(host, guest, session.RETRY_SECONDS[-1] + 1)
-        self.assertEqual(len(guest.game.contributions), 2)
+        self.assertEqual(len(guest.game.contributions), 1)
 
     def test_a_guest_drops_a_snapshot_of_a_world_the_host_left(self):
         host, guest = connected()
@@ -1013,6 +1020,55 @@ class HostTest(unittest.TestCase):
         # Playing by itself it can.
         guest.session.bridge_down("closed")
         self.assertTrue(guest.session.command("sims.modify_in_cas", ["222"]))
+
+    def test_the_guests_sim_is_kept_off_a_host_lot_that_loads_again(self):
+        host, guest = joined()
+        guest.leave()
+        settle(host, guest)
+        guest.arrive(8)
+        settle(host, guest)
+        reloads_from_host(host, guest)
+        self.assertEqual(host.game.sent_off, [[222]])
+        # The host's lot loads again, with the guest's sim on it from disk.
+        host.leave()
+        host.arrive()
+        settle(host, guest)
+        self.assertEqual(host.game.sent_off[-1], [222])
+        # A host started again learns of it from the guest, which says it
+        # apart too.
+        host = Player(session.HOST)
+        host.game.zone = True
+        host.session.bridge_up(session.HOST)
+        host.link(1)
+        guest.link(1)
+        settle(host, guest)
+        both(host, guest)
+        self.assertEqual(host.game.sent_off, [[222]])
+        self.assertEqual(host.game.welcomed, [])
+        both(host, guest, 5)
+        self.assertEqual(host.game.sent_off, [[222]])
+
+    def test_a_host_that_changed_its_game_while_the_guest_loaded_has_it_load_again(self):
+        host, guest = connected()
+        both(host, guest)
+        answers(host, guest)
+        # Building while paused moves the game on without a clock.
+        host.game.ticks += 1
+        loads(host, guest)
+        self.assertFalse(guest.session.live)
+        self.assertTrue(guest.session.stale)
+        reloads_from_host(host, guest)
+        self.assertTrue(guest.session.live)
+
+    def test_a_short_drop_while_the_guest_loads_keeps_the_hosts_hold(self):
+        host, guest = connected()
+        both(host, guest)
+        answers(host, guest)
+        host.link(0)
+        host.tick(20)
+        host.link(1)
+        host.tick(session.LINK_SECONDS)
+        self.assertTrue(host.session.holding)
 
 class HoldTest(unittest.TestCase):
     def test_the_host_stays_paused_until_the_guest_is_in(self):
@@ -1241,6 +1297,15 @@ class GuestTest(unittest.TestCase):
         # Its client was just built from its own simulation.
         self.assertEqual(guest.session.outbound(OTHER_MSG, b"local"), b"local")
 
+    def test_a_save_loaded_while_no_launcher_is_there_is_noted(self):
+        host, guest = joined()
+        guest.session.bridge_down("closed")
+        guest.game.by_hand = True
+        guest.leave()
+        guest.arrive()
+        self.assertFalse(guest.game.by_hand)
+        self.assertEqual(guest.game.put, 0)
+
     def test_a_guest_started_apart_from_its_own_save_loads_the_hosts_copy_before_giving(self):
         host, guest = joined()
         self.moves_to(host, guest, 8)
@@ -1438,6 +1503,17 @@ class LotsTest(unittest.TestCase):
         both(host, guest, session.RETRY_SECONDS[0] + 1)
         gives(host, guest)
         self.assertEqual(len(host.game.merged), 1)
+
+    def test_a_guest_owing_the_hosts_copy_asks_for_it_on_request(self):
+        host, guest = joined()
+        self.moves(guest, host, 8)
+        guest.session._owes = True
+        guest.session._alone = False
+        both(host, guest)
+        both(host, guest, session.SAVE_SECONDS + 1)
+        self.assertTrue(guest.session.resync())
+        both(host, guest)
+        self.assertEqual(guest.game.contributions, [])
 
     def test_a_guest_playing_by_itself_can_ask_to_reload(self):
         host, guest = joined()

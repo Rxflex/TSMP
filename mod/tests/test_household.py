@@ -155,6 +155,17 @@ class PlaceTest(unittest.TestCase):
         self.assertIs(household._landing(ours, None, fallback), fallback)
         self.assertIsNone(household._landing(ours, None, None))
 
+    def test_an_id_of_the_guests_save_that_names_another_lot_here_is_not_taken(self):
+        ours = Persistence(Zone(5, lot=10), Zone(6, lot=20))
+        # The guest's home 5 is on lot 20 in its save; our 5 is lot 10.
+        self.assertIs(household._same_lot(ours, 5, Zone(5, lot=20)), ours.zones[1])
+        self.assertIs(household._same_lot(ours, 5, Zone(5, lot=10)), ours.zones[0])
+        self.assertIs(household._same_lot(ours, 5, None), ours.zones[0])
+        self.assertFalse(household._same_zone_here(ours, 5, Zone(5, lot=20)))
+        self.assertTrue(household._same_zone_here(ours, 5, Zone(5, lot=10)))
+        self.assertTrue(household._same_zone_here(ours, 5, None))
+        self.assertFalse(household._same_zone_here(ours, 7, None))
+
     def test_zones_are_sent_once(self):
         self.assertEqual(household._unique([5, 0, 6, 5, 7, 6]), [5, 6, 7])
 

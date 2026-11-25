@@ -430,10 +430,11 @@ _PLACE = ("zone_id", "neighborhood_id", "world_id", "lot_id")
 def _same_lot(persistence, home, given):
     """Our zone for the guest's home: the one with its id, or, for a guest
     from a save of its own, the one on the same lot of the world."""
-    zone = persistence.get_zone_proto_buff(home)
-    if zone is not None or given is None:
-        return zone
-    return resync.on_lot(persistence, resync.lot_of(given))
+    lot = resync.lot_of(given)
+    if lot:
+        # An id of the guest's own save may name another lot here.
+        return resync.on_lot(persistence, lot, home)
+    return persistence.get_zone_proto_buff(home)
 
 
 def _copy_lot(zone, given):
@@ -471,7 +472,7 @@ def _place(persistence, sims, zones, home, ours):
         resync.lead(home, fallback_id)
     sent = dict((zone.zone_id, zone) for zone in zones)
     for sim in sims:
-        if not sim.zone_id or persistence.get_zone_proto_buff(sim.zone_id) is not None:
+        if not sim.zone_id or _same_zone_here(persistence, sim.zone_id, sent.get(sim.zone_id)):
             continue
         zone = _landing(persistence, sent.get(sim.zone_id), fallback)
         if zone is None:
@@ -481,6 +482,16 @@ def _place(persistence, sims, zones, home, ours):
         resync.lead(sim.zone_id, zone.zone_id)
         sim.zone_id = zone.zone_id
         sim.world_id = zone.world_id
+
+
+def _same_zone_here(persistence, zone_id, given):
+    """Whether our zone `zone_id` is the one the guest meant: we have it,
+    and it is on the lot of the guest's ZoneData `given` when it sent one."""
+    ours = persistence.get_zone_proto_buff(zone_id)
+    if ours is None:
+        return False
+    lot = resync.lot_of(given)
+    return not lot or resync.lot_of(ours) == lot
 
 
 def _landing(persistence, given, fallback):

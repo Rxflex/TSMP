@@ -121,6 +121,9 @@ _save_unknown = False
 # Guest: how many of the host's snapshots were put in place, which tells a
 # reload into the host's state from one of our own.
 _put = 0
+# Guest: the guid of the host's save last put in place, 0 once a save of
+# our own was loaded since.
+_adopted = 0
 # Guest: zones our own simulation saved since the host's state was last put
 # in place: those it ran, and of which what we have is newer than the
 # host's copy. While objects are put in place of a zone's, they are not ours.
@@ -181,6 +184,8 @@ def _note_provided(zone_id, objects):
         _provided_save = _names.save
     if objects:
         _provided.add(zone_id)
+    else:
+        _provided.discard(zone_id)
 
 
 def provided_zones():
@@ -198,10 +203,13 @@ def loaded_by_hand():
     """Guest, once a zone has loaded: whether it was loaded from the menu
     rather than reached by a travel. Such a load replaces the save in memory
     with one from disk, so what came from the host's save is forgotten."""
+    global _adopted
     if _forget_travel():
         return False
     _names.forget()
     _ran.clear()
+    _provided.clear()
+    _adopted = 0
     return True
 
 
@@ -214,8 +222,9 @@ def ran_zones():
 def playing_adopted():
     """Guest: the save we play came from the host, so what our simulation
     has of anything it did not run itself is the host's copy, as it was
-    when we loaded it."""
-    return bool(_names.save) and _names.save == current_save()
+    when we loaded it. Only once the host's save is in place: a load that
+    failed leaves our own."""
+    return bool(_adopted) and _adopted == current_save()
 
 
 def adopted_save():
@@ -353,7 +362,9 @@ def _put_in_place(persistence):
     global _pending, _put
     zone_id, save, objects, _ = _pending
     _pending = None
+    global _adopted
     _put += 1
+    _adopted = _names.save
     _ran.clear()
     _forget_travel()
     _note_provided(zone_id, objects)

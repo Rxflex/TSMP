@@ -151,6 +151,7 @@ live-on = En direct. Les deux jeux sont reliés.
 live-syncing = Mise en phase des deux jeux. Gardez-les ouverts tous les deux ; cela peut prendre une ou deux minutes.
 live-apart = Les deux jeux tournent, chacun sur son propre terrain ou dans sa propre sauvegarde.
 live-retrying = Pour l’instant, chaque jeu continue de son côté ; ils se relient à nouveau sous peu.
+live-stopped = Les deux sauvegardes n’ont pas pu être reliées. Chaque jeu continue dans la sienne ; rechargez une sauvegarde pour réessayer.
 
 ## Sizes and times
 

@@ -3098,6 +3098,8 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
         )
     } else if status.game_syncing || status.remote_syncing {
         (WARNING, "live-syncing")
+    } else if status.game_stopped || status.remote_stopped {
+        (WARNING, "live-stopped")
     } else if status.game_apart || status.remote_apart {
         (WARNING, "live-apart")
     } else if !status.is_live() {
@@ -3163,6 +3165,9 @@ mod tests {
         assert_eq!(describe_live(&status, true).1, "live-retrying");
         status.game_apart = true;
         assert_eq!(describe_live(&status, true).1, "live-apart");
+        status.remote_stopped = true;
+        assert_eq!(describe_live(&status, true).1, "live-stopped");
+        status.remote_stopped = false;
         status.game_apart = false;
         // Loading the other player's game, or waiting for it to be back.
         status.game_in_zone = false;

@@ -106,6 +106,9 @@ pub struct LiveStatus {
     pub game_joined: bool,
     /// The local game says the two play on different lots or saves.
     pub game_apart: bool,
+    /// The local game gave up joining the other's save until a save is
+    /// loaded again.
+    pub game_stopped: bool,
     /// Launchers on other machines connected to this one.
     pub remotes: usize,
     /// The other game has a zone loaded.
@@ -113,6 +116,7 @@ pub struct LiveStatus {
     pub remote_syncing: bool,
     pub remote_joined: bool,
     pub remote_apart: bool,
+    pub remote_stopped: bool,
 }
 
 impl LiveStatus {
@@ -122,13 +126,23 @@ impl LiveStatus {
     }
 
     fn set_game(&mut self, game: GameState) {
-        (self.game_in_zone, self.game_syncing, self.game_joined, self.game_apart) =
-            (game.in_zone, game.syncing, game.joined, game.apart);
+        (
+            self.game_in_zone,
+            self.game_syncing,
+            self.game_joined,
+            self.game_apart,
+            self.game_stopped,
+        ) = (game.in_zone, game.syncing, game.joined, game.apart, game.stopped);
     }
 
     fn set_remote(&mut self, game: GameState) {
-        (self.remote_in_zone, self.remote_syncing, self.remote_joined, self.remote_apart) =
-            (game.in_zone, game.syncing, game.joined, game.apart);
+        (
+            self.remote_in_zone,
+            self.remote_syncing,
+            self.remote_joined,
+            self.remote_apart,
+            self.remote_stopped,
+        ) = (game.in_zone, game.syncing, game.joined, game.apart, game.stopped);
     }
 }
 
@@ -139,6 +153,7 @@ struct GameState {
     syncing: bool,
     joined: bool,
     apart: bool,
+    stopped: bool,
 }
 
 /// Builds a whole frame.
@@ -479,6 +494,7 @@ fn snoop_state(frame: &[u8]) -> Option<GameState> {
         syncing: flag("syncing").unwrap_or(false),
         joined: flag("joined").unwrap_or(in_zone),
         apart: flag("apart").unwrap_or(false),
+        stopped: flag("stopped").unwrap_or(false),
     })
 }
 
@@ -884,6 +900,7 @@ mod tests {
                 syncing,
                 joined,
                 apart: false,
+                stopped: false,
             })
         };
         assert_eq!(

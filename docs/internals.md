@@ -448,8 +448,9 @@ Control messages:
 - `link {remotes}` (launcher -> its game: how many other launchers are
   connected), `gone` (launcher -> the other side: the game here
   disconnected), `beat` (launcher -> launcher, never passed to a game).
-- `state {role, in_zone, v, loaded, syncing, joined, apart, zone?, lot?,
-  save?, world?, want?}` (game -> game). `in_zone` is false for a stale
+- `state {role, in_zone, v, loaded, syncing, joined, apart, stopped, zone?,
+  lot?, save?, world?, want?}` (game -> game); `stopped` when a guest gave up
+  for good on the other's save. `in_zone` is false for a stale
   guest even in a zone; `loaded`, `syncing` (stale), `joined` (live) and
   `apart` are for the launchers to show: loading the other's game, waiting
   for it, getting in step, each on its own lot or save, playing alone for
@@ -544,7 +545,9 @@ still loads the host's copy of its sims before it gives any once the
 launcher is back. A guest that gives up for good in the host's save does not
 ask again until its player loads a save; every give-up waits before the next
 try. A save loaded from the menu (no travel saved to the scratch slot
-before it) forgets what came from the host's save. A household the host
+before it) forgets what came from the host's save, also while no launcher is
+connected. A guest counts as playing in the host's save only once a snapshot
+was put in place, not when a load merely began. A household the host
 lacks although it once took all of it is given again when the host's world
 changed since (its game started again); only for the same world is that
 final. A
@@ -622,7 +625,11 @@ while another runs is taken when it ends, as the first may be older than
 what the guest asks after. It holds only for a guest whose snapshot will be of the
 host's own lot, which it works out from its save as the snapshot does; a guest that will be apart is sent its lot's
 state while the host plays on, unpaused. A `drop` of what it holds for ends
-the hold at once. After a hold runs out, the host only starts
+the hold at once. A short drop of the link keeps the hold; only a link down
+for `LINK_SECONDS` ends it. When the guest shows the held world, the host
+checks that its game has not moved on since the snapshot (build and buy
+work while paused): if it has, it starts a new world and the guest loads
+again. After a hold runs out, the host only starts
 a new world once its game has actually moved on (its clock or its objects),
 so a guest that was merely slow to load still joins.
 
@@ -660,6 +667,9 @@ connected, not muted, each playing its lot by itself.
   `make_sim_leave`, else `schedule_destroy_asap`). Otherwise the host goes
   on simulating them, and its next save overwrites what the guest does with
   them apart.
+
+A zone id from the guest's own save is only taken for ours when it is on
+the same lot: a new game may give another lot that id.
 
 Two saves of different new games give the same lot different zone ids, so
 a zone is compared by its lot: `"<lot_description_id>:<active_plex>"` of
@@ -764,6 +774,9 @@ when the host leaves that world, and asks again.
 
 The sims the host sends off are those the guest plays at the time, not
 every sim it once selected: in a shared family that is the one sim it plays.
+A guest also reports its sim while apart, and the host clears its lot of it
+again whenever its lot loads (from disk, with that sim on it) and after its
+game starts again.
 
 When the guest reports the sim it controls and that sim belongs to another
 household than the host's, the host adds it, and every sim of its household

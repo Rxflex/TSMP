@@ -155,6 +155,7 @@ live-on = Na żywo. Obie gry są połączone.
 live-syncing = Gry są ze sobą zrównywane. Nie zamykaj żadnej; może to potrwać minutę lub dwie.
 live-apart = Obie gry działają, każda na swojej działce lub we własnym zapisie.
 live-retrying = Na razie każda gra toczy się osobno; wkrótce znów się połączą.
+live-stopped = Nie udało się połączyć obu zapisów. Każda gra toczy się we własnym; wczytaj zapis ponownie, aby spróbować jeszcze raz.
 
 ## Sizes and times
 

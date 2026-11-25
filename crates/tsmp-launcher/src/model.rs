@@ -159,6 +159,10 @@ pub struct Running {
     pub set_aside: Vec<String>,
     pub save: Option<String>,
     pub guests: Vec<Guest>,
+    /// The packs of every guest that joined since hosting began, also of
+    /// those whose connection dropped since: the game is played with what
+    /// all of them have, and a guest that comes back finds it so.
+    pub joined_packs: Vec<PackSet>,
     /// The session as listed on a session server, while it is.
     pub online: Option<Online>,
 }
@@ -640,7 +644,7 @@ impl Model {
             Screen::Host(HostScreen {
                 stage: HostStage::Running(running),
                 ..
-            }) => common_packs(std::iter::once(&env.packs).chain(running.guests.iter().map(|g| &g.hello.packs))),
+            }) => common_packs(std::iter::once(&env.packs).chain(&running.joined_packs)),
             Screen::Join(JoinScreen { host: Some(host), .. }) => common_packs([&env.packs, &host.packs]),
             _ => env.packs.clone(),
         }
@@ -850,6 +854,9 @@ impl Model {
                     match event.clone() {
                         HostEvent::GuestJoined { id, address, hello } => {
                             notes.push((format!("{} joined from {address}", hello.name), false));
+                            if !running.joined_packs.contains(&hello.packs) {
+                                running.joined_packs.push(hello.packs.clone());
+                            }
                             running.guests.push(Guest {
                                 id,
                                 address,
@@ -1107,6 +1114,7 @@ fn start_host(
         set_aside,
         save: save.map(|save| save.file_name),
         guests: Vec::new(),
+        joined_packs: Vec::new(),
         online: None,
     })
 }
