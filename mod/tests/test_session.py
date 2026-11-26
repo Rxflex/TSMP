@@ -4,7 +4,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from tsmp import frames, session, transfer, wire  # noqa: E402
+import base64  # noqa: E402
+
+from tsmp import frames, household, session, transfer, wire  # noqa: E402
 
 VIEW_UPDATE = 11
 PIE_MENU = 6
@@ -53,9 +55,14 @@ class FakeGame:
         self.sim_id = 0
         self.delivered = []
         self.executed = []
+        # The guest each command in `executed` ran for.
+        self.executed_for = []
+        self.forgotten = []
         self.during_execute = None
         self.snapshots = []
         self.snapshot_zones = []
+        # The (zone, lot) of each guest each save in `snapshots` is for.
+        self.snapshot_places = []
         self.zone_number = 7
         self.lot_name = ""
         self.lot_names = {}
@@ -76,10 +83,14 @@ class FakeGame:
         # How far the game's clock is.
         self.ticks = 0
         self.merged = []
+        # (player, version, others) of each gift in `merged`.
+        self.merged_as = []
+        self.merge_outcome = "took in"
         self.merge_error = None
         self.merge_error_stays = True
         self.welcomed = []
         self.welcome_travellers = []
+        self.welcome_claimed = []
         self.refuse_sims = ()
         self.sent_off = []
         self.joined_sims = []
@@ -91,6 +102,8 @@ class FakeGame:
         self.reloads = 0
         self.pauses = 0
         self.households = {}
+        # How often the host was told that what guests gave is gone.
+        self.gifts_forgotten = 0
 
     def in_zone(self):
         return self.zone
@@ -113,17 +126,25 @@ class FakeGame:
     def deliver(self, msg_id, data):
         self.delivered.append((msg_id, data))
 
-    def execute(self, name, args, sim_id):
+    def execute(self, name, args, sim_id, peer=None):
         self.executed.append((name, args, sim_id))
+        self.executed_for.append(peer)
         if self.during_execute is not None:
             self.during_execute()
 
-    def snapshot_zone(self, zone_id, lot):
+    def forget_peer(self, peer):
+        self.forgotten.append(peer)
+
+    def snapshot_zone(self, zone_id, lot, player=""):
         return zone_id or self.zone_number
 
-    def snapshot(self, done, zone_id=0, lot=""):
-        self.snapshots.append(done)
-        self.snapshot_zones.append(zone_id)
+    def snapshot(self, done, places):
+        """One save for every guest waiting; the test answers it with one
+        payload, which stands for each guest's snapshot."""
+        self.snapshots.append(lambda payload: done(None if payload is None else [payload for _ in places]))
+        self.snapshot_zones.extend(place[0] for place in places)
+        # As the session leaves it: guests may join the save until it is done.
+        self.snapshot_places.append(places)
 
     def adopt(self, payload, travellers=()):
         if self.adopt_error is not None:
@@ -166,19 +187,26 @@ class FakeGame:
     def progress(self):
         return str(self.ticks)
 
-    def merge(self, payload, save_id=0):
+    def merge(self, payload, save_id=0, player="", version=None, others=()):
         if self.merge_error is not None:
             error, self.merge_error = self.merge_error, self.merge_error if self.merge_error_stays else None
             raise error
         self.merged.append((payload, save_id))
-        return "took in"
+        self.merged_as.append((player, version, list(others)))
+        return self.merge_outcome
 
-    def welcome(self, sim_id, before=(), travellers=()):
+    def forget_gifts(self):
+        self.gifts_forgotten += 1
+
+    def welcome(self, sim_id, before=(), travellers=(), claimed=()):
         self.welcome_travellers.append(list(travellers))
-        if sim_id in self.refuse_sims:
+        self.welcome_claimed.append(set(claimed))
+        if sim_id in self.refuse_sims or sim_id in claimed:
             return []
         self.welcomed.append(sim_id)
-        return [sim_id]
+        # The travellers that are no other player's come along, as
+        # household.welcome has them.
+        return [sim_id] + [sim for sim in travellers if sim != sim_id and sim not in claimed]
 
     def send_off(self, sim_ids):
         self.sent_off.append(list(sim_ids))
@@ -1115,13 +1143,13 @@ class HostTest(unittest.TestCase):
         self.assertFalse(host.session.holding)
 
     def test_the_host_holds_for_a_guest_whose_lot_it_lacks_but_sends_its_own(self):
-        host, guest = connected(guest_lot=99, snapshot_zone=lambda zone_id, lot: 7)
+        host, guest = connected(guest_lot=99, snapshot_zone=lambda zone_id, lot, player="": 7)
         self.assertTrue(host.session.holding)
         answers(host, guest)
         loads(host, guest)
 
     def test_a_guest_sent_the_hosts_lot_unheld_asks_again_to_join(self):
-        host, guest = connected(guest_lot=99, snapshot_zone=lambda zone_id, lot: 0)
+        host, guest = connected(guest_lot=99, snapshot_zone=lambda zone_id, lot, player="": 0)
         self.assertFalse(host.session.holding)
         answers(host, guest)
         guest.leave()
@@ -2387,9 +2415,10 @@ class RoutedTest(unittest.TestCase):
         self.assertNotIn(3, host.session.peers)
         self.assertTrue(host.session.live)
 
-    def test_a_hold_for_a_guest_that_left_ends_once_another_player_plays(self):
-        """With one guest at a time, the player who comes in place of the
-        one we held for, which left, ends the hold, as the one guest did."""
+    def test_a_hold_for_a_guest_that_left_lasts_its_grace_while_another_plays(self):
+        """Each hold ends on what its own guest does: another player who
+        comes in meanwhile does not end it, is told why the game stays
+        paused, and is not sent back to loading when the hold runs out."""
         host, first = connected()
         both(host, first)
         self.assertTrue(host.session.holding)
@@ -2427,7 +2456,9 @@ class RoutedTest(unittest.TestCase):
         other.arrive()
         exchange()
         self.assertTrue(other.session.live)
-        world, pauses = host.session._world, host.game.pauses
+        self.assertTrue(host.session.holding)
+        self.assertIn("guest 1 is loading; the game stays paused until they are in", other.game.notices)
+        world = host.session._world
         for _ in range(int(session.LINK_SECONDS) + 10):
             host.game.ticks += 1
             host.tick(1.0)
@@ -2435,6 +2466,8 @@ class RoutedTest(unittest.TestCase):
             exchange()
         self.assertFalse(host.session.holding)
         self.assertEqual(host.session._world, world)
+        pauses = host.game.pauses
+        host.tick(10.0)
         self.assertEqual(host.game.pauses, pauses)
         self.assertTrue(other.session.live)
 
@@ -2445,10 +2478,11 @@ class RoutedTest(unittest.TestCase):
         host._relay_says("peer_gone", peer=1)
         host._relay_says("peer_up", peer=2, name="guest 2", player="p2")
         host.take()
-        # The save for the first runs still.
+        # The save for the first runs still, and as our game has not moved
+        # since it began, it answers the second too.
         host.receive(frames.Decoder().feed(frames.control("resync", id=5, zone=7, lot="")), peer=2)
         self.assertEqual(len(host.game.snapshots), 1)
-        self.assertIsNotNone(host.session.peers[2].asked)
+        self.assertEqual(host.session.peers[2].saving, (5, 7, ""))
         host.leave()
         host.take()
         host.game.snapshots[0](b"save")
@@ -2456,6 +2490,7 @@ class RoutedTest(unittest.TestCase):
                    if kind == frames.CONTROL and b'"resync_failed"' in payload]
         self.assertEqual(refused, [(2, {"type": "resync_failed", "id": 5})])
         self.assertIsNone(host.session.peers[2].asked)
+        self.assertIsNone(host.session.peers[2].saving)
 
     def test_a_guest_takes_no_notice_of_peers(self):
         host, guest = joined()
@@ -2528,6 +2563,852 @@ class LegacyRelayTest(unittest.TestCase):
         reloads_from_host(host, guest)
         self.assertTrue(host.session.live)
         self.assertTrue(guest.session.live)
+
+
+def group(count=2, strangers=()):
+    """A host and `count` guests on its lot, connected through the host's
+    launcher, which numbers them 1, 2, ...; guest n plays sim 111 * (n + 1).
+    None of them has loaded the host's state yet; those numbered in
+    `strangers` play a save of their own."""
+    host = Player(session.HOST)
+    host.game.zone = True
+    host.session.bridge_up(session.HOST)
+    guests = [newcomer(number, 2 if number in strangers else 1) for number in range(1, count + 1)]
+    host.link(count)
+    for guest in guests:
+        guest.link(1)
+    settle(host, *guests)
+    return host, guests
+
+
+def newcomer(number, save=1):
+    guest = Player(session.GUEST)
+    guest.game.zone = True
+    guest.game.save = save
+    guest.game.sim_id = 111 * (number + 1)
+    guest.session.bridge_up(session.GUEST)
+    return guest
+
+
+def comes_late(host, guests):
+    """One more guest connects, the others staying as they are."""
+    number = len(guests) + 1
+    guest = newcomer(number)
+    host.peers_up.add(number)
+    host._relay_says("peer_up", peer=number, name="guest {}".format(number), player="p{}".format(number))
+    guest.link(1)
+    guests.append(guest)
+    settle(host, *guests)
+    return guest
+
+
+def all_tick(host, guests, seconds=0.0):
+    for player in [host] + guests:
+        player.tick(seconds)
+    settle(host, *guests)
+
+
+def load(host, guests, *loading):
+    """Those guests' games load what they adopted."""
+    for guest in loading:
+        guest.leave()
+        guest.game.save = host.game.save
+        guest.arrive()
+    settle(host, *guests)
+
+
+def all_in(count=2):
+    """A group whose guests have all loaded the host's state, with one save."""
+    host, guests = group(count)
+    all_tick(host, guests)
+    host.game.snapshots[-1](b"save")
+    settle(host, *guests)
+    load(host, guests, *guests)
+    return host, guests
+
+
+def offers(host):
+    """(peer, id, world) of each state offered in what the host sent and the
+    guests have yet to get."""
+    return [(to, frames.parse_json(payload)["id"], frames.parse_json(payload).get("world"))
+            for to, (kind, _, payload) in zip(host.sent_to, host.sent)
+            if kind == frames.CONTROL and b'"offer"' in payload and b'"state"' in payload]
+
+
+class GroupTest(unittest.TestCase):
+    """A host with several guests: each is joined or not by itself."""
+
+    def setUp(self):
+        global RELAY
+        relay, RELAY = RELAY, "routed"
+
+        def restore():
+            global RELAY
+            RELAY = relay
+
+        self.addCleanup(restore)
+
+    def assertLive(self, host, guests, *live):
+        for number, guest in enumerate(guests, 1):
+            self.assertEqual(guest.session.live, number in live, "guest {}".format(number))
+            self.assertEqual(host.session._live_with(host.session.peers[number]), number in live,
+                             "host with guest {}".format(number))
+
+    def test_every_guest_joins_with_its_own_sim(self):
+        host, guests = all_in(3)
+        self.assertLive(host, guests, 1, 2, 3)
+        self.assertEqual([host.session.peers[n].sim_id for n in (1, 2, 3)], [222, 333, 444])
+        self.assertFalse(host.session.holding)
+
+    def test_requests_with_the_same_id_from_two_guests_are_each_answered(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        # Each guest numbers its own requests: both asked with 1.
+        self.assertEqual([guest.session._request for guest in guests], [1, 1])
+        self.assertEqual([host.session.peers[n].saving[0] for n in (1, 2)], [1, 1])
+        host.take()
+        host.game.snapshots[-1](b"save")
+        self.assertEqual(sorted(offers(host)), [(1, 1, host.session._world), (2, 1, host.session._world)])
+        settle(host, *guests)
+        self.assertEqual([guest.game.adopted for guest in guests], [[b"save"], [b"save"]])
+        load(host, guests, *guests)
+        self.assertLive(host, guests, 1, 2)
+
+    def test_guests_that_ask_at_once_are_answered_by_one_save(self):
+        host, guests = all_in(3)
+        world, snapshots = host.session._world, len(host.game.snapshots)
+        host.leave()
+        settle(host, *guests)
+        host.arrive()
+        settle(host, *guests)
+        self.assertNotEqual(host.session._world, world)
+        self.assertLive(host, guests)
+        all_tick(host, guests)
+        self.assertEqual(len(host.game.snapshots), snapshots + 1)
+        self.assertEqual(len(host.game.snapshot_places[-1]), 3)
+        host.game.snapshots[-1](b"again")
+        settle(host, *guests)
+        load(host, guests, *guests)
+        self.assertLive(host, guests, 1, 2, 3)
+        self.assertEqual([guest.game.adopted[-1] for guest in guests], [b"again"] * 3)
+
+    def test_a_guest_that_asks_once_our_game_moved_waits_for_the_next_save(self):
+        host, guests = all_in(1)
+        first = guests[0]
+        first.leave()
+        first.arrive()
+        settle(host, *guests)
+        snapshots = len(host.game.snapshots)
+        host.game.ticks += 1
+        late = comes_late(host, guests)
+        all_tick(host, guests)
+        self.assertEqual(len(host.game.snapshots), snapshots)
+        self.assertEqual(len(host.game.snapshot_places[-1]), 1)
+        self.assertIsNotNone(host.session.peers[2].asked)
+        host.game.snapshots[-1](b"first")
+        settle(host, *guests)
+        self.assertEqual(len(host.game.snapshots), snapshots + 1)
+        self.assertEqual(first.game.adopted[-1], b"first")
+        self.assertEqual(late.game.adopted, [])
+        host.game.snapshots[-1](b"second")
+        settle(host, *guests)
+        self.assertEqual(late.game.adopted, [b"second"])
+
+    def test_one_guests_hold_is_not_ended_by_another_guests_state(self):
+        host, guests = all_in(2)
+        first, second = guests
+        # The first guest's own zone loads again: it asks once more, and we
+        # hold for it.
+        first.leave()
+        first.arrive()
+        settle(host, *guests)
+        all_tick(host, guests)
+        self.assertTrue(host.session.peers[1].hold_until)
+        self.assertFalse(host.session.peers[2].hold_until)
+        # The second, joined, says it is in a zone, as one that got in does.
+        second.session._announce()
+        settle(host, *guests)
+        all_tick(host, guests, 1.0)
+        self.assertTrue(host.session.holding)
+        self.assertTrue(host.session.peers[1].hold_until)
+        self.assertLive(host, guests, 2)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, first)
+        self.assertFalse(host.session.holding)
+        self.assertLive(host, guests, 1, 2)
+
+    def test_the_game_is_held_until_the_last_guest_is_in(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[0])
+        self.assertLive(host, guests, 1)
+        self.assertTrue(host.session.holding)
+        self.assertFalse(host.session.command("clock.setspeed", ["1"]))
+        pauses = host.game.pauses
+        all_tick(host, guests, session.PAUSE_SECONDS + 1)
+        self.assertGreater(host.game.pauses, pauses)
+        load(host, guests, guests[1])
+        self.assertLive(host, guests, 1, 2)
+        self.assertFalse(host.session.holding)
+        self.assertTrue(host.session.command("clock.setspeed", ["1"]))
+
+    def test_a_guest_in_while_the_game_is_held_for_another_is_told(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[0])
+        self.assertIn("guest 2 is loading; the game stays paused until they are in", guests[0].game.notices)
+        # Its player presses play; the host's game hears the command as it
+        # runs it, and refuses it.
+        host.game.during_execute = lambda: host.session.command("clock.setspeed", ["1"])
+        guests[0].session.command("clock.setspeed", ["1"])
+        settle(host, *guests)
+        self.assertEqual(host.game.executed_for, [1])
+        self.assertIn("the game stays paused while guest 2 is loading", guests[0].game.notices)
+        self.assertEqual(guests[1].game.notices.count("the game stays paused while guest 2 is loading"), 0)
+
+    def test_guests_in_are_told_when_the_game_is_held_for_a_late_one(self):
+        host, guests = all_in(1)
+        late = comes_late(host, guests)
+        all_tick(host, guests)
+        self.assertTrue(host.session.peers[2].hold_until)
+        self.assertIn("guest 2 is loading; the game stays paused until they are in", guests[0].game.notices)
+        self.assertNotIn("guest 2 is loading; the game stays paused until they are in", late.game.notices)
+
+    def test_a_late_guest_loads_alone_and_the_world_stays(self):
+        host, guests = all_in(2)
+        world, adopted = host.session._world, [list(guest.game.adopted) for guest in guests]
+        late = comes_late(host, guests)
+        self.assertLive(host, guests, 1, 2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"late")
+        settle(host, *guests)
+        load(host, guests, late)
+        self.assertLive(host, guests, 1, 2, 3)
+        self.assertEqual(host.session._world, world)
+        self.assertEqual([guest.game.adopted for guest in guests[:2]], adopted)
+        self.assertEqual(late.game.adopted, [b"late"])
+
+    def test_a_late_guest_behind_our_game_loads_again_alone(self):
+        host, guests = all_in(2)
+        world = host.session._world
+        late = comes_late(host, guests)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"late")
+        settle(host, *guests)
+        # Our game moved on before the late guest got in: its state is
+        # behind, the others' is not.
+        host.game.ticks += 1
+        load(host, guests, late)
+        self.assertLive(host, guests, 1, 2)
+        self.assertEqual(host.session._world, world)
+        self.assertEqual(host.session.peers[3].epoch, 1)
+        self.assertTrue(late.session.stale)
+        all_tick(host, guests)
+        host.take()
+        host.game.snapshots[-1](b"again")
+        self.assertEqual(offers(host), [(3, late.session._request, world + ".1")])
+        settle(host, *guests)
+        load(host, guests, late)
+        self.assertLive(host, guests, 1, 2, 3)
+        self.assertEqual(host.session._world, world)
+        self.assertEqual(late.session._world, world + ".1")
+        self.assertEqual(guests[0].session._world, world)
+
+    def test_a_hold_that_lapses_sends_only_its_guest_back_to_loading(self):
+        host, guests = all_in(1)
+        world = host.session._world
+        late = comes_late(host, guests)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"late")
+        settle(host, *guests)
+        for _ in range(int(session.HOLD_SECONDS) + 5):
+            host.tick(1.0)
+            settle(host, *guests)
+        self.assertFalse(host.session.holding)
+        host.game.ticks += 1
+        all_tick(host, guests, 2.0)
+        self.assertEqual(host.session.peers[2].epoch, 1)
+        self.assertEqual(host.session._world, world)
+        self.assertLive(host, guests, 1)
+        load(host, guests, late)
+        self.assertLive(host, guests, 1)
+        self.assertTrue(late.session.stale)
+
+    def test_one_guest_leaving_keeps_the_others_in_and_their_transfers(self):
+        host, guests = all_in(3)
+        third = guests[2]
+        third.leave()
+        third.arrive()
+        settle(host, *guests)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"x" * (transfer.WINDOW * 2))
+        request = third.session._request
+        self.assertIsNotNone(host.session.peers[3].transfers.outgoing(request))
+        host.peers_up.discard(1)
+        host._relay_says("peer_gone", peer=1)
+        self.assertFalse(host.session.peers[1].up)
+        self.assertIsNotNone(host.session.peers[3].transfers.outgoing(request))
+        self.assertEqual(host.game.forgotten, [1])
+        guests[0].link(0)
+        settle(host, *guests)
+        load(host, guests, third)
+        self.assertLive(host, guests, 2, 3)
+        self.assertEqual(third.game.adopted[-1], b"x" * (transfer.WINDOW * 2))
+        host.game.during_execute = None
+        guests[1].session.command("interactions.choices", ["5487", "0"])
+        settle(host, *guests)
+        self.assertEqual(host.game.executed[-1], ("interactions.choices", ["5487", "0"], 333))
+
+    def test_commands_run_as_the_sending_guests_sim_and_only_while_it_is_in(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[1])
+        self.assertLive(host, guests, 2)
+        command = (frames.COMMAND, 0, b'{"name":"interactions.choices","args":["1"]}')
+        host.receive([command], peer=1)
+        self.assertEqual(host.game.executed, [])
+        host.receive([command], peer=2)
+        self.assertEqual(host.game.executed, [("interactions.choices", ["1"], 333)])
+        self.assertEqual(host.game.executed_for, [2])
+
+    def test_replies_and_screens_reach_only_their_guest(self):
+        host, guests = all_in(3)
+        first, second, third = guests
+        host.game.households = {222: 2, 333: 3, 444: 4, 555: 3}
+        host.game.during_execute = lambda: host.session.outbound(PIE_MENU, b"menu")
+        second.session.command("interactions.choices", ["5487", "0"])
+        settle(host, *guests)
+        self.assertEqual([(PIE_MENU, b"menu") in guest.game.delivered for guest in guests], [False, True, False])
+        host.game.during_execute = None
+        host.take()
+        dialog = owned(444)
+        self.assertIsNone(host.session.outbound(DIALOG, dialog))
+        # A sim of the second guest's household, which it does not control.
+        family = owned(555)
+        self.assertIsNone(host.session.outbound(DIALOG, family))
+        self.assertEqual(host.take_routed(), [(3, (frames.MSG, DIALOG, dialog)), (2, (frames.MSG, DIALOG, family))])
+        self.assertEqual(host.session.outbound(OTHER_MSG, b"x"), b"x")
+        self.assertEqual(host.take_routed(), [(None, (frames.MSG, OTHER_MSG, b"x"))])
+
+    def test_a_household_two_guests_play_from_is_ours_to_answer_for(self):
+        host, guests = all_in(2)
+        host.game.households = {222: 3, 333: 3, 555: 3}
+        host.take()
+        dialog = owned(555)
+        self.assertEqual(host.session.outbound(DIALOG, dialog), dialog)
+        self.assertEqual(host.take_routed(), [])
+
+    def test_the_stream_goes_only_to_the_guests_in(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[0])
+        host.take()
+        update = view_update(5, SET_SIM_ACTIVE)
+        host.session.outbound(VIEW_UPDATE, update)
+        host.session.outbound(OTHER_MSG, b"x")
+        sent = host.take_routed()
+        self.assertEqual([to for to, _ in sent], [1, 1])
+        self.assertEqual(op_types(sent[0][1][2]), [5])
+
+    def test_each_guest_hears_who_else_builds(self):
+        host, guests = all_in(2)
+        first, second = guests
+        first.session.command(session.BUILD_COMMAND, ["1"])
+        settle(host, *guests)
+        self.assertIn("the other player is in build mode", second.game.notices)
+        self.assertFalse(any("build" in notice for notice in first.game.notices))
+        self.assertIn("guest 1 is in build mode", host.game.notices)
+        host.session.command(session.BUILD_COMMAND, ["1"])
+        settle(host, *guests)
+        self.assertIn("the host, guest 1 are in build mode", second.game.notices)
+        self.assertTrue(any("both of you" in notice for notice in first.game.notices))
+        first.session.command(session.BUILD_COMMAND, ["0"])
+        settle(host, *guests)
+        self.assertEqual(second.game.notices[-1], "the host is in build mode")
+        host.session.command(session.BUILD_COMMAND, ["0"])
+        settle(host, *guests)
+        self.assertEqual(second.game.notices[-1], "the other player left build mode")
+
+    def test_a_status_line_for_each_guest(self):
+        host, guests = group(2)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[0])
+        lines = host.session.describe_peers()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("guest 1 (guest 1): joined, sim 222"), lines[0])
+        self.assertTrue(lines[1].startswith("guest 2 (guest 2): loading, sim none"), lines[1])
+        self.assertTrue(lines[1].endswith("held for"), lines[1])
+
+    def test_log_lines_about_a_guest_name_it(self):
+        host, guests = all_in(2)
+        self.assertTrue(any(line.startswith("guest 2: ") for line in host.logged))
+        self.assertEqual(host.session.label(2), "guest 2")
+        self.assertEqual(host.session.label(None), "")
+
+    def test_what_is_about_the_sim_of_a_guest_not_joined_is_ours(self):
+        host, guests = all_in(2)
+        plays_apart(host, guests, guests[0], 8)
+        self.assertLive(host, guests, 2)
+        self.assertEqual(host.session.peers[1].sim_id, 222)
+        host.take()
+        # Relayed to the guest playing apart, it would be dropped there, and
+        # nobody would see it.
+        dialog = owned(222)
+        self.assertEqual(host.session.outbound(DIALOG, dialog), dialog)
+        self.assertTrue(host.session.client_cheat("sims.exit2cas 222 1 0"))
+        self.assertEqual(host.take_routed(), [])
+
+    def test_what_came_through_a_launcher_goes_with_it(self):
+        host, guests = group(2, strangers=(2,))
+        all_tick(host, guests)
+        guests[1].game.contributions[-1](b"household")
+        settle(host, *guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        self.assertEqual(len(host.session._gifts), 1)
+        self.assertTrue(host.session.peers[1].bases)
+        # The launcher starts again, and may number other players so.
+        host.session.bridge_down("restarting")
+        self.assertEqual(host.session._gifts, [])
+        self.assertIsNone(host.session._batch)
+        self.assertEqual([peer.bases for _, peer in sorted(host.session.peers.items())], [{}, {}])
+        host.session.bridge_up(session.HOST)
+        host.tick()
+        self.assertEqual(host.game.merged, [])
+
+    def test_a_guest_first_on_a_lot_apart_is_still_first_after_its_link_drops(self):
+        host, guests = all_in(3)
+        first, second = guests[0], guests[1]
+        plays_apart(host, guests, first, 8)
+        plays_apart(host, guests, second, 8)
+        peers = host.session.peers
+        orders = (peers[1].place_order, peers[2].place_order)
+        host.peers_up.discard(1)
+        host._relay_says("peer_gone", peer=1)
+        host.peers_up.add(1)
+        host._relay_says("peer_up", peer=1, name="guest 1", player="p1")
+        settle(host, *guests)
+        all_tick(host, guests)
+        self.assertEqual((peers[1].place_order, peers[2].place_order), orders)
+        self.assertFalse(any("already playing" in notice for notice in first.game.notices))
+        gives_apart(host, guests, second, b"second")
+        gives_apart(host, guests, first, b"first")
+        self.assertEqual(host.game.merged, [(b"first", 1)])
+
+
+def plays_apart(host, guests, guest, lot):
+    """The guest goes to another lot of the host's save, loads it from the
+    host, and plays it by itself."""
+    guest.leave()
+    settle(host, *guests)
+    guest.arrive(lot)
+    settle(host, *guests)
+    all_tick(host, guests)
+    host.game.snapshots[-1](b"lot")
+    settle(host, *guests)
+    load(host, guests, guest)
+    all_tick(host, guests)
+
+
+def gives_apart(host, guests, guest, payload):
+    """A guest playing by itself gives its household, as it does now and
+    then."""
+    guest.tick(session.GIVE_SECONDS + 1)
+    guest.game.contributions[-1](payload)
+    settle(host, *guests)
+
+
+def comes_back(host, guests, guest, payload=b"back"):
+    """A guest playing apart comes to the host's lot: it gives what it
+    played, loads the host's state and joins."""
+    guest.leave()
+    settle(host, *guests)
+    guest.arrive(host.game.zone_number)
+    settle(host, *guests)
+    all_tick(host, guests)
+    guest.game.contributions[-1](payload)
+    settle(host, *guests)
+    all_tick(host, guests)
+    host.game.snapshots[-1](b"save")
+    settle(host, *guests)
+    load(host, guests, guest)
+    all_tick(host, guests)
+
+
+def versioned(host):
+    """Has the host's game refuse a gift of household 5 older than one
+    another guest gave since, as household.take_in does."""
+    gifts = household.Gifts()
+    merge = host.game.merge
+
+    def merge_once(payload, save_id=0, player="", version=None, others=()):
+        merge(payload, save_id, player, version, others)
+        if gifts.older(5, save_id, version):
+            return session.GIFT_OLDER
+        gifts.took(5, save_id, version)
+        return household.UPDATED
+
+    host.game.merge = merge_once
+
+
+def look(sim_id):
+    return frames.Decoder().feed(frames.control(
+        "appearance", sim_id=str(sim_id), look=base64.b64encode(b"look").decode("ascii"), fields=["outfits"]))
+
+
+class FamiliesTest(unittest.TestCase):
+    """Households and sims with several guests: each sim has one player."""
+
+    def setUp(self):
+        global RELAY
+        relay, RELAY = RELAY, "routed"
+
+        def restore():
+            global RELAY
+            RELAY = relay
+
+        self.addCleanup(restore)
+
+    def test_a_guest_is_never_handed_another_players_sim(self):
+        host, guests = all_in(2)
+        first, second = host.session.peers[1], host.session.peers[2]
+        self.assertEqual((first.welcomed, second.welcomed), ([222], [333]))
+        # The first comes along with two of its household, one of which the
+        # second plays.
+        first.travellers = [333, 555]
+        guests[0].game.sim_id = 223
+        all_tick(host, guests)
+        self.assertEqual(host.game.welcome_claimed[-1], {333})
+        self.assertEqual(first.welcomed, [223, 555])
+        self.assertEqual(second.welcomed, [333])
+        # Nor is it handed the sim another controls.
+        guests[0].game.sim_id = 333
+        all_tick(host, guests)
+        self.assertEqual(first.welcomed, [223, 555])
+        self.assertEqual(second.welcomed, [333])
+
+    def test_a_sim_that_came_along_is_its_players_once_it_takes_control(self):
+        host, guests = all_in(2)
+        first, second = host.session.peers[1], host.session.peers[2]
+        first.travellers = [555]
+        guests[0].game.sim_id = 223
+        all_tick(host, guests)
+        self.assertEqual(first.welcomed, [223, 555])
+        guests[1].game.sim_id = 555
+        all_tick(host, guests)
+        self.assertEqual(first.welcomed, [223])
+        self.assertEqual(second.welcomed, [555])
+        self.assertIs(host.session._owner(555), second)
+
+    def test_a_guest_that_leaves_takes_only_its_own_sims_off_our_lot(self):
+        host, guests = all_in(2)
+        first = host.session.peers[1]
+        plays_apart(host, guests, guests[0], 8)
+        self.assertEqual(host.game.sent_off, [[222]])
+        # Over there it plays a sim the second plays here: still the
+        # second's, and not claimed by the first.
+        guests[0].game.sim_id = 333
+        all_tick(host, guests)
+        self.assertEqual(first.away, [])
+        self.assertEqual(host.game.sent_off, [[222]])
+        self.assertEqual(host.session.peers[2].welcomed, [333])
+        # Our lot loaded again with it on it: it is still the second's.
+        host.leave()
+        settle(host, *guests)
+        host.arrive()
+        settle(host, *guests)
+        self.assertEqual(host.game.sent_off, [[222]])
+
+    def test_a_gift_waits_while_we_save_and_hold_for_another_guest(self):
+        host, guests = group(2, strangers=(2,))
+        first, second = guests
+        all_tick(host, guests)
+        # The first asks for our state; the second, of a save of its own,
+        # brings its household while we save for the first.
+        self.assertEqual(len(host.game.snapshots), 1)
+        second.game.contributions[-1](b"household")
+        settle(host, *guests)
+        self.assertEqual(host.game.merged, [])
+        self.assertEqual(len(host.session._gifts), 1)
+        self.assertIn("guest 1 is loading; your household is taken in once they are in", second.game.notices)
+        # Told it is still to come, it waits past the time it gives the host.
+        for _ in range(2):
+            all_tick(host, guests, session.MERGE_SECONDS / 2 + 10)
+        self.assertEqual(second.session._phase, session.GIVING)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        # We still hold for the first.
+        self.assertEqual(host.game.merged, [])
+        load(host, guests, first)
+        all_tick(host, guests)
+        self.assertEqual(host.game.merged, [(b"household", 2)])
+        self.assertEqual(host.session._gifts, [])
+        self.assertEqual(second.session._phase, session.ASKING)
+        self.assertTrue(first.session.live)
+
+    def test_a_gift_while_we_save_for_its_own_guest_alone_is_taken_at_once(self):
+        host, guests = group(1, strangers=(1,))
+        all_tick(host, guests)
+        guests[0].game.contributions[-1](b"household")
+        settle(host, *guests)
+        self.assertEqual(host.game.merged, [(b"household", 2)])
+
+    def test_a_waiting_gift_of_a_guest_that_left_is_dropped(self):
+        host, guests = group(2, strangers=(2,))
+        all_tick(host, guests)
+        guests[1].game.contributions[-1](b"household")
+        settle(host, *guests)
+        self.assertEqual(len(host.session._gifts), 1)
+        host.peers_up.discard(2)
+        host._relay_says("peer_gone", peer=2)
+        self.assertEqual(host.session._gifts, [])
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, guests[0])
+        all_tick(host, guests)
+        self.assertEqual(host.game.merged, [])
+
+    def test_a_gift_from_before_another_guests_gift_is_older(self):
+        host, guests = all_in(2)
+        versioned(host)
+        # Both play the same household apart, from the same state of ours.
+        plays_apart(host, guests, guests[0], 8)
+        plays_apart(host, guests, guests[1], 9)
+        gives_apart(host, guests, guests[0], b"first")
+        self.assertEqual(host.game.merged_as[-1][:2], ("p1", ("p1", 0, 1)))
+        # What the other player plays, here or elsewhere, keeps our copy of
+        # its relationships.
+        self.assertIn(333, host.game.merged_as[-1][2])
+        self.assertNotIn(222, host.game.merged_as[-1][2])
+        gives_apart(host, guests, guests[1], b"second")
+        self.assertEqual(host.game.merged_as[-1][:2], ("p2", ("p2", 0, 2)))
+        self.assertIn("another player gave your household since you loaded the host's game; the host keeps theirs",
+                      guests[1].game.notices)
+        # Loading our state again, it first gives what it played, which is
+        # still older, and is kept out; then it loads ours.
+        guests[1].session.resync()
+        settle(host, *guests)
+        guests[1].game.contributions[-1](b"before loading")
+        settle(host, *guests)
+        self.assertEqual(host.game.merged_as[-1][1], ("p2", 0, 3))
+        self.assertEqual(guests[1].session._phase, session.ASKING)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"lot")
+        settle(host, *guests)
+        load(host, guests, guests[1])
+        all_tick(host, guests)
+        # What it gives from there is newer.
+        notices = len(guests[1].game.notices)
+        gives_apart(host, guests, guests[1], b"third")
+        self.assertEqual(host.game.merged[-1], (b"third", 1))
+        self.assertEqual(host.game.merged_as[-1][1], ("p2", 3, 4))
+        self.assertEqual(len(guests[1].game.notices), notices)
+
+    def test_the_second_guest_apart_on_one_lot_is_told_and_its_gift_not_taken(self):
+        host, guests = all_in(3)
+        first, second, third = guests
+        plays_apart(host, guests, first, 8)
+        self.assertFalse(any("already playing" in notice for notice in first.game.notices))
+        plays_apart(host, guests, second, 8)
+        self.assertIn("guest 1 is already playing this lot; what you play here is not taken into the host's game "
+                      "while they are here", second.game.notices)
+        # Another lot is the third's alone.
+        plays_apart(host, guests, third, 9)
+        self.assertFalse(any("already playing" in notice for notice in third.game.notices))
+        gives_apart(host, guests, second, b"second")
+        self.assertEqual(host.game.merged, [])
+        self.assertIn("guest 1 is already playing that lot; the host keeps your household as it has it",
+                      second.game.notices)
+        gives_apart(host, guests, first, b"first")
+        gives_apart(host, guests, third, b"third")
+        self.assertEqual(host.game.merged, [(b"first", 1), (b"third", 1)])
+        # Once the first has left the lot, the second plays it alone.
+        plays_apart(host, guests, first, 10)
+        gives_apart(host, guests, second, b"again")
+        self.assertEqual(host.game.merged[-1], (b"again", 1))
+
+    def test_a_guest_restyles_only_the_sims_it_plays(self):
+        host, guests = all_in(2)
+        # The first once played the second's sim on another lot.
+        host.session.peers[1].away = [333]
+        host.take()
+        host.receive(look(333), peer=1)
+        self.assertEqual(host.game.applied, [])
+        self.assertIn({"type": "appearance_done", "sim_id": "333", "ok": False}, host.controls())
+        host.receive(look(333), peer=2)
+        host.receive(look(222), peer=1)
+        self.assertEqual(host.game.applied, [(333, b"look"), (222, b"look")])
+
+    def test_each_guests_snapshot_is_of_its_own_players_zones(self):
+        host, guests = group(3)
+        all_tick(host, guests)
+        self.assertEqual([place[2] for place in host.game.snapshot_places[-1]], ["p1", "p2", "p3"])
+
+    def test_a_sim_another_guest_was_handed_stays_theirs(self):
+        host, guests = all_in(2)
+        host.game.households = {222: 3, 333: 3}
+        first, second = host.session.peers[1], host.session.peers[2]
+        # The first takes control of the sim the second plays.
+        guests[0].game.sim_id = 333
+        all_tick(host, guests)
+        self.assertEqual((first.sim_id, second.sim_id), (333, 333))
+        self.assertEqual((first.welcomed, second.welcomed), ([222], [333]))
+        host.take()
+        dialog = owned(333)
+        self.assertIsNone(host.session.outbound(DIALOG, dialog))
+        self.assertEqual(host.take_routed(), [(2, (frames.MSG, DIALOG, dialog))])
+        # Its commands would act as that sim; the second's do.
+        command = (frames.COMMAND, 0, b'{"name":"interactions.choices","args":["1"]}')
+        host.receive([command], peer=1)
+        self.assertEqual(host.game.executed, [])
+        host.receive([command], peer=2)
+        self.assertEqual(host.game.executed, [("interactions.choices", ["1"], 333)])
+        self.assertEqual(host.game.executed_for, [2])
+
+    def test_a_guest_apart_playing_a_sim_another_plays_here_leaves_it_theirs(self):
+        host, guests = all_in(2)
+        first, second = host.session.peers[1], host.session.peers[2]
+        plays_apart(host, guests, guests[0], 8)
+        guests[0].game.sim_id = 333
+        all_tick(host, guests)
+        self.assertEqual(first.away, [])
+        # The second switches sims and back: 333 is still its to play here.
+        guests[1].game.sim_id = 334
+        all_tick(host, guests)
+        guests[1].game.sim_id = 333
+        all_tick(host, guests)
+        self.assertEqual(second.welcomed, [333])
+        self.assertNotIn(333, host.game.welcome_claimed[-1])
+        # Leaving, it takes 333 off our lot, not 334.
+        plays_apart(host, guests, guests[1], 9)
+        self.assertEqual(host.game.sent_off[-1], [333])
+
+    def test_sims_handed_to_a_guest_that_has_gone_are_free_for_another(self):
+        host, guests = all_in(2)
+        first, second = host.session.peers[1], host.session.peers[2]
+        first.travellers = [555]
+        guests[0].game.sim_id = 223
+        all_tick(host, guests)
+        self.assertEqual(first.welcomed, [223, 555])
+        host.peers_up.discard(1)
+        host._relay_says("peer_gone", peer=1)
+        second.travellers = [555]
+        guests[1].game.sim_id = 334
+        all_tick(host, guests)
+        self.assertNotIn(555, host.game.welcome_claimed[-1])
+        self.assertEqual(second.welcomed, [334, 555])
+        self.assertEqual(first.welcomed, [223])
+        host.receive(look(555), peer=2)
+        self.assertEqual(host.game.applied, [(555, b"look")])
+
+    def test_a_guest_back_on_our_lot_no_longer_claims_what_it_played_apart(self):
+        host, guests = all_in(2)
+        first, second = host.session.peers[1], host.session.peers[2]
+        plays_apart(host, guests, guests[0], 8)
+        self.assertEqual(first.away, [222])
+        comes_back(host, guests, guests[0])
+        self.assertTrue(guests[0].session.live)
+        self.assertEqual((first.welcomed, first.away), ([222], []))
+        guests[0].game.sim_id = 224
+        all_tick(host, guests)
+        guests[1].game.sim_id = 222
+        all_tick(host, guests)
+        self.assertEqual(host.game.welcome_claimed[-1], {224})
+        self.assertEqual(second.welcomed, [222])
+
+    def test_a_guest_restyles_no_sim_another_plays_apart(self):
+        host, guests = all_in(2)
+        plays_apart(host, guests, guests[0], 8)
+        # The second once played the first's sim elsewhere.
+        host.session.peers[2].away = [222]
+        host.take()
+        host.receive(look(222), peer=2)
+        self.assertEqual(host.game.applied, [])
+        self.assertIn({"type": "appearance_done", "sim_id": "222", "ok": False}, host.controls())
+        host.receive(look(222), peer=1)
+        self.assertEqual(host.game.applied, [(222, b"look")])
+
+    def test_the_second_guest_apart_on_one_lot_that_comes_to_ours_loads_our_copy(self):
+        host, guests = all_in(3)
+        first, second = guests[0], guests[1]
+        plays_apart(host, guests, first, 8)
+        plays_apart(host, guests, second, 8)
+        gives_apart(host, guests, second, b"second on lot 8")
+        self.assertEqual(host.game.merged, [])
+        # It comes to our lot with what it played on lot 8, while the first
+        # still plays there.
+        second.leave()
+        settle(host, *guests)
+        second.arrive(host.game.zone_number)
+        settle(host, *guests)
+        all_tick(host, guests)
+        self.assertEqual(second.session._phase, session.SAVING)
+        second.game.contributions[-1](b"second on arrival")
+        settle(host, *guests)
+        self.assertEqual(host.game.merged, [])
+        self.assertEqual(host.session.peers[1].place, (1, "", 8))
+        # Told the host keeps its household, it loads the host's.
+        self.assertEqual(second.session._phase, session.ASKING)
+        all_tick(host, guests)
+        host.game.snapshots[-1](b"save")
+        settle(host, *guests)
+        load(host, guests, second)
+        self.assertTrue(second.session.live)
+        # Once it loaded ours, what it plays elsewhere is its own.
+        plays_apart(host, guests, second, 10)
+        gives_apart(host, guests, second, b"second on lot 10")
+        self.assertEqual(host.game.merged, [(b"second on lot 10", 1)])
+
+    def test_a_guest_whose_load_failed_gives_as_new_as_what_it_plays(self):
+        host, guests = all_in(2)
+        versioned(host)
+        plays_apart(host, guests, guests[0], 8)
+        plays_apart(host, guests, guests[1], 9)
+        gives_apart(host, guests, guests[0], b"first")
+        # The second asks again, gives what it played, which is older, and
+        # its game cannot load what we saved after the first's gift.
+        guests[1].session.resync()
+        settle(host, *guests)
+        guests[1].game.contributions[-1](b"before loading")
+        settle(host, *guests)
+        all_tick(host, guests)
+        guests[1].game.adopt_error = ValueError("broken")
+        host.game.snapshots[-1](b"lot")
+        settle(host, *guests)
+        self.assertEqual(guests[1].session._phase, session.IDLE)
+        # It plays on from what it had: older than the first's gift still.
+        notices = len(guests[1].game.notices)
+        gives_apart(host, guests, guests[1], b"second")
+        self.assertEqual(host.game.merged_as[-1][1][:2], ("p2", 0))
+        self.assertEqual(len(guests[1].game.notices), notices + 1)
+
+    def test_a_save_loaded_from_the_menu_forgets_what_guests_gave(self):
+        host, guests = all_in(2)
+        self.assertTrue(all(peer.bases for peer in host.session.peers.values()))
+        # A travel, or a load of our lot again, keeps it.
+        host.leave()
+        host.arrive()
+        settle(host, *guests)
+        self.assertEqual(host.game.gifts_forgotten, 0)
+        self.assertTrue(all(peer.bases for peer in host.session.peers.values()))
+        host.leave()
+        host.game.by_hand = True
+        host.arrive()
+        settle(host, *guests)
+        self.assertEqual(host.game.gifts_forgotten, 1)
+        self.assertEqual([peer.bases for _, peer in sorted(host.session.peers.items())], [{}, {}])
+
 
 if __name__ == "__main__":
     unittest.main()

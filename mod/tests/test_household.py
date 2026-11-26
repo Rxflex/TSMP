@@ -92,6 +92,15 @@ class ZoneForTest(unittest.TestCase):
         resync.lead(77, 99)
         self.assertEqual(resync._zone_for(self.ours, 77, "", 1), 1)
 
+    def test_a_zone_is_led_for_the_player_whose_save_it_is_of(self):
+        # Two guests' own saves each made up a zone 77, on lots of their own.
+        resync.lead(77, 2, "p1")
+        self.assertEqual(resync._zone_for(self.ours, 77, "", 1, player="p1"), 2)
+        self.assertEqual(resync._zone_for(self.ours, 77, "", 1, player="p2"), 1)
+        resync.lead(77, 1, "p2")
+        self.assertEqual(resync._zone_for(self.ours, 77, "", 2, player="p1"), 2)
+        self.assertEqual(resync._zone_for(self.ours, 77, "", 2, player="p2"), 1)
+
 
 class ZoneNamesTest(unittest.TestCase):
     def tearDown(self):
@@ -182,6 +191,17 @@ class PlayedHouseholdTest(unittest.TestCase):
         gift = household._sims_to_update(sims, {1, 2, 3}, lambda sim_id: sim_id == 2)
         self.assertEqual([sim.sim_id for sim in gift], [1, 3])
 
+    def test_a_household_other_players_play_keeps_its_money_and_home(self):
+        # The one we play.
+        self.assertTrue(household.keeps_household(5, 5, True, [1, 2], ()))
+        # One only the giver plays is taken whole.
+        self.assertFalse(household.keeps_household(6, 5, True, [1, 2], ()))
+        self.assertFalse(household.keeps_household(6, 5, True, [1, 2], [3]))
+        # One of whose sims another player plays: only the giver's sims.
+        self.assertTrue(household.keeps_household(6, 5, True, [1, 2], [2, 3]))
+        # One we do not have is nobody else's.
+        self.assertFalse(household.keeps_household(6, 5, False, [1, 2], [2]))
+
 
 class WelcomeTest(unittest.TestCase):
     def test_a_sim_of_ours_is_refused_to_a_player_of_another_household(self):
@@ -189,6 +209,11 @@ class WelcomeTest(unittest.TestCase):
         self.assertFalse(household._steals(1, 1, []))
         self.assertFalse(household._steals(1, 1, [1]))
         self.assertFalse(household._steals(2, 1, [2]))
+
+    def test_no_sim_another_player_plays_is_handed_over(self):
+        group = [Sim(1), Sim(2), Sim(3)]
+        self.assertEqual([sim.id for sim in household.unclaimed(group, {2})], [1, 3])
+        self.assertEqual(household.unclaimed(group, set()), group)
 
     def test_the_sims_that_came_along_are_those_in_this_zone(self):
         members = [Sim(1, zone_id=7), Sim(2, zone_id=7), Sim(3, zone_id=8)]
@@ -219,8 +244,13 @@ class Pair:
 
 
 class Info:
-    def __init__(self, player=False):
+    def __init__(self, player=False, household_id=0, instanced=False):
         self.is_player_sim = player
+        self.household_id = household_id
+        self.instanced = instanced
+
+    def is_instanced(self):
+        return self.instanced
 
 
 class Relationship:
@@ -286,6 +316,27 @@ class RelationshipsTest(unittest.TestCase):
         # 3 and 4 were not taken in: ours of them stay.
         self.assertEqual(chosen, [entries[0], entries[2]])
         self.assertEqual(missing, 2)
+
+    def test_a_pair_with_a_sim_played_elsewhere_keeps_ours(self):
+        entries = [Pair(1, 2), Pair(1, 3), Pair(2, 4), Pair(1, 5)]
+        # 3 is another player's, 4 is on our lot; 1 and 2 are both given.
+        played = {3, 4}
+        chosen, ours = household.played_elsewhere(entries, {1, 2}, lambda sim_id: sim_id in played)
+        self.assertEqual(chosen, [entries[0], entries[3]])
+        self.assertEqual(ours, 2)
+        # A pair of two sims given is the giver's, whoever else plays them.
+        chosen, ours = household.played_elsewhere([Pair(1, 2)], {1, 2}, lambda sim_id: True)
+        self.assertEqual((len(chosen), ours), (1, 0))
+
+    def test_a_sim_on_our_lot_keeps_our_copy_only_while_we_play_it(self):
+        infos = {1: Info(household_id=5, instanced=True), 2: Info(household_id=7, instanced=True),
+                 3: Info(household_id=5)}
+        # Our own sim on the lot, and not a townie walking by, nor one of
+        # ours elsewhere.
+        self.assertTrue(household.played_by_us(infos, 1, 5))
+        self.assertFalse(household.played_by_us(infos, 2, 5))
+        self.assertFalse(household.played_by_us(infos, 3, 5))
+        self.assertFalse(household.played_by_us(infos, 4, 5))
 
     def test_each_pair_is_replaced_quietly_then_sent(self):
         service = RelationshipService(refused={(5, 6)})
@@ -402,6 +453,36 @@ class MergesTest(unittest.TestCase):
         self.assertTrue(merges.keeps_ours(5, 8, 9))
         # Kept means nothing came in.
         merges.took(5, 8, 9, household.KEPT)
+        self.assertTrue(merges.keeps_ours(5, 8, 9))
+
+    def test_a_gift_from_before_another_players_is_older(self):
+        gifts = household.Gifts()
+        self.assertFalse(gifts.older(5, 9, ("p1", 0, 1)))
+        gifts.took(5, 9, ("p1", 0, 1))
+        # The second guest loaded our save before the first's gift came in.
+        self.assertTrue(gifts.older(5, 9, ("p2", 0, 2)))
+        # Or loaded none of this game's.
+        self.assertTrue(gifts.older(5, 9, ("p2", None, 2)))
+        # Loaded after it.
+        self.assertFalse(gifts.older(5, 9, ("p2", 1, 2)))
+        # The first one carries on from its own gift.
+        self.assertFalse(gifts.older(5, 9, ("p1", 0, 2)))
+        # Another household, another save, or a gift of no known version.
+        self.assertFalse(gifts.older(6, 9, ("p2", 0, 2)))
+        self.assertFalse(gifts.older(5, 8, ("p2", 0, 2)))
+        self.assertFalse(gifts.older(5, 9, None))
+        gifts.took(5, 9, ("p2", 1, 3))
+        self.assertTrue(gifts.older(5, 9, ("p1", 2, 4)))
+        self.assertFalse(gifts.older(5, 9, ("p1", 3, 4)))
+        # Our game loaded a save from the menu, perhaps without that gift.
+        gifts.forget()
+        self.assertFalse(gifts.older(5, 9, ("p1", 2, 4)))
+
+    def test_an_older_gift_is_kept_out_of_the_record_of_merges(self):
+        merges = household.Merges(self.path)
+        merges.took(5, 8, 9, household.TOOK_IN)
+        merges.joined([5], 9)
+        merges.took(5, 7, 9, household.OLDER)
         self.assertTrue(merges.keeps_ours(5, 8, 9))
 
     def test_a_household_we_lack_is_not_taken_in_without_all_its_sims(self):

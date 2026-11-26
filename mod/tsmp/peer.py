@@ -62,6 +62,27 @@ class Peer:
         self.welcomed = []
         self.away = []
         self.sent_off_in = ""
+        # Host: how often our game moved on from a state saved for this
+        # guest alone, which it is not to join on (see Session._world_for);
+        # 0 again with every load of our zone.
+        self.epoch = 0
+        # Host: whether it was joined at the last look, to see it join.
+        self.was_live = False
+        # Host: who it was last told builds on our lot with it, by name.
+        self.building_sent = ()
+        # Host: for the last states sent to it, by request, how many
+        # households and looks our game had taken in when their save began,
+        # what it gives once it loaded one being as new as that, and from
+        # which arrival on the lots apart it plays count (see
+        # Session._merge). A state sent may never be loaded.
+        self.bases = {}
+        self.forget_places()
+
+    @property
+    def label(self):
+        """What the host's log calls it: its name, else its number; nothing
+        for the one remote of a launcher that names none."""
+        return self.name or ("guest {}".format(self.ident) if self.ident != LEGACY else "")
 
     def forget(self):
         """What the other game said of itself is no longer true: it is gone,
@@ -80,6 +101,23 @@ class Peer:
         self.version = None
         # The sim we last told it our player selected.
         self.reported_sim_id = 0
+        # Guest: who the host said builds on its lot besides us, by name.
+        self.builders = ()
+
+    def forget_places(self):
+        """Host: where the guest played apart from us. Not forgotten when
+        its link drops: a guest that was first on a lot is still first once
+        back on it, and one gone for good stands in nobody's way, as only
+        guests whose links are up count (Session._first_on)."""
+        # (save, lot, zone) of the lot apart from ours it is on, None on
+        # ours or when not known; and how many arrivals on such lots came
+        # before it came there.
+        self.place = None
+        self.place_order = 0
+        # (place, place_order) of each lot apart from ours it played
+        # since the last state of ours sent to it, which what it gives
+        # carries: also once it came to our lot with it.
+        self.played = []
 
     def reset(self):
         """Our launcher is gone: so is everything under way with the peer.
@@ -93,6 +131,12 @@ class Peer:
         self.lapsed = False
         self.welcomed = []
         self.travellers = []
+        self.epoch = 0
+        self.building_sent = ()
+        self.forget_places()
+        # Another launcher may give this number to another player, and what
+        # was sent through the old one is not known to have been loaded.
+        self.bases = {}
 
     def __repr__(self):
         return "Peer({}{})".format(self.ident, " " + self.name if self.name else "")

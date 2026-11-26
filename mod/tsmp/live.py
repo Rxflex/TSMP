@@ -103,10 +103,12 @@ class Game:
     """The adapter `session.Session` talks to the game through."""
 
     def __init__(self):
-        # The pie menu the remote player has open. The game keeps one per
-        # client, and both players share the host's client.
-        self._remote_menu = None
-        self._remote_parameters = None
+        # The pie menu each remote player has open, and what goes with it,
+        # by the guest's peer. The game keeps one per client, and every
+        # player shares the host's client: one guest's choice must not be
+        # read against another's menu.
+        self._remote_menu = {}
+        self._remote_parameters = {}
         # The local player's own sim while the client is made to look like
         # the remote player's.
         self._own_sim_info = None
@@ -166,10 +168,14 @@ class Game:
         if client is not None:
             omega.send(client.id, msg_id, data)
 
-    def execute(self, name, args, sim_id):
-        """Run a command for the remote player. Interaction commands act on
-        `client.active_sim` and keep their state on the client, so for the
-        duration of the command the client is made to look like theirs."""
+    def execute(self, name, args, sim_id, peer=0):
+        """Run a command for the remote player numbered `peer`. Interaction
+        commands act on `client.active_sim` and keep their state on the
+        client, so for the duration of the command the client is made to
+        look like theirs, with that guest's own menu: each guest picks from
+        the menu it opened. Whether the game always runs the command before
+        the call returns is unverified (docs/internals.md); one it put off
+        would act for the host's sim."""
         import services
         import sims4.commands
 
@@ -184,22 +190,27 @@ class Game:
         self._own_sim_info = client.active_sim_info
         if sim_info is not None:
             client._active_sim_info = sim_info
-        client._choice_menu = self._remote_menu
-        client._interaction_parameters = self._remote_parameters or {}
+        client._choice_menu = self._remote_menu.get(peer)
+        client._interaction_parameters = self._remote_parameters.get(peer) or {}
         try:
             sims4.commands.execute(" ".join([name] + [_quote(a) for a in args]), client.id)
         finally:
             self._own_sim_info = None
-            self._remote_menu = client._choice_menu
-            self._remote_parameters = client._interaction_parameters
+            self._remote_menu[peer] = client._choice_menu
+            self._remote_parameters[peer] = client._interaction_parameters
             client._active_sim_info, client._choice_menu, client._interaction_parameters = saved
 
-    def snapshot_zone(self, zone_id, lot):
-        return resync.snapshot_zone(zone_id, lot)
+    def forget_peer(self, peer):
+        """The guest's link is down: a menu it had open is gone with it."""
+        self._remote_menu.pop(peer, None)
+        self._remote_parameters.pop(peer, None)
 
-    def snapshot(self, done, zone_id=0, lot=""):
+    def snapshot_zone(self, zone_id, lot, player=""):
+        return resync.snapshot_zone(zone_id, lot, player)
+
+    def snapshot(self, done, places):
         resync.install()
-        resync.take(done, zone_id, lot)
+        resync.take(done, places)
 
     def adopt(self, payload, travellers=()):
         sims = list(travellers) or [self.active_sim_id()]
@@ -259,12 +270,15 @@ class Game:
         ticks = services.time_service().sim_now.absolute_ticks()
         return "{}:{}".format(ticks, len(services.object_manager()))
 
-    def merge(self, payload, save_id=0):
+    def merge(self, payload, save_id=0, player="", version=None, others=()):
         resync.install()
-        return household.take_in(payload, save_id)
+        return household.take_in(payload, save_id, player, version, others)
 
-    def welcome(self, sim_id, before=(), travellers=()):
-        return household.welcome(sim_id, _client(), before, travellers)
+    def forget_gifts(self):
+        household.forget_gifts()
+
+    def welcome(self, sim_id, before=(), travellers=(), claimed=()):
+        return household.welcome(sim_id, _client(), before, travellers, claimed)
 
     def send_off(self, sim_ids):
         household.send_off(sim_ids, _client())
@@ -428,8 +442,11 @@ def _tick():
                 # its launcher numbered that guest.
                 kind, ident, payload, peer = frames.unroute(event[1], event[2], event[3])
                 if kind == frames.CONTROL and b'"type":"log"' in payload:
+                    # On a host, named after the guest whose game wrote it.
+                    label = _session.label(peer)
                     for line in (frames.parse_json(payload) or {}).get("lines") or []:
-                        log.info(str(line)[:MAX_LOG_LINE + 16], forward=False)
+                        line = str(line)[:MAX_LOG_LINE + 16]
+                        log.info("{} {}".format(label, line) if label else line, forward=False)
                 elif kind == frames.CONTROL and b'"type":"native' in payload:
                     native.control(frames.parse_json(payload) or {})
                 elif kind == frames.NATIVE:
@@ -507,9 +524,5 @@ def describe():
         ),
     ]
     if _session.role == session_module.HOST:
-        for ident, peer in sorted(_session.peers.items()):
-            lines.append("guest {}{}: {}, {}, sim {}".format(
-                ident, " ({})".format(peer.name) if peer.name else "",
-                "connected" if peer.up else "not connected",
-                "in game" if peer.in_zone else "not in game", peer.sim_id or "none"))
+        lines += _session.describe_peers()
     return lines + native.status_lines()

@@ -48,8 +48,10 @@ PENDING_SECONDS = 90
 # each zone it saved, by zone id. A guest on a lot the host has left needs
 # that lot as the host left it.
 _objects = {}
-# Host: zones of a guest's own save, by id, and the zone of ours it loads
-# in their place.
+# Host: zones of a guest's own save, by (the player whose save it is, id),
+# and the zone of ours it loads in their place. Every new game makes up its
+# ids, so two guests' saves may each have a zone of the same id on lots of
+# their own.
 _leads = {}
 # (zone id, save bytes, objects bytes, deadline) waiting for the game client
 # to disconnect.
@@ -388,36 +390,36 @@ def _put_in_place(persistence):
         len(save), len(objects), zone_id))
 
 
-def lead(zone_id, ours):
-    """Host: a guest that asks for `zone_id`, which is a zone of its own save
-    and not of ours, is to load our zone `ours` instead."""
+def lead(zone_id, ours, player=""):
+    """Host: a guest of `player` that asks for `zone_id`, which is a zone of
+    its own save and not of ours, is to load our zone `ours` instead."""
     if zone_id and ours and zone_id != ours:
-        _leads[zone_id] = ours
+        _leads[(player, zone_id)] = ours
 
 
-def snapshot_zone(zone_id, lot):
-    """Host: the zone of ours a snapshot for a guest in `zone_id` on `lot`
-    would be of, 0 when that cannot be told."""
+def snapshot_zone(zone_id, lot, player=""):
+    """Host: the zone of ours a snapshot for a guest of `player` in
+    `zone_id` on `lot` would be of, 0 when that cannot be told."""
     import services
 
     return _zone_for(services.get_persistence_service(), zone_id, lot, services.current_zone_id(),
-                     say=lambda text: None)
+                     say=lambda text: None, player=player)
 
 
-def _zone_for(persistence, zone_id, lot, current, say=log.info):
-    """The zone of our save a guest in `zone_id`, on the lot `lot` (see
-    `lot_of`), is to load. Zone ids are made up anew by every new game, so a
-    guest that comes from a save of its own names a zone we do not have, or
-    even one we have for another lot; the lot is what both saves agree on.
-    Then comes the id, then where `lead` sent that zone, then our own zone
-    `current`."""
+def _zone_for(persistence, zone_id, lot, current, say=log.info, player=""):
+    """The zone of our save a guest of `player` in `zone_id`, on the lot
+    `lot` (see `lot_of`), is to load. Zone ids are made up anew by every new
+    game, so a guest that comes from a save of its own names a zone we do
+    not have, or even one we have for another lot; the lot is what both
+    saves agree on. Then comes the id, then where `lead` sent that zone of
+    that player's, then our own zone `current`."""
     zone = on_lot(persistence, lot, zone_id)
     if zone is not None:
         if zone.zone_id != zone_id:
             say("resync: the guest's lot {} is our zone {:#x}".format(lot, zone.zone_id))
         return zone.zone_id
     if zone_id and persistence.get_zone_proto_buff(zone_id) is None:
-        led = _leads.get(zone_id, 0)
+        led = _leads.get((player, zone_id), 0)
         if led and persistence.get_zone_proto_buff(led) is None:
             led = 0
         say("resync: zone {:#x} is not in this save; the guest loads {} instead".format(
@@ -479,27 +481,47 @@ def save_then(done):
     persistence.save_using(save_gen)
 
 
-def take(done, zone_id=0, lot=""):
-    """Host: save, then call `done(payload)`, or `done(None)` on failure.
-    The snapshot is for a guest in `zone_id` on the lot `lot` (`lot_key` of
-    that zone in the guest's save), or in the host's own zone when neither
-    is known here. The session pauses the game for a guest that will join;
-    one that will play another lot does not stop ours."""
+def take(done, places):
+    """Host: save once, then call `done(payloads)`: a snapshot, or None when
+    it could not be made, for each (zone id, lot, player) of `places`, or
+    `done(None)` when the game did not save. A snapshot is for a guest of
+    `player` in `zone_id` on the lot `lot` (`lot_key` of that zone in the
+    guest's save), or in the host's own zone when neither is known here. Guests that wait
+    at once share the save, the slow part, and the pause it takes; what
+    differs between them is the zone whose objects go with it, and guests
+    of one zone share the packed snapshot too. The session pauses the game
+    for a guest that will join; one that will play another lot does not
+    stop ours."""
     import services
 
     def saved(persistence):
-        payload = None
+        save = None
         try:
             if persistence is not None:
-                target = _zone_for(persistence, zone_id, lot, services.current_zone_id())
                 save = persistence.get_save_game_data_proto().SerializeToString()
-                objects = _objects.get(target, b"")
-                payload = pack(target, save, objects)
-                log.info("resync: snapshot for zone {:#x} taken, {} bytes ({} to send)".format(
-                    target, len(save) + len(objects), len(payload)))
         except Exception:
             log.exception("resync: snapshot failed")
-        done(payload)
+        if save is None:
+            done(None)
+            return
+        current = services.current_zone_id()
+        packed = {}
+        payloads = []
+        for place in places:
+            zone_id, lot = place[0], place[1]
+            payload = None
+            try:
+                target = _zone_for(persistence, zone_id, lot, current, player=place[2] if len(place) > 2 else "")
+                if target not in packed:
+                    objects = _objects.get(target, b"")
+                    packed[target] = pack(target, save, objects)
+                    log.info("resync: snapshot for zone {:#x} taken, {} bytes ({} to send)".format(
+                        target, len(save) + len(objects), len(packed[target])))
+                payload = packed[target]
+            except Exception:
+                log.exception("resync: snapshot failed")
+            payloads.append(payload)
+        done(payloads)
 
     save_then(saved)
 

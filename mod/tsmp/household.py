@@ -23,6 +23,14 @@ lot.
 `welcome` and `send_off` hand the guest's sims to the host's simulation and
 take them back when the guest leaves the host's lot.
 
+With several guests each sim has one player. A guest is never handed a sim
+another player controls or was handed (`welcome`'s `claimed`). A gift does
+not carry the relationships of a sim another player plays or we play on our
+lot (`take_in`'s `others`), nor those sims, nor the money and home of a
+household other players also play (`keeps_household`). A gift from our own
+save that is older than one another guest gave since of the same household
+is not taken (`Gifts`).
+
 Only runs inside the game; the format is the one of a snapshot. `Merges` and
 the helpers that take their game objects as arguments are pure.
 """
@@ -38,6 +46,8 @@ TOOK_IN = "took in"
 UPDATED = "updated"
 PARTIAL = "partial"
 KEPT = "kept"
+# Kept too: another player gave a newer copy from our save since.
+OLDER = "older"
 
 MERGES_FILE = "households.json"
 
@@ -96,7 +106,7 @@ class Merges:
         if origin_save and origin_save == save:
             # Played in our own save: copies from any other are older.
             self.joined([household_id], save)
-        elif outcome != KEPT:
+        elif outcome not in (KEPT, OLDER):
             self.merged(household_id, save)
 
     def _set(self, household_id, save, joined):
@@ -133,7 +143,53 @@ class Merges:
             log.exception("household: could not write {}".format(self._path))
 
 
+class Gifts:
+    """Host: for each household a guest gave and we took in since our game
+    started, who gave it and how far our game had taken things in then.
+
+    Guests that play in our save each start from a snapshot of it. Two of
+    them may play one household apart, and the gift of the one who loaded
+    before the other's gift came in does not hold what that gift brought:
+    taking it would undo what the other played. So each gift carries a
+    version `(giver, base, stamp)`: who gives it; how many households and
+    looks our game had taken in when the save the giver last loaded began,
+    None when it loaded none of this game's; and that count with this gift.
+    Counts only mean something while our game runs, so the record is not
+    kept past it, nor past a load of a save from the menu (`forget`), which
+    may be without what was given. A gift of the player who gave the last
+    one carries on from it, and is never older."""
+
+    def __init__(self):
+        self._last = {}
+
+    def older(self, household_id, save, version):
+        """True when the gift of `household_id` with `version`, from our
+        save `save`, is older than the copy last taken in."""
+        if version is None:
+            return False
+        giver, base, _ = version
+        entry = self._last.get((save, household_id))
+        if entry is None or entry[0] == giver:
+            return False
+        return base is None or base < entry[1]
+
+    def took(self, household_id, save, version):
+        if version is not None:
+            giver, _, stamp = version
+            self._last[(save, household_id)] = (giver, stamp)
+
+    def forget(self):
+        self._last = {}
+
+
 _merges = None
+_gifts = Gifts()
+
+
+def forget_gifts():
+    """Host: our game loaded a save from the menu; what guests gave before
+    may not be in it."""
+    _gifts.forget()
 
 
 def _record():
@@ -274,12 +330,15 @@ def _unique(zone_ids):
     return seen
 
 
-def take_in(payload, origin_save=0):
+def take_in(payload, origin_save=0, player="", version=None, others=()):
     """Host: put the guest's household into our save and load it.
     `origin_save` is the guid of the save the guest played it in, 0 when
-    not known. Returns what was done: TOOK_IN, UPDATED, PARTIAL (only sims
-    of the household we play) or KEPT (ours is newer, or could not be
-    updated safely). Raises Refusal."""
+    not known; `player` names the guest, whose own save's zone ids are its
+    alone; `version` is the gift's (see `Gifts`), None when not known;
+    `others` are the sims other players play. Returns what was done:
+    TOOK_IN, UPDATED, PARTIAL (only sims of the household we play), KEPT
+    (ours is newer, or could not be updated safely) or OLDER (another guest
+    gave a newer copy since). Raises Refusal."""
     import services
     from protocolbuffers import FileSerialization_pb2 as serialization
 
@@ -294,21 +353,27 @@ def take_in(payload, origin_save=0):
             log.info("household: {:#x} comes from save {:#x} but was played here since; ours is newer and kept".format(
                 household_id, origin_save))
             return KEPT
+        if known and origin_save and origin_save == save and _gifts.older(household_id, save, version):
+            log.info("household: {:#x} comes from what we saved before another player gave it since; "
+                     "theirs is newer and kept".format(household_id))
+            return OLDER
         if not known:
             lacking = lacking_sims(given.sims.ids, part.sims, persistence)
             if lacking:
                 raise Refusal("{} of its sims came without their data, and this save has none of them".format(
                     len(lacking)), final=False, missing=True)
-        if household_id == services.active_household_id():
-            outcome = _update_played(persistence, part, household_id)
+        if keeps_household(household_id, services.active_household_id(), known, given.sims.ids, others):
+            outcome = _update_played(persistence, part, household_id, player, others)
         else:
-            outcome = _take(persistence, part, given, home, objects, known)
+            outcome = _take(persistence, part, given, home, objects, known, player, others)
     except Refusal:
         raise
     except Exception as error:
         log.exception("household: could not take {:#x} in".format(household_id))
         raise Refusal("could not take the household in: {}".format(error), final=False)
     _record().took(household_id, origin_save, save, outcome)
+    if outcome not in (KEPT, OLDER):
+        _gifts.took(household_id, save, version)
     return outcome
 
 
@@ -328,7 +393,7 @@ def _read(payload, message_type):
     return home, part, objects
 
 
-def _take(persistence, part, given, home, objects, known):
+def _take(persistence, part, given, home, objects, known, player="", others=()):
     """A household we do not play: the guest's copy replaces ours."""
     import services
 
@@ -346,7 +411,7 @@ def _take(persistence, part, given, home, objects, known):
     ours.account_id = account
     zone = _with_id(part.zones, home)
     ours.home_zone = _settle_home(persistence, ours, account, zone, home, objects)
-    _place(persistence, sims, part.zones, home, ours.home_zone)
+    _place(persistence, sims, part.zones, home, ours.home_zone, player)
 
     manager = services.household_manager()
     loaded = manager.get(household_id)
@@ -358,17 +423,29 @@ def _take(persistence, part, given, home, objects, known):
             log.exception("household: could not set the funds")
     if manager.load_household(household_id) is None:
         raise Refusal("the game did not load the household", final=False)
-    _take_relationships(part, [sim for sim in sims if sim.sim_id not in on_lot])
+    _take_relationships(part, [sim for sim in sims if sim.sim_id not in on_lot], others)
     outcome = UPDATED if known else TOOK_IN
     log.info("household: {} {:#x} ({} sims, home {:#x})".format(
         outcome, household_id, len(part.sims), ours.home_zone))
     return outcome
 
 
-def _update_played(persistence, part, household_id):
-    """The guest plays the household we play, and played some of its sims
-    apart. Those sims are the guest's truth; the household itself (money,
-    home) and the sims on our lot are being played here and stay ours."""
+def keeps_household(household_id, active_id, known, members, others):
+    """Whether a gift of the household `household_id` with the sims
+    `members` updates only some of its sims, keeping the household itself
+    as ours: the one we play (`active_id`), or one we have of which other
+    players than the giver play sims, `others`. Its money and home are
+    being played by them too, and the giver's copy of them, and of their
+    sims, is only what its game had when it loaded: taken whole, it would
+    undo what they did (money spent here coming back, or earned lost)."""
+    return household_id == active_id or (known and any(sim_id in set(others) for sim_id in members))
+
+
+def _update_played(persistence, part, household_id, player="", others=()):
+    """The guest plays a household that is played here too, by us or by
+    other players, and played some of its sims apart. Those sims are the
+    guest's truth; the household itself (money, home), the sims on our lot
+    and the sims `others` other players play stay ours."""
     import services
 
     manager = services.household_manager()
@@ -377,16 +454,17 @@ def _update_played(persistence, part, household_id):
         log.info("household: {:#x} is played here but not loaded; ours is kept".format(household_id))
         return KEPT
     on_lot = _on_our_lot(part.sims)
-    gift = _sims_to_update(part.sims, set(household.sims.ids), lambda sim_id: sim_id in on_lot)
+    others = set(others)
+    gift = _sims_to_update(part.sims, set(household.sims.ids), lambda sim_id: sim_id in on_lot or sim_id in others)
     if not gift:
-        log.info("household: the other player's sims of {:#x} are all on this lot; ours are kept".format(
-            household_id))
+        log.info("household: the other player's sims of {:#x} are all on this lot or played by others; ours are "
+                 "kept".format(household_id))
         return KEPT
     sims = _copy_sims(persistence, gift)
-    _place(persistence, sims, part.zones, household.home_zone, household.home_zone)
+    _place(persistence, sims, part.zones, household.home_zone, household.home_zone, player)
     if manager.load_household(household_id) is None:
         raise Refusal("the game did not load the household", final=False)
-    _take_relationships(part, sims)
+    _take_relationships(part, sims, others)
     log.info("household: {:#x} is played here; {} of its {} sims updated".format(
         household_id, len(sims), len(part.sims)))
     return PARTIAL
@@ -426,12 +504,28 @@ def relationships_to_apply(entries, taken, exists):
     return kept, len(theirs) - len(kept)
 
 
-def _take_relationships(part, sims):
+def played_elsewhere(entries, taken, played):
+    """(the relationships of `entries` to put in place, how many are left
+    as ours): one whose other sim, the one not `taken` in, is `played(sim_id)`
+    by another player, or simulated on our lot, keeps our copy. The gift's
+    side of that sim is only what the giver's game had of it, older than
+    what its own player, or our simulation, did with it meanwhile."""
+    chosen = []
+    for entry in entries:
+        others = [sim_id for sim_id in (entry.sim_id_a, entry.sim_id_b) if sim_id not in taken]
+        if not any(played(sim_id) for sim_id in others):
+            chosen.append(entry)
+    return chosen, len(entries) - len(chosen)
+
+
+def _take_relationships(part, sims, others=()):
     """Host: put in place the guest's relationships of `sims`, the SimData
-    just loaded. Loading a household does not read relationships, and the
-    relationship service writes its own over the save's at every save, so
-    they go to the service, the way its own load hands them over. A failure
-    is only logged: the household stays taken in."""
+    just loaded, but for those with a sim of `others` (played by another
+    player) or one on our lot. Loading a household does not read
+    relationships, and the relationship service writes its own over the
+    save's at every save, so they go to the service, the way its own load
+    hands them over. A failure is only logged: the household stays taken
+    in."""
     import services
 
     try:
@@ -441,11 +535,27 @@ def _take_relationships(part, sims):
         infos = services.sim_info_manager()
         taken = set(sim.sim_id for sim in sims)
         chosen, missing = relationships_to_apply(given, taken, lambda sim_id: infos.get(sim_id) is not None)
+        others = set(others)
+        ours_id = services.active_household_id()
+        chosen, ours = played_elsewhere(chosen, taken,
+                                        lambda sim_id: sim_id in others or played_by_us(infos, sim_id, ours_id))
         carried = put_relationships(services.relationship_service(), infos, chosen, taken)
-        log.info("household: {} of {} relationships carried, {} left out for a sim not in this save".format(
-            carried, len(chosen), missing))
+        log.info("household: {} of {} relationships carried, {} left out for a sim not in this save, {} kept "
+                 "as ours for a sim played here or by another player".format(carried, len(chosen), missing, ours))
     except Exception:
         log.exception("household: could not take the relationships in")
+
+
+def played_by_us(infos, sim_id, household_id):
+    """Whether our player plays the sim on our lot now: one of our
+    household `household_id` that our lot simulates. Not any sim on the
+    lot: a townie walking by did nothing with the giver's sims here, and the
+    giver's copy of their pair is the newer one."""
+    info = infos.get(sim_id)
+    try:
+        return info is not None and info.household_id == household_id and bool(info.is_instanced())
+    except Exception:
+        return False
 
 
 def put_relationships(service, infos, entries, taken):
@@ -611,18 +721,19 @@ def _objects_for(zone_id, objects):
     return message.SerializeToString()
 
 
-def _place(persistence, sims, zones, home, ours):
+def _place(persistence, sims, zones, home, ours, player=""):
     """Sims from a save of the guest's own stand in zones we do not have.
     Put each where the guest will load: on the same lot here, as told by
     the guest's `zones`, or else on the household's lot here `ours`, or
     with us. A guest standing on our lot is to find its sims there, not
-    sent home."""
+    sent home. Where a zone of the save of `player` led is noted for that
+    player alone."""
     import services
 
     fallback_id = ours or services.current_zone_id() or 0
     fallback = persistence.get_zone_proto_buff(fallback_id) if fallback_id else None
     if home and fallback is not None:
-        resync.lead(home, fallback_id)
+        resync.lead(home, fallback_id, player)
     sent = dict((zone.zone_id, zone) for zone in zones)
     for sim in sims:
         if not sim.zone_id or _same_zone_here(persistence, sim.zone_id, sent.get(sim.zone_id)):
@@ -632,7 +743,7 @@ def _place(persistence, sims, zones, home, ours):
             continue
         log.info("household: sim {:#x} stands in zone {:#x}, which is {:#x} here{}".format(
             sim.sim_id, sim.zone_id, zone.zone_id, "" if zone is not fallback else " (no such lot)"))
-        resync.lead(sim.zone_id, zone.zone_id)
+        resync.lead(sim.zone_id, zone.zone_id, player)
         sim.zone_id = zone.zone_id
         sim.world_id = zone.world_id
 
@@ -666,20 +777,26 @@ def _set_owner(persistence, zone, household, account):
         owner.household_name = household.name
 
 
-def welcome(sim_id, client, theirs=(), travellers=()):
+def welcome(sim_id, client, theirs=(), travellers=(), claimed=()):
     """Host: the other player controls `sim_id`. Have that sim, and the sims
     of its household that came along to our lot, on the lot and in our game
     client's list of controllable sims, so that they are simulated as played
     sims and not sent home as visitors. `theirs` are the sims welcomed for
     that player before, `travellers` the sims the other player's game
-    travelled with to our lot. Returns the ids of the sims now controllable
-    for them, [] when refused."""
+    travelled with to our lot, `claimed` the sims other players play: none
+    of them is handed over, and `sim_id` being one is refused, so that a
+    guest that goes is never followed off the lot by another's sim. Returns
+    the ids of the sims now controllable for them, [] when refused."""
     import services
 
     infos = services.sim_info_manager()
     sim_info = infos.get(sim_id)
     if sim_info is None or client is None:
         log.info("household: the other player's sim {:#x} is not in this save".format(sim_id))
+        return []
+    claimed = set(claimed)
+    if sim_id in claimed:
+        log.info("household: another player plays the sim {:#x}; refused".format(sim_id))
         return []
     own = _household_id(client)
     before = [info for info in (infos.get(other) for other in theirs) if info is not None]
@@ -695,7 +812,13 @@ def welcome(sim_id, client, theirs=(), travellers=()):
         members = _members(sim_info)
         group += _travellers(sim_id, members, services.current_zone_id())
         group += [info for info in members if info.id in came and info.id != sim_id and info not in group]
+        group = unclaimed(group, claimed)
     return [info.id for info in group if _make_controllable(client, info, own)]
+
+
+def unclaimed(infos, claimed):
+    """The sim infos of `infos` that are not of the sims `claimed`."""
+    return [info for info in infos if info.id not in claimed]
 
 
 def _household_id(client):

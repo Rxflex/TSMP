@@ -3,7 +3,8 @@
 Needs the `live_pair` example:  cargo build -p tsmp-server --example live_pair
 Skipped when it has not been built. Every test runs twice: with the guest's
 launcher dialling the host's, and with the two meeting through a session
-server.
+server. A group of a host and two guests runs through the same relay, set
+to take three players as only the example can.
 """
 
 import os
@@ -224,6 +225,84 @@ class RelayTest(unittest.TestCase):
 
 class OnlineRelayTest(RelayTest):
     ARGS = ["online"]
+
+
+@unittest.skipUnless(os.path.exists(EXAMPLE), "live_pair example is not built")
+class GroupRelayTest(unittest.TestCase):
+    """A host and two guests, which the relay numbers 1 and 2."""
+
+    ARGS = ["players=3"]
+
+    def setUp(self):
+        self.relay = subprocess.Popen([EXAMPLE] + self.ARGS, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.addCleanup(self.stop)
+        host_port, *guest_ports = map(int, self.relay.stdout.readline().split())
+        self.host = Player(host_port, session.HOST)
+        self.guests = [Player(port, session.GUEST) for port in guest_ports]
+        for player in [self.host] + self.guests:
+            self.addCleanup(player.bridge.close)
+
+    def stop(self):
+        self.relay.stdin.close()
+        self.relay.wait(10)
+        self.relay.stdout.close()
+
+    def until(self, what, condition, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "timed out waiting for " + what)
+            for player in [self.host] + self.guests:
+                player.tick()
+            time.sleep(0.005)
+
+    def test_each_guest_joins_and_hears_what_is_for_it(self):
+        host, guests = self.host, self.guests
+        self.assertEqual(len(guests), 2)
+        first, second = guests
+        first.game.sim_id, second.game.sim_id = 222, 333
+        for player in [host] + guests:
+            player.game.zone = True
+        peers = host.session.peers
+        self.until("both guests to ask", lambda: all(guest.session._phase == session.ASKING for guest in guests)
+                   and sorted(peers) == [1, 2] and all(peers[n].saving or peers[n].asked for n in (1, 2)))
+        # Each numbers its own requests: both asked with id 1.
+        self.assertEqual([guest.session._request for guest in guests], [1, 1])
+        self.assertEqual([(peers[n].name, peers[n].player) for n in (1, 2)],
+                         [("guest", "guest-id"), ("guest2", "guest2-id")])
+        self.until("the save", lambda: host.game.snapshots and all(peers[n].saving for n in (1, 2)))
+        host.game.snapshots[-1](b"save")
+        self.until("both snapshots", lambda: all(guest.game.adopted for guest in guests))
+        for guest in guests:
+            guest.game.zone = False
+        self.until("the guests to leave", lambda: not any(guest.session._in_zone for guest in guests))
+        for guest in guests:
+            guest.game.zone = True
+        self.until("both in", lambda: all(guest.session.live for guest in guests)
+                   and all(host.session._live_with(peers[n]) for n in (1, 2)))
+        self.until("their sims", lambda: (peers[1].sim_id, peers[2].sim_id) == (222, 333))
+
+        # Wrapped for the second, then for all: the first gets only the
+        # latter, which comes after on its link.
+        host.session._relay(40, b"for the second", to=peers[2])
+        self.assertEqual(host.session.outbound(41, b"for all"), b"for all")
+        self.until("the stream", lambda: all((41, b"for all") in guest.game.delivered for guest in guests))
+        self.assertIn((40, b"for the second"), second.game.delivered)
+        self.assertNotIn((40, b"for the second"), first.game.delivered)
+        self.assertIn((frames.ROUTED, 2, frames.MSG), host.sent)
+
+        # The first's launcher goes: the second plays on.
+        self.relay.stdin.write(b"drop 1\n")
+        self.relay.stdin.flush()
+        self.until("the first to go", lambda: not peers[1].up)
+        self.assertTrue(second.session.live)
+        self.assertTrue(host.session._live_with(peers[2]))
+        self.assertEqual(host.game.forgotten, [1])
+        self.assertEqual(host.session.outbound(41, b"after"), b"after")
+        self.until("the stream after", lambda: (41, b"after") in second.game.delivered)
+
+
+class OnlineGroupRelayTest(GroupRelayTest):
+    ARGS = ["online", "players=3"]
 
 
 if __name__ == "__main__":
