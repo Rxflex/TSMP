@@ -5,32 +5,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Page not found · TSMP</title>
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#16223a">
+<meta name="theme-color" content="#0b1736">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="/TSMP/favicon.svg" type="image/svg+xml">
-<style>
-:root{--bg:#111b30;--card:#1b2946;--line:#2c3e63;--text:#eaf0fa;--muted:#aebbd3;--yellow:#ffc857;--blue:#8fb4ff;--ink:#16223a}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px 16px;background:var(--bg);color:var(--text);font:400 1.0625rem/1.6 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;text-align:center}
-main{max-width:30em}
-img{width:72px;height:72px;margin:0 auto 20px;display:block}
-h1{font-size:clamp(1.6rem,6vw,2.2rem);line-height:1.2;margin:0 0 .5em}
-p{color:var(--muted);margin:0 0 1.4em}
-.links{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
-a{display:inline-flex;align-items:center;min-height:48px;padding:10px 20px;border-radius:12px;font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--text)}
-a.main{background:var(--yellow);border-color:var(--yellow);color:var(--ink)}
-a:hover{border-color:var(--blue)}
-:focus-visible{outline:3px solid var(--yellow);outline-offset:3px}
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&amp;family=Unbounded:wght@600;700&amp;display=swap">
+<link rel="stylesheet" href="/TSMP/css/site.css">
 </head>
 <body>
-<main>
-  <img src="/TSMP/favicon.svg" alt="">
-  <h1>This page is not here</h1>
-  <p>The address may be mistyped, or the page has moved. <span lang="ru">Такой страницы нет.</span></p>
-  <div class="links">
-    <a class="main" href="/TSMP/">TSMP home</a>
-    <a href="/TSMP/ru/" lang="ru" hreflang="ru">На главную по-русски</a>
+<main class="hero hero-nf">
+  <div class="hero-art" aria-hidden="true">
+    <div class="scene">
+      <div class="layer layer-sky">
+        <picture><source media="(max-width: 600px)" srcset="/TSMP/img/hero/hero-sky-960.webp" width="960" height="640"><img src="/TSMP/img/hero/hero-sky.webp" width="1920" height="1280" alt=""></picture>
+        <span class="moon-glow"></span>
+      </div>
+      <div class="layer layer-far">
+        <picture><source media="(max-width: 600px)" srcset="/TSMP/img/hero/hero-far-960.webp" width="960" height="640"><img src="/TSMP/img/hero/hero-far.webp" width="1920" height="1280" alt=""></picture>
+      </div>
+      <div class="layer layer-mid">
+        <picture><source media="(max-width: 600px)" srcset="/TSMP/img/hero/hero-mid-960.webp" width="960" height="640"><img src="/TSMP/img/hero/hero-mid.webp" width="1920" height="1280" alt=""></picture>
+        <span class="win-glow l"></span><span class="win-glow r"></span>
+      </div>
+      <div class="layer layer-front">
+        <picture><source media="(max-width: 600px)" srcset="/TSMP/img/hero/hero-front-960.webp" width="960" height="640"><img src="/TSMP/img/hero/hero-front.webp" width="1920" height="1280" alt=""></picture>
+      </div>
+    </div>
+    <div class="twinkle"><i></i><i></i><i></i></div>
+  </div>
+  <div class="hero-scrim"></div>
+  <div class="wrap hero-content">
+    <a class="logo" href="/TSMP/" aria-label="TSMP home"><img src="/TSMP/favicon.svg" alt="" width="32" height="32">TSMP</a>
+    <h1>This page is not&nbsp;here</h1>
+    <p class="lead">The address may be mistyped, or the page has moved. <span lang="ru">Такой страницы нет.</span></p>
+    <div class="cta">
+      <a class="btn btn-main" href="/TSMP/">TSMP home</a>
+      <a class="btn btn-alt" href="/TSMP/ru/" lang="ru" hreflang="ru">На главную по-русски</a>
+    </div>
   </div>
 </main>
 </body>
