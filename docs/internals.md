@@ -670,35 +670,50 @@ keeps one per peer), and `peer_gone` or `gone` forget that guest alone.
   `LINK_SECONDS`, `HOLD_SECONDS` without a sign), never on another's. The
   guests already in are sent a `tell` when the game is held for another, or
   when it refuses their clock command for another.
-- Routing. Owned screens go to the guest that controls the sim, else the
-  one it was made over to on the host's lot (`Peer.welcomed`), else the one
-  of its household unless that is the host's or several guests play from
-  it; the host answers for those. `building {on, who}` tells each guest who
+- Routing. Owned screens go to a joined guest only, as one that is not
+  drops what it is sent: the guest that controls the sim (but for one that
+  took control of a sim another guest was handed first), else the one it
+  was made over to on the host's lot (`Peer.welcomed`), else the one of its
+  household unless that is the host's or several guests play from it; the
+  host answers for those, and for the sims of a guest that is not joined. `building {on, who}` tells each guest who
   else builds on the host's lot, by name.
 - Sims. Each sim has one player. A guest is never handed a sim another
-  guest controls, plays on another lot or was handed with it
-  (`household.welcome`'s `claimed`), but takes over one that only came
-  along with another and that it now controls; and the sims a guest takes
+  guest controls, took off the host's lot to play on another or was handed
+  with it (`household.welcome`'s `claimed`), but takes over one that only
+  came along with another and that it now controls. The sims a guest takes
   off the host's lot when it leaves are never those another guest plays
-  there. A look from Create-a-Sim is taken only for a sim of the guest
-  that sent it, and not for one another guest plays on the host's lot.
+  there, and only those are its own while it is away; none are once it is
+  back on the host's lot, or while its link is down, so a guest gone for
+  good holds no sim. A guest that controls a sim another was handed first
+  has its `interactions.` and `ui.dialog.` commands refused. A look from
+  Create-a-Sim is taken only for a sim of the guest that sent it, and not
+  for one another guest plays, here or elsewhere.
 - Households. A gift that comes in while the host saves or holds for
   another guest waits until that is over, as what that guest loads is to be
   the game as it was saved; the giver is told and sent `merging` now and
   then, so it does not give up waiting, and a newer gift of the same guest
-  takes the place of one that waits. Each gift has a version
-  (`household.Gifts`): how many households and looks the host had taken in
-  when the save the giver last loaded began. A gift from the host's own save
-  of a household another guest gave since that save is older and is not
-  taken: the answer is `merged` with the outcome `older`, and the giver's
-  player is told. A gift does not carry the relationships of a sim another
-  player plays or the host's lot simulates (below). Zones a guest's own save
+  takes the place of one that waits. Gifts that wait are dropped with the
+  launcher. Each gift has a version (`household.Gifts`): how many
+  households and looks the host had taken in when the save the giver last
+  loaded began. The guest names that state in the gift's offer (`loaded`,
+  the id of its request), as one sent may fail to load; one the host does
+  not know of, or no state, is older than anything. A gift from the host's
+  own save of a household another guest gave since that save is older and
+  is not taken: the answer is `merged` with the outcome `older`, and the
+  giver's player is told. The record is forgotten when the host loads a
+  save from the menu. A gift does not carry the relationships of a sim
+  another player plays or the host plays on its lot (below); of a household
+  other players also play, only the giver's own sims are taken, and its
+  money and home stay the host's, as for the household the host plays. Zones a guest's own save
   names are led to the host's for that player alone (`resync.lead`), as two
   new games each make up their own ids.
 - Lots apart. Only the host's lot is shared. When two guests play one other
   lot of the host's save, each in its own game, the one that came second is
-  told, and its gifts are refused (not `final`) while the first is still
-  there.
+  told, and while the first is still there what it gives is kept out: the
+  answer is `merged` with the outcome `kept`, and a guest that gave to load
+  the host's state loads it. That goes by the lots it played since the
+  state it last loaded, also once it came to the host's lot with them. A
+  guest keeps its place in the order of arrivals while its link is down.
 - `tsmp.status` has a line on each guest, and the host's log names the
   guest a line is about, and the guest whose game wrote it.
 
@@ -1016,10 +1031,11 @@ reloaded by a travel or by `HouseholdManager.load_household`. So:
   `allow_sending_npc_info=True` where the game takes that keyword. The host
   never writes the field of its own save: its next save would overwrite it.
   The guest's copy of a pair wins over the host's, but for a pair whose
-  other sim (the one not given) is played by another guest, or is on the
-  host's lot, as the host's own sims are while it plays: what the giver's
-  game had of that sim is older than what its own player or the host's
-  simulation did with it meanwhile, so the host's copy stays. Merging the
+  other sim (the one not given) is played by another guest, or is one of
+  the host's own household on the host's lot: what the giver's game had of
+  that sim is older than what its own player or the host's simulation did
+  with it meanwhile, so the host's copy stays. Any other sim on the host's
+  lot, such as a townie walking by, did nothing with the given sims there. Merging the
   two copies track by track is not tried.
 
 Relationships with NPCs that only the guest's save has are dropped (and
