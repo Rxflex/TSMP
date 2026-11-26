@@ -1042,6 +1042,7 @@ impl Launcher {
                         "house",
                         tr!(t, "mode-shared"),
                         tr!(t, "mode-shared-detail"),
+                        None,
                         Self::act(cx, |model| model.choose_own_families(false)),
                     ))
                     .child(mode_tile(
@@ -1050,6 +1051,7 @@ impl Launcher {
                         "people",
                         tr!(t, "mode-own"),
                         tr!(t, "mode-own-detail"),
+                        Some(tr!(t, "mode-alpha")),
                         Self::act(cx, |model| model.choose_own_families(true)),
                     ));
                 let body = if own {
@@ -2513,6 +2515,7 @@ fn mode_tile(
     picture: &'static str,
     title: String,
     detail: String,
+    badge: Option<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     div()
@@ -2557,6 +2560,7 @@ fn mode_tile(
                         .line_height(relative(1.3))
                         .child(title),
                 )
+                .children(badge.map(|text| div().flex().child(badge_tag(WARNING, text))))
                 .child(
                     div()
                         .w(px(MODE_WORDS))
@@ -2628,7 +2632,7 @@ fn own_families_guide(t: &I18n) -> Div {
                 ),
         )
         .child(notice(SKY, tr!(t, "own-world")))
-        .child(notice(WARNING, tr!(t, "own-new")))
+        .child(notice(WARNING, tr!(t, "own-alpha")))
 }
 
 /// In the lobby, in place of the shared save: everyone loads their own.
@@ -2660,9 +2664,21 @@ fn lobby_own(t: &I18n, hosting: bool) -> Div {
         )
         .child(
             div()
+                .flex()
+                .pb_1()
+                .child(badge_tag(WARNING, tr!(t, "mode-alpha"))),
+        )
+        .child(
+            div()
                 .w(px(SAVE_WIDTH))
                 .text_color(rgb(MUTED))
                 .child(tr!(t, if hosting { "lobby-own-host" } else { "lobby-own-guest" })),
+        )
+        .child(
+            div()
+                .w(px(SAVE_WIDTH))
+                .pt_3()
+                .child(notice(WARNING, tr!(t, "lobby-own-alpha"))),
         )
         .when(!hosting, |this| {
             this.child(
@@ -2875,6 +2891,23 @@ fn status_line(color: u32, text: String) -> Div {
                 .bg(rgb(color)),
         )
         .child(div().min_w_0().child(text))
+}
+
+/// A short coloured word beside a title, such as how far along a feature is.
+fn badge_tag(color: u32, text: String) -> Div {
+    div()
+        .flex_none()
+        .px_2()
+        .py(px(2.))
+        .rounded(px(6.))
+        .bg(Rgba {
+            a: 0.16,
+            ..rgb(color)
+        })
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(color))
+        .child(text)
 }
 
 /// Something the player has to know before going on.

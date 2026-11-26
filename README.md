@@ -61,7 +61,7 @@ save, and starts both games with the packs both players own.
   </tr>
   <tr>
     <td valign="top"><b>🌍 Over the internet</b><br>Players on different networks meet through a small session server with an invite such as <code>K7QM-2XDA@play.example.org</code>. A dropped connection picks up again by itself.</td>
-    <td valign="top"><b>👨‍👩‍👧 Each with their own family</b><br>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there.</td>
+    <td valign="top"><b>👨‍👩‍👧 Each with their own family</b><br>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. <b>Alpha:</b> often breaks for now; for a stable game play <b>One family together</b>.</td>
   </tr>
   <tr>
     <td valign="top"><b>🎨 Create-a-Sim</b><br>Either player edits their own sims; the host's game takes the guest's new look.</td>
@@ -78,9 +78,15 @@ together, different packs, the one-button setup on a local network, and one
 log for both games (each mod sends its log lines to the other side, and the
 launcher shows the latest ones under the session status).
 
+**Tried with two computers and broken for now:** each with their own family.
+In a real game the session kept coming apart, the guest could not use build
+mode, loading went round in a loop and the guest fell into a black void. Until
+this is fixed the mode is an alpha; for a stable game play **One family
+together**. See [Known problems](docs/internals.md#known-problems).
+
 **New, so far only run against the game's protocol in tests:** playing over the
-internet, families of their own, Create-a-Sim for the guest, different lots,
-and the session keeping both games in step on its own. The guest loads the
+internet, Create-a-Sim for the guest, different lots, and the session keeping
+both games in step on its own. The guest loads the
 host's world when it arrives and again whenever the two could have drifted
 apart (a lot loaded again, a dropped connection); meanwhile the host's game
 stays paused, and both players are told what is going on. A fuzz test drives
@@ -226,6 +232,13 @@ it in advance.
 <p align="center">
   <img src="docs/assets/families.jpg" alt="Two families walking from their own houses to one lit house" width="100%">
 </p>
+
+> [!WARNING]
+> This way of playing is an alpha at a very early stage and often breaks: in
+> a real game the session kept coming apart, the guest could not use build
+> mode, loading went round in a loop and the guest fell into a black void. For
+> a stable game play **One family together**, and keep backups of your saves
+> (the launchers make them too, see below).
 
 Each player can bring a household from a save of their own. The host picks
 **Each with their own family** when they start hosting, and then no save is
@@ -478,7 +491,10 @@ new and so far has been tried only against the game's protocol in tests.
 
 Yes. With **Each with their own family**, the guest brings a household from a
 save of their own, with its relationships, into the host's world and keeps
-playing it there. This is new and so far tried only in tests.
+playing it there. But for now this mode is an alpha and often breaks: the
+session can come apart, the guest may be unable to build, loading can repeat
+in a loop, and the guest can fall into a black void. For a stable game play
+**One family together**. See [Known problems](docs/internals.md#known-problems).
 
 </details>
 

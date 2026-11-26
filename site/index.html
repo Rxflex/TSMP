@@ -81,9 +81,9 @@
     {"@type": "Question", "name": "Do I have to install the mod myself?", "acceptedAnswer": {"@type": "Answer", "text": "No. The mod is built into tsmp.exe. The launcher puts it into the host's Mods folder when hosting starts, and the guest receives it with the sync."}},
     {"@type": "Question", "name": "What happens to my saves?", "acceptedAnswer": {"@type": "Answer", "text": "When you play one family together, the host's save is copied to the guest, and the guest's saves that would be replaced go to saves.tsmp-backup/ first. In Each with their own family no save is copied, and both launchers back up their saves before the session, because each game may write the other's family into its own."}},
     {"@type": "Question", "name": "Can we play over the internet, not only on one network?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, through a TSMP session server that both players can reach: one a friend runs, or your own (tsmp-server, a small Linux program that needs one TCP port, 47810 by default). The host gets an invite such as K7QM-2XDA@play.example.org and sends it to the other player. This part is new and so far has been tried only against the game's protocol in tests."}},
-    {"@type": "Question", "name": "Can each of us play our own family?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. With Each with their own family, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. This is new and so far tried only in tests."}},
+    {"@type": "Question", "name": "Can each of us play our own family?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. With Each with their own family, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. But for now this mode is an alpha and often breaks: the session can come apart, the guest may be unable to build, loading can repeat in a loop, and the guest can fall into a black void. For a stable game play One family together."}},
     {"@type": "Question", "name": "Can we build a house together?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, on a game version whose addresses are in the repository (now 1.129.39.1030); the launcher's home screen says whether building together is ready for yours. In build mode, walls, floors and wall coverings drawn by either player appear for the other while both keep building. This was tried on two computers. Furniture and household funds in build mode have not yet been checked for double counting, and an element both edit at the same moment may end up different in the two games."}},
-    {"@type": "Question", "name": "What has actually been tested?", "acceptedAnswer": {"@type": "Answer", "text": "Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. So far only in tests against the game's protocol: playing over the internet, families of their own, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome."}},
+    {"@type": "Question", "name": "What has actually been tested?", "acceptedAnswer": {"@type": "Answer", "text": "Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. Each with their own family was also tried with two computers and often breaks for now: it is an alpha. So far only in tests against the game's protocol: playing over the internet, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome."}},
     {"@type": "Question", "name": "Does it work on Mac, Linux or consoles?", "acceptedAnswer": {"@type": "Answer", "text": "No. The launcher and the mod are for The Sims 4 on Windows only. Only the optional session server runs on Linux."}},
     {"@type": "Question", "name": "Does it work with Steam and the EA app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The launcher finds the game installed by either. A Steam copy is started through Steam, which may ask you to confirm the launch arguments."}},
     {"@type": "Question", "name": "Is it safe? Windows or my antivirus warns about it.", "acceptedAnswer": {"@type": "Answer", "text": "The code is open, and every release lists the SHA-256 checksums of its files. The release files are not code-signed, so Windows may warn the first time; you can also build everything from source. Windows asks once to allow tsmp.exe through the firewall: allow it on private networks, or the host will not be found. Joining runs the host's script mods on your computer, and script mods are unrestricted code. Only join people you trust."}},
@@ -199,8 +199,8 @@
       </article>
       <article class="card" data-tilt>
         <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="7" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c0-3.3 2.2-6 5-6s5 2.7 5 6M13.5 20c.2-2.8 1.6-5 3.5-5s3.5 2.2 3.5 5"/></svg>Each with their own family</h3>
-        <p>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there.</p>
-        <span class="tag test">So far only in tests</span>
+        <p>A guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. In a real game the session still comes apart often; for a stable game play <b>One family together</b>.</p>
+        <span class="tag" style="color:var(--orange);background:rgba(255,159,90,.12);border:1px solid rgba(255,159,90,.4)">Alpha: often breaks for now</span>
       </article>
       <article class="card" data-tilt>
         <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21c.6-4 3.3-6.5 7-6.5s6.4 2.5 7 6.5"/></svg>Create-a-Sim</h3>
@@ -423,7 +423,8 @@
         <h2 id="families-h" class="sec-h">Each with their own family</h2>
         <p>Each player can bring a household from a save of their own. The host picks <span class="ui">Each with their own family</span> when they start hosting, and then no save is copied; each player loads their own save.</p>
         <p>When the guest comes to the host's lot, its household, with its sims, home lot and relationships, is copied into the host's save, and the guest goes on playing it there. Both launchers back up their saves first, because each game may write the other's family into its own.</p>
-        <p><span class="tag test">So far only in tests</span></p>
+        <p>This way of playing is at a very early stage and often breaks: in a real game the session kept coming apart, the guest could not use build mode, loading went round in a loop and the guest fell into a black void. For a stable game play <span class="ui">One family together</span>, and keep backups of your saves.</p>
+        <p><span class="tag" style="color:var(--orange);background:rgba(255,159,90,.12);border:1px solid rgba(255,159,90,.4)">Alpha: often breaks for now</span></p>
       </div>
     </div>
   </div>
@@ -451,7 +452,6 @@
         <h3>So far only in tests</h3>
         <ul>
           <li>Playing over the internet</li>
-          <li>Families of their own</li>
           <li>Create-a-Sim for the guest</li>
           <li>Different lots</li>
           <li>Keeping both games in step on its own</li>
@@ -460,6 +460,7 @@
       <div class="card todo">
         <h3>Not handled yet</h3>
         <ul>
+          <li>Each with their own family often breaks in a real game: for now it is an alpha.</li>
           <li>The guest waits while the host is in Create-a-Sim.</li>
           <li>An element both edit at the same moment may end up different in the two games.</li>
           <li>Furniture and household funds in build mode have not been checked for double counting.</li>
@@ -604,7 +605,7 @@
       </details>
       <details>
         <summary><h3>Can each of us play our own family?</h3></summary>
-        <div class="a"><p>Yes. With <b>Each with their own family</b>, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. This is new and so far tried only in tests.</p></div>
+        <div class="a"><p>Yes. With <b>Each with their own family</b>, the guest brings a household from a save of their own, with its relationships, into the host's world and keeps playing it there. But for now this mode is an alpha and often breaks: the session can come apart, the guest may be unable to build, loading can repeat in a loop, and the guest can fall into a black void. For a stable game play <b>One family together</b>.</p></div>
       </details>
       <details>
         <summary><h3>Can we build a house together?</h3></summary>
@@ -612,7 +613,7 @@
       </details>
       <details>
         <summary><h3>What has actually been tested?</h3></summary>
-        <div class="a"><p>Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. So far only in tests against the game's protocol: playing over the internet, families of their own, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome.</p></div>
+        <div class="a"><p>Tried with two computers and two copies of the game: live mode, building together, different packs and the one-button setup on a local network. Each with their own family was also tried with two computers and often breaks for now: it is an alpha. So far only in tests against the game's protocol: playing over the internet, Create-a-Sim for the guest and different lots. The project is experimental; reports from your games are welcome.</p></div>
       </details>
       <details>
         <summary><h3>Does it work on Mac, Linux or consoles?</h3></summary>

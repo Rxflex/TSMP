@@ -481,6 +481,9 @@ Control messages:
   household is, or is not, in my save; `final` when trying again would not
   help, `missing` when the host lacks the household and the gift held only
   part of its sims, so the guest is to give all of it).
+- `merging {id}` (host -> guest: your household is here and is taken in
+  once the host is done with another guest's load; the guest waits
+  `MERGE_SECONDS` more from each, see [Several guests](#several-guests)).
 - `offer {id, what, size, ...}`, `got {id, have}`, `drop {id}`: a transfer
   (`tsmp/transfer.py`). `what` is `state` (with the `world` it shows) or
   `household` (with the `save` it comes from).
@@ -608,12 +611,13 @@ host's mod reads.
   or a routed frame. So it never sends one to a launcher of version 2, which
   would pass it on to the guest as it is. It wraps what is for one guest
   alone: a transfer to it (`offer`, `PART`, `got`, `drop`), the answers to
-  its requests (`resync_failed`, `merged`, `appearance_done`), `cas`, the
-  dialogs of its sims, the replies to its commands and the `building` it is
-  told of when its link comes up. The stream of messages, `state` and
-  `building` otherwise go plain, to every guest; `state` stays plain also
-  when it answers one guest's `want`, so the launcher always reads its
-  game's version and status from it.
+  its requests (`resync_failed`, `merged`, `appearance_done`), `cas`,
+  `tell`, `building`, the dialogs of its sims, the replies to its commands,
+  and the `state` that answers its `want` or that names a world of its own
+  (below). The stream of messages goes plain while every guest whose link
+  is up is joined, and otherwise wrapped to each joined guest; `state` goes
+  plain while all guests are to show one world. The relay reads the game's
+  version and status from a wrapped `state` as from a plain one.
 - The host's mod takes a plain frame as from the one guest of a host's
   launcher of version 2, which names nobody (peer 0 to the mod), or else
   from its only guest. A plain frame that
@@ -641,6 +645,62 @@ guest, and is left aside.
 A guest's relay has one remote, the host's launcher; a new connection to the
 host replaces the old one, it never wraps and sends no `peer_up` or
 `peer_gone`.
+
+**The host's mod** keeps a `tsmp/peer.py::Peer` for each guest, and each
+guest is joined or not by itself (`Session._live_with`): its link, zone,
+save, version and world are its own, its commands run only while it is
+joined, as its own sim and with the pie menu it opened (`Game.execute`
+keeps one per peer), and `peer_gone` or `gone` forget that guest alone.
+
+- Worlds. A guest is to show the world of the host's zone load, and after
+  the host's game moved on from a state saved for that guest alone (its
+  hold lapsed, or it got in behind), that world and a count of its own:
+  `"<world>.<n>"` in the `state` and `offer` sent to it. So one slow guest
+  loads again by itself; only a load of the host's zone sends every guest
+  back to loading.
+- Requests. Each guest has its own request ids and transfers. One save runs
+  at a time, and answers every guest that waits for one, each with the
+  snapshot of its own lot (`resync.take` saves once and packs for each);
+  a guest that asks while a save runs joins it as long as the host's game
+  has not moved since it began and took in no household or look, else it
+  waits for the next one.
+- Holds. The game stays paused while any guest it holds for loads, and the
+  clock commands of every player are refused meanwhile. Each hold ends on
+  its own guest's doings (in, playing by itself, its link gone past
+  `LINK_SECONDS`, `HOLD_SECONDS` without a sign), never on another's. The
+  guests already in are sent a `tell` when the game is held for another, or
+  when it refuses their clock command for another.
+- Routing. Owned screens go to the guest that controls the sim, else the
+  one it was made over to on the host's lot (`Peer.welcomed`), else the one
+  of its household unless that is the host's or several guests play from
+  it; the host answers for those. `building {on, who}` tells each guest who
+  else builds on the host's lot, by name.
+- Sims. Each sim has one player. A guest is never handed a sim another
+  guest controls, plays on another lot or was handed with it
+  (`household.welcome`'s `claimed`), but takes over one that only came
+  along with another and that it now controls; and the sims a guest takes
+  off the host's lot when it leaves are never those another guest plays
+  there. A look from Create-a-Sim is taken only for a sim of the guest
+  that sent it, and not for one another guest plays on the host's lot.
+- Households. A gift that comes in while the host saves or holds for
+  another guest waits until that is over, as what that guest loads is to be
+  the game as it was saved; the giver is told and sent `merging` now and
+  then, so it does not give up waiting, and a newer gift of the same guest
+  takes the place of one that waits. Each gift has a version
+  (`household.Gifts`): how many households and looks the host had taken in
+  when the save the giver last loaded began. A gift from the host's own save
+  of a household another guest gave since that save is older and is not
+  taken: the answer is `merged` with the outcome `older`, and the giver's
+  player is told. A gift does not carry the relationships of a sim another
+  player plays or the host's lot simulates (below). Zones a guest's own save
+  names are led to the host's for that player alone (`resync.lead`), as two
+  new games each make up their own ids.
+- Lots apart. Only the host's lot is shared. When two guests play one other
+  lot of the host's save, each in its own game, the one that came second is
+  told, and its gifts are refused (not `final`) while the first is still
+  there.
+- `tsmp.status` has a line on each guest, and the host's log names the
+  guest a line is about, and the guest whose game wrote it.
 
 ### Following the host through a reload
 
@@ -859,10 +919,10 @@ saves. Instead:
    `<user dir>/tsmp/households.json`, the host save each household was last
    merged into and whether it has been played joined there since.
    Relationships are carried as described below.
-   `take_in` answers `took in`, `updated`, `partial` or `kept`, or raises
-   `Refusal`, which is `final` when the payload itself can never be taken
-   (unreadable, not one household, no household id) and otherwise may pass
-   later.
+   `take_in` answers `took in`, `updated`, `partial`, `kept` or `older`
+   (see [Several guests](#several-guests)), or raises `Refusal`, which is
+   `final` when the payload itself can never be taken (unreadable, not one
+   household, no household id) and otherwise may pass later.
 3. The host answers `merged`, and the guest asks for the host's state as
    after any reload. The game client only travels to zones it was started
    with: asked for an id from the host's save it drops the world and shows
@@ -955,8 +1015,12 @@ reloaded by a travel or by `HouseholdManager.load_household`. So:
   `send_relationship_info` goes to the client for each sim taken in, with
   `allow_sending_npc_info=True` where the game takes that keyword. The host
   never writes the field of its own save: its next save would overwrite it.
-  The guest's copy of a pair wins over the host's, even when the other sim
-  is the host's.
+  The guest's copy of a pair wins over the host's, but for a pair whose
+  other sim (the one not given) is played by another guest, or is on the
+  host's lot, as the host's own sims are while it plays: what the giver's
+  game had of that sim is older than what its own player or the host's
+  simulation did with it meanwhile, so the host's copy stays. Merging the
+  two copies track by track is not tried.
 
 Relationships with NPCs that only the guest's save has are dropped (and
 counted in the host's log): those NPCs do not come along, and the game
@@ -1095,6 +1159,18 @@ Tried over loopback against the real launchers' code
 `a_guest_joins_from_another_network_with_an_invite`) and with the mod's
 session logic (`mod/tests/test_relay.py`, `OnlineRelayTest`). Not yet tried
 with two games on two networks.
+
+## Known problems
+
+**Each with their own family is broken in practice.** The first real game with
+it, on two computers, kept falling apart: the session came apart again and
+again, the guest could not use build mode, loading went round in a loop, and
+the guest fell into a black void where nothing could be done. What
+[Households from different saves](#households-from-different-saves) describes
+holds in the tests, not yet in the game. Until it is fixed the launcher marks
+the mode as an alpha and points to One family together for a stable game.
+Both launchers still copy every save to `saves.tsmp-backup/` before such a
+session.
 
 ## Open questions
 

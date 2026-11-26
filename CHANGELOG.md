@@ -21,6 +21,11 @@ local network or over the internet, and the launcher does the setup.
 - **Each with their own family.** A guest brings a household from a save of
   their own, with its relationships, into the host's world and keeps playing
   it there. Both launchers back up their saves first.
+  *Known to be broken in practice:* in a real game on two computers the
+  session kept coming apart, the guest could not use build mode, loading went
+  round in a loop and the guest fell into a black void. Until that is fixed
+  this mode is an alpha; for a stable game play **One family together**. See
+  [Known problems](https://github.com/Rxflex/TSMP/blob/HEAD/docs/internals.md#known-problems).
 - **Always in step.** The guest loads the host's world when it arrives and
   again whenever the two could have drifted apart; meanwhile the host's game
   stays paused, and both players are told what is going on.
