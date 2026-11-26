@@ -33,6 +33,13 @@ pub struct Beacon {
     /// TCP port the host accepts guests on.
     pub port: u16,
     pub game_version: Option<String>,
+    /// Players in the session, the host included, and how many it takes, so
+    /// that a full one can be shown as such. Zero from a launcher before
+    /// protocol 3, which took one guest.
+    #[serde(default)]
+    pub players: u32,
+    #[serde(default)]
+    pub max_players: u32,
 }
 
 impl Beacon {
@@ -43,7 +50,24 @@ impl Beacon {
             name,
             port,
             game_version,
+            players: 0,
+            max_players: 0,
         }
+    }
+
+    /// The beacon saying that `players` of `max_players` are in the session.
+    pub fn with_players(self, players: u32, max_players: u32) -> Self {
+        Self {
+            players,
+            max_players,
+            ..self
+        }
+    }
+
+    /// Whether the session takes no more players. A launcher from before
+    /// protocol 3 does not say.
+    pub fn is_full(&self) -> bool {
+        self.max_players != 0 && self.players >= self.max_players
     }
 }
 
@@ -67,18 +91,27 @@ impl Announcer {
     /// the lowest metric, which on a PC with Hyper-V, VirtualBox or VPN
     /// adapters is often not the real LAN; the directed sends reach the rest.
     pub fn start(beacon: Beacon) -> std::io::Result<Self> {
-        Self::spawn(beacon, (Ipv4Addr::BROADCAST, DISCOVERY_PORT).into(), true)
+        Self::start_with(move || beacon.clone())
+    }
+
+    /// [`Announcer::start`] for a beacon that changes: `beacon` is asked for
+    /// it before every send.
+    pub fn start_with(beacon: impl FnMut() -> Beacon + Send + 'static) -> std::io::Result<Self> {
+        Self::spawn(Box::new(beacon), (Ipv4Addr::BROADCAST, DISCOVERY_PORT).into(), true)
     }
 
     /// Sends the beacon to `destination` only.
     pub fn start_to(beacon: Beacon, destination: SocketAddr) -> std::io::Result<Self> {
-        Self::spawn(beacon, destination, false)
+        Self::spawn(Box::new(move || beacon.clone()), destination, false)
     }
 
-    fn spawn(beacon: Beacon, destination: SocketAddr, every_network: bool) -> std::io::Result<Self> {
+    fn spawn(
+        mut beacon: Box<dyn FnMut() -> Beacon + Send>,
+        destination: SocketAddr,
+        every_network: bool,
+    ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         socket.set_broadcast(true)?;
-        let payload = serde_json::to_vec(&beacon).expect("a beacon always serializes");
         let stop = Arc::new(AtomicBool::new(false));
         let thread = thread::spawn({
             let stop = stop.clone();
@@ -92,6 +125,7 @@ impl Announcer {
                         directed = directed_senders(destination.port());
                         refreshed = Some(Instant::now());
                     }
+                    let payload = serde_json::to_vec(&beacon()).expect("a beacon always serializes");
                     // A send can fail while the network is down; keep trying.
                     let _ = socket.send_to(&payload, destination);
                     for sender in &directed {
@@ -309,6 +343,45 @@ mod tests {
 
         assert_eq!(found.beacon, beacon);
         assert_eq!(found.address, SocketAddr::from((Ipv4Addr::LOCALHOST, 4242)));
+    }
+
+    #[test]
+    fn beacons_of_versions_2_and_3_read_each_other() {
+        // What a launcher of version 2 sends: it took one guest and said nothing of it.
+        let old = br#"{"magic":"TSMP","protocol":2,"name":"old","port":47800,"game_version":null}"#;
+        let beacon: Beacon = serde_json::from_slice(old).unwrap();
+        assert_eq!((beacon.players, beacon.max_players), (0, 0));
+        assert!(!beacon.is_full());
+
+        // Version 2 ignored fields it did not know.
+        let new = Beacon::new(3, "new".into(), 47800, None).with_players(2, 2);
+        let text = serde_json::to_value(&new).unwrap();
+        assert_eq!((text["players"].as_u64(), text["max_players"].as_u64()), (Some(2), Some(2)));
+        assert_eq!(serde_json::from_value::<Beacon>(text).unwrap(), new);
+        assert!(new.is_full());
+        assert!(!new.with_players(1, 2).is_full());
+    }
+
+    #[test]
+    fn an_announcer_sends_the_beacon_as_it_is_now() {
+        let browser = Browser::start_on(0).unwrap();
+        let players = Arc::new(std::sync::atomic::AtomicU32::new(1));
+        let beacon = Beacon::new(3, "host-pc".into(), 4242, None);
+        let _announcer = Announcer::spawn(
+            Box::new({
+                let players = players.clone();
+                move || beacon.clone().with_players(players.load(Ordering::SeqCst), 2)
+            }),
+            (Ipv4Addr::LOCALHOST, browser.port()).into(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(browser.wait(Duration::from_secs(5)).unwrap().beacon.players, 1);
+        players.store(2, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !browser.wait(Duration::from_secs(5)).unwrap().beacon.is_full() {
+            assert!(std::time::Instant::now() < deadline, "the beacon never changed");
+        }
     }
 
     /// Uses the real broadcast address and port, so it needs a network and

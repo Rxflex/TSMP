@@ -15,6 +15,10 @@ DIALOG = 40
 NOTIFICATION = 41
 SET_SIM_ACTIVE = 21
 OTHER_MSG = 40
+# How the host's launcher relays in every test: "routed", as one of version 3
+# does for a mod that speaks it, numbering its guests (see tsmp/frames.py,
+# ROUTED), or "legacy", as one before it.
+RELAY = os.environ.get("TSMP_RELAY", "routed")
 
 
 def view_update(*op_types):
@@ -209,11 +213,25 @@ class FakeGame:
 
 
 class Player:
-    """One game with its session; `sent` collects the frames it emits."""
+    """One game with its session; `sent` collects the frames it emits, as
+    the other games get them.
 
-    def __init__(self, role):
+    A host's player stands in for its launcher too, which wraps what each
+    guest sends in ROUTED with that guest's peer once it heard that our mod
+    speaks version 3, and says which guests come and go with `peer_up` and
+    `peer_gone` as well as `link`. `routed` False makes it a launcher from
+    before version 3, which does none of this."""
+
+    def __init__(self, role, routed=None):
         self.game = FakeGame()
         self.sent = []
+        # Host: the peer each frame in `sent` is for, None for every guest.
+        self.sent_to = []
+        self.routed = RELAY == "routed" if routed is None else routed
+        # Host: the launcher heard that our mod speaks version 3.
+        self.speaks = False
+        # Host: the guests whose links are up, by peer.
+        self.peers_up = set()
         self.logged = []
         self.now = 1000.0
         consts = session.Consts(
@@ -232,24 +250,58 @@ class Player:
         self.role = role
 
     def _send(self, frame):
-        self.sent += frames.Decoder().feed(frame)
+        for kind, ident, payload in frames.Decoder().feed(frame):
+            kind, ident, payload, to = frames.unroute(kind, ident, payload)
+            if to is not None and not (self.role == session.HOST and self.routed and self.speaks):
+                raise AssertionError("a ROUTED frame for a launcher that does not unwrap it")
+            if kind == frames.CONTROL and frames.parse_json(payload).get("type") == "state":
+                self.speaks = self.speaks or frames.number(frames.parse_json(payload).get("v")) >= 3
+            self.sent.append((kind, ident, payload))
+            self.sent_to.append(to)
 
     def take(self):
         sent, self.sent = self.sent, []
+        self.sent_to = []
         return sent
+
+    def take_routed(self):
+        """(peer, frame) of each frame sent, the peer None for every guest."""
+        to = self.sent_to
+        return list(zip(to, self.take()))
 
     def controls(self):
         return [frames.parse_json(payload) for kind, _, payload in self.take() if kind == frames.CONTROL]
 
-    def receive(self, sent):
+    def receive(self, sent, peer=1):
+        """Frames from another game; on a host, from the guest numbered
+        `peer`, through its launcher."""
+        wraps = self.role == session.HOST and self.routed and self.speaks
         for kind, ident, payload in sent:
-            self.session.frame(kind, ident, payload)
+            if not wraps:
+                self.session.frame(kind, ident, payload)
+                continue
+            (routed,) = frames.Decoder().feed(frames.route(peer, frames.pack(kind, ident, payload)))
+            kind, ident, payload, peer = frames.unroute(*routed)
+            self.session.frame(kind, ident, payload, peer)
 
     def link(self, remotes):
-        self.control("link", remotes=remotes)
+        """Our launcher has that many remotes now. A host's launcher of
+        version 3 names them: the first `remotes` peers are up, and each one
+        that is up again has reconnected."""
+        if self.role == session.HOST and self.routed and self.speaks:
+            for peer in sorted(self.peers_up - set(range(1, remotes + 1))):
+                self._relay_says("peer_gone", peer=peer)
+            for peer in range(1, remotes + 1):
+                self._relay_says("peer_up", peer=peer, name="guest {}".format(peer), player="p{}".format(peer))
+            self.peers_up = set(range(1, remotes + 1))
+        self._relay_says("link", remotes=remotes)
+
+    def _relay_says(self, kind, **fields):
+        self.session.frame(frames.CONTROL, 0, frames.Decoder().feed(frames.control(kind, **fields))[0][2])
 
     def control(self, kind, **fields):
-        self.session.frame(frames.CONTROL, 0, frames.Decoder().feed(frames.control(kind, **fields))[0][2])
+        """A control from the other game."""
+        self.receive(frames.Decoder().feed(frames.control(kind, **fields)))
 
     def tick(self, seconds=0.0):
         self.now += seconds
@@ -321,13 +373,37 @@ def owned(sim_id):
     return bytes(out)
 
 
-def settle(host, guest):
+def settle(*players):
+    """Exchange frames until all fall quiet. The one host among them is the
+    hub, as its launcher is: what a guest sends reaches it from that guest's
+    peer, numbered by the guest's place among the others, and what it sends
+    reaches the guest it is for or, when for none, every guest. Guests hear
+    only the host. Two hosts each take the other for their one guest."""
+    hosts = [player for player in players if player.role == session.HOST]
+    hub = hosts[0] if len(hosts) == 1 else None
+    numbers = {}
+    for player in players:
+        if player is not hub:
+            numbers[player] = len(numbers) + 1
     for _ in range(100):
-        to_guest, to_host = host.take(), guest.take()
-        if not to_guest and not to_host:
+        sent = [(player, player.take_routed()) for player in players]
+        if not any(out for _, out in sent):
             return
-        guest.receive(to_guest)
-        host.receive(to_host)
+        # In the order the first two always were: the second hears the
+        # first, then the first the second.
+        for receiver in players[1:] + players[:1]:
+            for sender, out in sent:
+                if sender is receiver or (hub is not None and hub not in (sender, receiver)):
+                    continue
+                number = numbers.get(receiver if sender is hub else sender, 1)
+                if sender is hub:
+                    unknown = [to for to, _ in out if to not in (None, 0) and to not in numbers.values()]
+                    if unknown:
+                        raise AssertionError("the host sent to peers {} it does not have".format(unknown))
+                    chosen = [frame for to, frame in out if to in (None, 0, number)]
+                else:
+                    chosen = [frame for _, frame in out]
+                receiver.receive(chosen, peer=number)
     raise AssertionError("the sessions never went quiet")
 
 
@@ -367,6 +443,12 @@ def gives(host, guest, payload=b"household"):
     settle(host, guest)
 
 
+def guest_of(host):
+    """What the host keeps of its one guest."""
+    (peer,) = host.session.peers.values()
+    return peer
+
+
 def asked(player):
     return [payload for kind, _, payload in player.sent if kind == frames.CONTROL and b'"resync"' in payload]
 
@@ -375,7 +457,7 @@ class HandshakeTest(unittest.TestCase):
     def test_announces_state_when_the_bridge_comes_up(self):
         host = Player(session.HOST)
         host.session.bridge_up(session.HOST)
-        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": False, "v": 2, "loaded": False,
+        self.assertEqual(host.controls(), [{"type": "state", "role": "host", "in_zone": False, "v": 3, "loaded": False,
                                             "syncing": False, "joined": False, "apart": False,
                                             "stopped": False, "want": True}])
         self.assertFalse(host.session.live)
@@ -416,7 +498,7 @@ class HandshakeTest(unittest.TestCase):
         loads(host, guest)
         self.assertTrue(host.session.live)
         self.assertTrue(guest.session.live)
-        self.assertEqual(host.session.remote_sim_id, 222)
+        self.assertEqual(guest_of(host).sim_id, 222)
         # Same family: nothing to bring over.
         self.assertEqual(guest.game.contributions, [])
 
@@ -435,7 +517,7 @@ class HandshakeTest(unittest.TestCase):
         reloads_from_host(host, guest)
         self.assertTrue(host.session.live)
         self.assertTrue(guest.session.live)
-        self.assertEqual(host.session.remote_sim_id, 9)
+        self.assertEqual(guest_of(host).sim_id, 9)
 
     def test_not_live_until_the_other_game_loads(self):
         host, guest = Player(session.HOST), Player(session.GUEST)
@@ -455,7 +537,7 @@ class HandshakeTest(unittest.TestCase):
         reloads_from_host(host, guest)
         self.assertTrue(host.session.live)
         self.assertTrue(guest.session.live)
-        self.assertEqual(host.session.remote_sim_id, 5)
+        self.assertEqual(guest_of(host).sim_id, 5)
 
     def test_bridge_down_ends_the_session(self):
         host, guest = joined()
@@ -488,7 +570,7 @@ class HandshakeTest(unittest.TestCase):
         self.assertEqual(guest.take(), [])
         guest.game.sim_id = 333
         both(host, guest)
-        self.assertEqual(host.session.remote_sim_id, 333)
+        self.assertEqual(guest_of(host).sim_id, 333)
 
     def test_lots_are_compared_by_what_names_them_in_any_save(self):
         host, guest = connected(guest_lot=99)
@@ -513,7 +595,7 @@ class LinkTest(unittest.TestCase):
         guest.link(0)
         self.assertFalse(host.session.live)
         self.assertFalse(guest.session.live)
-        self.assertEqual(host.session.remote_sim_id, 0)
+        self.assertEqual(guest_of(host).sim_id, 0)
         # Its own simulation is not shown meanwhile; its player is told.
         self.assertTrue(guest.session.stale)
         self.assertIsNone(guest.session.outbound(OTHER_MSG, b"local"))
@@ -596,10 +678,10 @@ class LinkTest(unittest.TestCase):
         host, guest = connected()
         both(host, guest)
         host.game.snapshots[0](b"x" * (transfer.WINDOW * 2))
-        self.assertIsNotNone(host.session._transfers.outgoing(1))
+        self.assertIsNotNone(guest_of(host).transfers.outgoing(1))
         # The guest's launcher dialled again; the host's saw no gap.
         host.link(1)
-        self.assertIsNone(host.session._transfers.outgoing(1))
+        self.assertIsNone(guest_of(host).transfers.outgoing(1))
 
     def test_a_transfer_nobody_takes_is_dropped(self):
         host, guest = connected()
@@ -607,7 +689,7 @@ class LinkTest(unittest.TestCase):
         host.game.snapshots[0](b"x" * (transfer.WINDOW * 2))
         host.take()
         host.tick(session.STALL_SECONDS + 1)
-        self.assertIsNone(host.session._transfers.outgoing(1))
+        self.assertIsNone(guest_of(host).transfers.outgoing(1))
 
     def test_a_save_under_way_when_the_link_dropped_is_not_sent_for_a_new_request(self):
         host, guest = connected()
@@ -855,7 +937,7 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(guest.session._phase, session.RECEIVING)
         host_reloads(host, guest)
         self.assertEqual(guest.game.adopted, [])
-        self.assertIsNone(host.session._transfers.outgoing(1))
+        self.assertIsNone(guest_of(host).transfers.outgoing(1))
         answers(host, guest, b"new")
         self.assertEqual(guest.game.adopted, [b"new"])
 
@@ -1229,10 +1311,10 @@ class HostTest(unittest.TestCase):
         host, guest = joined()
         guest.session.command("clock.build_buy_pause_unpause", ["1"])
         settle(host, guest)
-        self.assertTrue(host.session.remote_building)
+        self.assertTrue(guest_of(host).building)
         guest.leave()
         settle(host, guest)
-        self.assertFalse(host.session.remote_building)
+        self.assertFalse(guest_of(host).building)
         self.assertFalse(guest.session._building)
 
 class HoldTest(unittest.TestCase):
@@ -2001,7 +2083,7 @@ class ResyncTest(unittest.TestCase):
         self.assertFalse(guest.session.stale)
         self.assertTrue(guest.session.live)
         self.assertTrue(host.session.live)
-        self.assertEqual(host.session.remote_sim_id, 222)
+        self.assertEqual(guest_of(host).sim_id, 222)
 
     def test_asks_only_once(self):
         host, guest = joined()
@@ -2154,6 +2236,298 @@ class ResyncTest(unittest.TestCase):
         offers = [message for message in host.controls() if message["type"] == "offer"]
         self.assertEqual([offer["id"] for offer in offers], [50])
 
+
+def legacy_pair():
+    """Joined through a host's launcher from before version 3."""
+    host, guest = Player(session.HOST, routed=False), Player(session.GUEST)
+    host.game.zone = guest.game.zone = True
+    guest.game.sim_id = 222
+    host.session.bridge_up(session.HOST)
+    guest.session.bridge_up(session.GUEST)
+    host.link(1)
+    guest.link(1)
+    settle(host, guest)
+    reloads_from_host(host, guest)
+    return host, guest
+
+
+class RoutedTest(unittest.TestCase):
+    """A host's launcher of version 3 numbers its guests: the host says what
+    is for one guest to it alone, and what is for all to all."""
+
+    def setUp(self):
+        global RELAY
+        relay, RELAY = RELAY, "routed"
+
+        def restore():
+            global RELAY
+            RELAY = relay
+
+        self.addCleanup(restore)
+
+    def test_the_guest_is_known_by_its_peer(self):
+        host, guest = joined()
+        self.assertEqual(list(host.session.peers), [1])
+        peer = host.session.peers[1]
+        self.assertEqual((peer.name, peer.player, peer.up, peer.sim_id), ("guest 1", "p1", True, 222))
+        self.assertTrue(host.session.live)
+
+    def test_the_stream_goes_to_every_guest_and_replies_to_the_one_that_asked(self):
+        host, guest = joined()
+        host.take()
+        host.session.outbound(OTHER_MSG, b"x")
+        self.assertEqual(host.take_routed(), [(None, (frames.MSG, OTHER_MSG, b"x"))])
+        host.game.during_execute = lambda: host.session.outbound(PIE_MENU, b"menu")
+        guest.session.command("interactions.choices", ["5487", "0"])
+        settle(host, guest)
+        self.assertEqual(guest.game.delivered[-1], (PIE_MENU, b"menu"))
+        host.game.during_execute = lambda: host.session.outbound(PIE_MENU, b"menu")
+        host.receive([(frames.COMMAND, 0, b'{"name":"interactions.choices","args":[]}')])
+        self.assertEqual(host.take_routed(), [(1, (frames.MSG, PIE_MENU, b"menu"))])
+
+    def test_answers_to_a_guest_go_to_it_alone(self):
+        host, guest = connected()
+        guest.tick()
+        host.take()
+        sent = guest.take()
+        host.receive(sent)
+        both(host, guest)
+        host.game.snapshots[0](b"save")
+        routed = host.take_routed()
+        offers = [to for to, (kind, _, payload) in routed if kind == frames.CONTROL and b'"offer"' in payload]
+        parts = [to for to, (kind, _, _) in routed if kind == frames.PART]
+        self.assertEqual(offers, [1])
+        self.assertEqual(set(parts), {1})
+
+    def test_peer_gone_is_a_lost_link_and_the_same_peer_comes_back(self):
+        host, guest = joined()
+        host.link(0)
+        guest.link(0)
+        self.assertFalse(host.session.live)
+        self.assertFalse(host.session.peers[1].up)
+        self.assertEqual(host.session.remotes, 0)
+        host.link(1)
+        guest.link(1)
+        settle(host, guest)
+        reloads_from_host(host, guest)
+        self.assertTrue(host.session.live)
+        self.assertEqual(list(host.session.peers), [1])
+
+    def test_a_hold_outlasts_a_short_drop_of_the_guests_link(self):
+        host, guest = connected()
+        both(host, guest)
+        self.assertTrue(host.session.holding)
+        host.link(0)
+        host.tick(session.LINK_SECONDS - 1)
+        self.assertTrue(host.session.holding)
+        host.link(1)
+        host.tick(10)
+        self.assertTrue(host.session.holding)
+
+    def test_link_before_peer_up_is_the_same_guest(self):
+        """A launcher that heard of our version only after its remote came
+        says `link` first, then names the remote."""
+        host, guest = Player(session.HOST), Player(session.GUEST)
+        host.game.zone = guest.game.zone = True
+        guest.game.sim_id = 222
+        host.session.bridge_up(session.HOST)
+        guest.session.bridge_up(session.GUEST)
+        host._relay_says("link", remotes=1)
+        guest.link(1)
+        self.assertEqual(list(host.session.peers), [session.LEGACY])
+        host.peers_up = {1}
+        host._relay_says("peer_up", peer=1, name="guest 1", player="p1")
+        self.assertEqual(list(host.session.peers), [1])
+        settle(host, guest)
+        reloads_from_host(host, guest)
+        self.assertTrue(host.session.live)
+        self.assertTrue(guest.session.live)
+        self.assertEqual(guest_of(host).sim_id, 222)
+
+    def test_frames_that_crossed_before_the_launcher_heard_our_version_are_the_guests(self):
+        host, guest = joined()
+        host.speaks = False
+        guest.game.sim_id = 333
+        both(host, guest)
+        host.speaks = True
+        self.assertEqual(guest_of(host).sim_id, 333)
+
+    def test_a_routed_frame_names_the_remote_a_link_brought_up(self):
+        """A launcher that wraps without having said `peer_up` for its remote."""
+        host, guest = Player(session.HOST), Player(session.GUEST)
+        host.game.zone = guest.game.zone = True
+        host.session.bridge_up(session.HOST)
+        guest.session.bridge_up(session.GUEST)
+        host._relay_says("link", remotes=1)
+        guest.link(1)
+        settle(host, guest)
+        self.assertEqual(list(host.session.peers), [1])
+        self.assertTrue(host.session.peers[1].up)
+        self.assertEqual(host.session.peers[1].save, 1)
+
+    def test_a_plain_frame_from_one_of_several_named_guests_is_dropped(self):
+        host, guest = joined()
+        host._relay_says("peer_up", peer=2, name="guest 2", player="p2")
+        host.take()
+        host.session.frame(frames.CONTROL, 0, b'{"type":"active_sim","sim_id":"9"}')
+        self.assertEqual(host.session.peers[1].sim_id, 222)
+        self.assertEqual(host.session.peers[2].sim_id, 0)
+        self.assertIn("dropped a frame from a guest our launcher did not name", host.logged)
+
+    def test_a_guest_cannot_speak_for_the_launcher(self):
+        """What our launcher says of its remotes is never wrapped: a guest's
+        game that sends the same is not believed."""
+        host, guest = joined()
+        host._relay_says("peer_up", peer=2, name="guest 2", player="p2")
+        for control in (b'{"type":"link","remotes":0}', b'{"type":"peer_gone","peer":2}',
+                        b'{"type":"peer_up","peer":3,"name":"x","player":"x"}'):
+            host.session.frame(frames.CONTROL, 0, control, 1)
+        self.assertTrue(host.session.peers[1].up)
+        self.assertTrue(host.session.peers[2].up)
+        self.assertNotIn(3, host.session.peers)
+        self.assertTrue(host.session.live)
+
+    def test_a_hold_for_a_guest_that_left_ends_once_another_player_plays(self):
+        """With one guest at a time, the player who comes in place of the
+        one we held for, which left, ends the hold, as the one guest did."""
+        host, first = connected()
+        both(host, first)
+        self.assertTrue(host.session.holding)
+        host._relay_says("peer_gone", peer=1)
+        host._relay_says("link", remotes=0)
+        host.take()
+
+        other = Player(session.GUEST)
+        other.game.zone = True
+        other.game.sim_id = 333
+        other.game.zone_number = 7
+        other.session.bridge_up(session.GUEST)
+        host._relay_says("peer_up", peer=2, name="guest 2", player="p2")
+        host._relay_says("link", remotes=1)
+        other.link(1)
+
+        def exchange():
+            for _ in range(100):
+                out, back = host.take_routed(), other.take()
+                if not out and not back:
+                    return
+                other.receive([frame for to, frame in out if to in (None, 0, 2)])
+                host.receive(back, peer=2)
+            raise AssertionError("the sessions never went quiet")
+
+        exchange()
+        host.tick()
+        other.tick()
+        exchange()
+        while host.game.snapshots:
+            host.game.snapshots.pop(0)(b"save")
+            exchange()
+        other.leave()
+        other.game.save = host.game.save
+        other.arrive()
+        exchange()
+        self.assertTrue(other.session.live)
+        world, pauses = host.session._world, host.game.pauses
+        for _ in range(int(session.LINK_SECONDS) + 10):
+            host.game.ticks += 1
+            host.tick(1.0)
+            other.tick(1.0)
+            exchange()
+        self.assertFalse(host.session.holding)
+        self.assertEqual(host.session._world, world)
+        self.assertEqual(host.game.pauses, pauses)
+        self.assertTrue(other.session.live)
+
+    def test_a_guest_that_asked_while_we_saved_for_another_is_refused_once_we_left(self):
+        host, first = connected()
+        both(host, first)
+        self.assertEqual(len(host.game.snapshots), 1)
+        host._relay_says("peer_gone", peer=1)
+        host._relay_says("peer_up", peer=2, name="guest 2", player="p2")
+        host.take()
+        # The save for the first runs still.
+        host.receive(frames.Decoder().feed(frames.control("resync", id=5, zone=7, lot="")), peer=2)
+        self.assertEqual(len(host.game.snapshots), 1)
+        self.assertIsNotNone(host.session.peers[2].asked)
+        host.leave()
+        host.take()
+        host.game.snapshots[0](b"save")
+        refused = [(to, frames.parse_json(payload)) for to, (kind, _, payload) in host.take_routed()
+                   if kind == frames.CONTROL and b'"resync_failed"' in payload]
+        self.assertEqual(refused, [(2, {"type": "resync_failed", "id": 5})])
+        self.assertIsNone(host.session.peers[2].asked)
+
+    def test_a_guest_takes_no_notice_of_peers(self):
+        host, guest = joined()
+        guest.session.frame(frames.CONTROL, 0, b'{"type":"peer_gone","peer":1}')
+        self.assertTrue(guest.session.live)
+
+    def test_a_guest_with_another_version_does_not_join(self):
+        host, guest = connected()
+        guest.control("state", role="guest", in_zone=True, zone="7", save="1", world="x.1", v=2)
+        host.control("state", role="guest", in_zone=True, zone="7", save="1", world=host.session._world, v=2)
+        self.assertFalse(host.session.live)
+        self.assertFalse(guest.session.live)
+        self.assertTrue(any("another version of the mod (2, ours 3)" in line for line in host.logged))
+
+
+class LegacyRelayTest(unittest.TestCase):
+    """A host's launcher from before version 3 wraps nothing and names no
+    guest: the host's mod says everything to its one remote, plainly."""
+
+    def test_joins_plays_and_comes_back_after_a_lost_link(self):
+        host, guest = legacy_pair()
+        self.assertTrue(host.session.live)
+        self.assertTrue(guest.session.live)
+        self.assertEqual(list(host.session.peers), [session.LEGACY])
+        self.assertEqual(guest_of(host).sim_id, 222)
+        host.game.during_execute = lambda: host.session.outbound(PIE_MENU, b"menu")
+        guest.session.command("interactions.choices", ["5487", "0"])
+        settle(host, guest)
+        self.assertEqual(host.game.executed, [("interactions.choices", ["5487", "0"], 222)])
+        self.assertEqual(guest.game.delivered[-1], (PIE_MENU, b"menu"))
+        host.link(0)
+        guest.link(0)
+        self.assertFalse(host.session.live)
+        host.link(1)
+        guest.link(1)
+        settle(host, guest)
+        reloads_from_host(host, guest)
+        self.assertTrue(host.session.live)
+        self.assertTrue(guest.session.live)
+
+    def test_no_frame_is_routed(self):
+        # Player raises on a ROUTED frame for a launcher that does not unwrap.
+        host, guest = legacy_pair()
+        host.session.outbound(OTHER_MSG, b"x")
+        host.link(1)
+        settle(host, guest)
+        self.assertFalse(host.session._routed)
+
+    def test_a_new_launcher_names_the_remote_the_old_one_had(self):
+        """The host's launcher is started again, now of version 3."""
+        host, guest = legacy_pair()
+        host.session.bridge_down("restarted")
+        host.session.bridge_up(session.HOST)
+        host.routed = True
+        host.link(1)
+        settle(host, guest)
+        self.assertEqual(list(host.session.peers), [1])
+        reloads_from_host(host, guest)
+        self.assertTrue(host.session.live)
+        self.assertTrue(guest.session.live)
+
+    def test_an_old_launcher_after_a_new_one(self):
+        host, guest = joined()
+        host.session.bridge_down("restarted")
+        host.session.bridge_up(session.HOST)
+        host.routed = False
+        host.link(1)
+        settle(host, guest)
+        self.assertEqual(list(host.session.peers), [session.LEGACY])
+        reloads_from_host(host, guest)
+        self.assertTrue(host.session.live)
+        self.assertTrue(guest.session.live)
 
 if __name__ == "__main__":
     unittest.main()

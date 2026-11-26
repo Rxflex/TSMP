@@ -57,6 +57,10 @@ pub enum Error {
     Remote(String),
     #[error("the other launcher speaks protocol {theirs}, this one speaks {ours}; update both to the same version")]
     VersionMismatch { ours: u32, theirs: u32 },
+    /// The host has as many players as it takes, and the one asking is not
+    /// one of them coming back.
+    #[error("the session is full")]
+    Full,
     #[error("the host sent an unsafe file path: {0:?}")]
     UnsafePath(String),
     #[error("{0} arrived damaged (content does not match the host's manifest)")]

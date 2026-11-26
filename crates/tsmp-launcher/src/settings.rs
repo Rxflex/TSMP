@@ -11,6 +11,9 @@ pub struct Setting(&'static str);
 pub const LANGUAGE: Setting = Setting("language");
 /// The session server a host last opened a session on.
 pub const SERVER: Setting = Setting("server");
+/// Who plays on this install, so that a host knows a guest coming back from
+/// a new one: made the first time it is needed and never changed.
+pub const PLAYER: Setting = Setting("player");
 
 impl Setting {
     fn path(&self) -> Option<PathBuf> {

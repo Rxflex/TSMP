@@ -7,6 +7,7 @@ server.
 """
 
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -15,7 +16,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 
-from tsmp import bridge, session  # noqa: E402
+from tsmp import bridge, frames, session  # noqa: E402
+from tsmp import peer as peer_module  # noqa: E402
 
 from test_session import FakeGame, SET_SIM_ACTIVE, VIEW_UPDATE, PIE_MENU, INTERACTABLE, view_update  # noqa: E402
 
@@ -25,13 +27,32 @@ if os.name == "nt":
 
 
 class Player:
-    """What live.py assembles inside the game: a bridge feeding a session."""
+    """What live.py assembles inside the game: a bridge feeding a session.
 
-    def __init__(self, port, role):
+    Keeps what crossed the bridge, as (kind, peer, inner kind) with None for
+    a frame that was not wrapped, to show what the launcher wrapped.
+    `ignore` are control types the mod leaves aside, as one of an older
+    version does with those it does not know."""
+
+    def __init__(self, port, role, ignore=()):
         self.game = FakeGame()
         self.bridge = bridge.Bridge(lambda: (port, role))
+        self.ignore = frozenset(ignore)
+        self.arrived = []
+        self.sent = []
         consts = session.Consts(VIEW_UPDATE, PIE_MENU, INTERACTABLE, SET_SIM_ACTIVE)
-        self.session = session.Session(self.game, consts, self.bridge.send)
+        self.session = session.Session(self.game, consts, self.send)
+
+    def send(self, frame):
+        kind, ident, _ = struct.unpack_from("<BII", frame)
+        self.sent.append(self.crossed(kind, ident, frame[9:]))
+        self.bridge.send(frame)
+
+    @staticmethod
+    def crossed(kind, ident, payload):
+        if kind != frames.ROUTED:
+            return kind, None, None
+        return kind, ident, frames.unroute(kind, ident, payload)[0]
 
     def tick(self):
         for event in self.bridge.pump():
@@ -40,7 +61,12 @@ class Player:
             elif event[0] == bridge.DOWN:
                 self.session.bridge_down(event[1])
             else:
-                self.session.frame(*event[1:])
+                self.arrived.append(self.crossed(*event[1:]))
+                # As live.py does: a host's launcher may wrap what a guest sent.
+                kind, ident, payload, peer = frames.unroute(*event[1:])
+                if kind == frames.CONTROL and (frames.parse_json(payload) or {}).get("type") in self.ignore:
+                    continue
+                self.session.frame(kind, ident, payload, peer)
         self.session.tick()
 
 
@@ -123,6 +149,63 @@ class RelayTest(unittest.TestCase):
         guest.game.zone = True
         # Its game client shows nothing of the host's any more.
         self.loads(b"save")
+
+    def test_a_host_game_of_version_3_hears_its_guest_wrapped(self):
+        """The host's mod speaks version 3: its launcher numbers the guest and
+        wraps what it sends, and the host's mod wraps what is for that guest
+        alone. The guest's game sees none of it."""
+        host, guest = self.host, self.guest
+        guest.game.sim_id = 222
+        host.game.zone = guest.game.zone = True
+        self.loads(b"save")
+        self.until("the guest's sim", lambda: host.session.remote_sim_id == 222)
+        self.assertTrue(host.session._routed)
+        self.assertEqual(sorted(host.session.peers), [1])
+        peer = host.session.peers[1]
+        self.assertEqual((peer.name, peer.player, peer.up), ("guest", "guest-id", True))
+
+        update = view_update(5, 7)
+        self.assertEqual(host.session.outbound(VIEW_UPDATE, update), update)
+        host.game.during_execute = lambda: self.assertIsNone(host.session.outbound(PIE_MENU, b"menu"))
+        self.assertFalse(guest.session.command("interactions.choices", ["5487", "0"]))
+        self.until("the reply", lambda: (PIE_MENU, b"menu") in guest.game.delivered)
+        self.assertEqual(guest.game.delivered[-2:], [(VIEW_UPDATE, update), (PIE_MENU, b"menu")])
+
+        # The command came wrapped with the guest's peer, never plain.
+        self.assertIn((frames.ROUTED, 1, frames.COMMAND), host.arrived)
+        self.assertNotIn((frames.COMMAND, None, None), host.arrived)
+        # The snapshot and the reply were for the guest alone; the stream and
+        # the host's state for every guest.
+        self.assertIn((frames.ROUTED, 1, frames.PART), host.sent)
+        self.assertIn((frames.ROUTED, 1, frames.MSG), host.sent)
+        self.assertIn((frames.MSG, None, None), host.sent)
+        self.assertNotIn(frames.ROUTED, [kind for kind, _, _ in guest.arrived + guest.sent])
+
+    def test_a_host_game_of_version_2_gets_nothing_wrapped(self):
+        """Both mods of the version before several guests: the host's
+        launcher takes its one guest as it did then and wraps nothing, and the
+        host's mod hears no `peer_up` or `peer_gone`, as one of that version
+        would not."""
+        protocol = session.PROTOCOL
+        session.PROTOCOL = 2
+        self.addCleanup(setattr, session, "PROTOCOL", protocol)
+        self.host.ignore = frozenset(["peer_up", "peer_gone"])
+        host, guest = self.host, self.guest
+        guest.game.sim_id = 222
+        host.game.zone = guest.game.zone = True
+        self.loads(b"save")
+        self.until("the guest's sim", lambda: host.session.remote_sim_id == 222)
+
+        host.game.during_execute = lambda: self.assertIsNone(host.session.outbound(PIE_MENU, b"menu"))
+        self.assertFalse(guest.session.command("interactions.choices", ["5487", "0"]))
+        self.until("the reply", lambda: (PIE_MENU, b"menu") in guest.game.delivered)
+        self.assertEqual(host.game.executed, [("interactions.choices", ["5487", "0"], 222)])
+
+        self.assertFalse(host.session._routed)
+        self.assertEqual(sorted(host.session.peers), [peer_module.LEGACY])
+        self.assertIn((frames.COMMAND, None, None), host.arrived)
+        for player in (host, guest):
+            self.assertNotIn(frames.ROUTED, [kind for kind, _, _ in player.arrived + player.sent])
 
     def loads(self, payload):
         """The guest asks for the host's state, gets it, loads it and joins."""

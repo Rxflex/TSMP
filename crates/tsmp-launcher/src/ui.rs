@@ -14,7 +14,7 @@ use gpui::{
     linear_gradient, pulsating_between, px, relative, rgb, svg,
 };
 use tsmp_core::packs::{PackSet, pack_name};
-use tsmp_net::live::LiveStatus;
+use tsmp_net::live::{LiveStatus, RemoteStatus};
 use tsmp_net::protocol::DEFAULT_PORT;
 use tsmp_net::protocol::GuestStatus;
 use tsmp_net::rendezvous::{ListingStatus, ServerAddress};
@@ -391,7 +391,7 @@ impl Launcher {
     /// How many of [`STEPS`] are behind the player.
     fn steps_done(&self) -> usize {
         if let GameState::Running { .. } = self.model.game {
-            return if self.model.live.is_some_and(|live| live.is_live()) {
+            return if self.model.live.as_ref().is_some_and(|live| live.is_live()) {
                 5
             } else {
                 3
@@ -1754,9 +1754,9 @@ impl Launcher {
                 (DANGER, tr!(t, "game-failed", message = message.as_str()))
             }
         };
-        let live = match (&self.model.game, self.model.live) {
+        let live = match (&self.model.game, &self.model.live) {
             (GameState::Running { .. }, Some(status)) => {
-                Some(describe_live(&status, self.model.own_families()))
+                Some(describe_live(status, self.model.own_families()))
             }
             _ => None,
         };
@@ -3077,17 +3077,20 @@ fn describe_packs(t: &I18n, packs: &PackSet) -> String {
 }
 
 /// Where the multiplayer session stands, as the first thing still missing.
+/// With several other players, it is the first thing still missing for any
+/// of them.
 fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str) {
+    let any = |what: fn(&RemoteStatus) -> bool| status.remotes.iter().any(what);
     if !status.game_connected {
         (WARNING, "live-no-mod")
-    } else if status.remotes == 0 {
+    } else if status.remotes.is_empty() {
         (WARNING, "live-no-remote")
     } else if status.game_syncing && !status.game_in_zone {
         // Loading the other player's game.
         (WARNING, "live-syncing")
     } else if !status.game_in_zone {
         (WARNING, if own_families { "live-load-own" } else { "live-load-save" })
-    } else if !status.remote_in_zone && !status.remote_syncing {
+    } else if any(|remote| !remote.in_zone && !remote.syncing) {
         (
             WARNING,
             if own_families {
@@ -3096,11 +3099,11 @@ fn describe_live(status: &LiveStatus, own_families: bool) -> (u32, &'static str)
                 "live-wait-remote"
             },
         )
-    } else if status.game_syncing || status.remote_syncing {
+    } else if status.game_syncing || any(|remote| remote.syncing) {
         (WARNING, "live-syncing")
-    } else if status.game_stopped || status.remote_stopped {
+    } else if status.game_stopped || any(|remote| remote.stopped) {
         (WARNING, "live-stopped")
-    } else if status.game_apart || status.remote_apart {
+    } else if status.game_apart || any(|remote| remote.apart) {
         (WARNING, "live-apart")
     } else if !status.is_live() {
         (WARNING, "live-retrying")
@@ -3155,36 +3158,51 @@ mod tests {
         assert_eq!(describe_live(&status, false).1, "live-no-mod");
         status.game_connected = true;
         assert_eq!(describe_live(&status, false).1, "live-no-remote");
-        status.remotes = 1;
+        status.remotes = vec![RemoteStatus::default()];
         assert_eq!(describe_live(&status, false).1, "live-load-save");
         assert_eq!(describe_live(&status, true).1, "live-load-own");
         status.game_in_zone = true;
         assert_eq!(describe_live(&status, false).1, "live-wait-remote");
         assert_eq!(describe_live(&status, true).1, "live-wait-remote-own");
-        status.remote_in_zone = true;
+        status.remotes[0].in_zone = true;
         assert_eq!(describe_live(&status, true).1, "live-retrying");
         status.game_apart = true;
         assert_eq!(describe_live(&status, true).1, "live-apart");
-        status.remote_stopped = true;
+        status.remotes[0].stopped = true;
         assert_eq!(describe_live(&status, true).1, "live-stopped");
-        status.remote_stopped = false;
+        status.remotes[0].stopped = false;
         status.game_apart = false;
         // Loading the other player's game, or waiting for it to be back.
         status.game_in_zone = false;
         status.game_syncing = true;
         assert_eq!(describe_live(&status, false).1, "live-syncing");
         status.game_in_zone = true;
-        status.remote_in_zone = false;
+        status.remotes[0].in_zone = false;
         assert_eq!(describe_live(&status, false).1, "live-wait-remote");
-        status.remote_in_zone = true;
+        status.remotes[0].in_zone = true;
         assert_eq!(describe_live(&status, true).1, "live-syncing");
         status.game_syncing = false;
-        status.remote_syncing = true;
+        status.remotes[0].syncing = true;
         assert_eq!(describe_live(&status, false).1, "live-syncing");
-        status.remote_syncing = false;
+        status.remotes[0].syncing = false;
         status.game_joined = true;
-        status.remote_joined = true;
+        status.remotes[0].joined = true;
         assert_eq!(describe_live(&status, true), (GOOD, "live-on"));
+
+        // A second guest still on its way holds the session up, whatever the first does.
+        status.remotes.push(RemoteStatus::default());
+        assert_eq!(describe_live(&status, false).1, "live-wait-remote");
+        status.remotes[1].syncing = true;
+        assert_eq!(describe_live(&status, false).1, "live-syncing");
+        status.remotes[1].syncing = false;
+        status.remotes[1].in_zone = true;
+        assert_eq!(describe_live(&status, false).1, "live-retrying");
+        status.remotes[1].apart = true;
+        assert_eq!(describe_live(&status, false).1, "live-apart");
+        status.remotes[1].apart = false;
+        status.remotes[1].joined = true;
+        assert_eq!(describe_live(&status, false), (GOOD, "live-on"));
+        assert_eq!(status.joined_count(), 2);
     }
 
     #[test]

@@ -3,6 +3,11 @@
 //! Guests arrive on the host's port from the local network, or through a
 //! session server once the host is published there ([`Host::publish`]).
 //! Either way the connection is handed to the same [`Lobby`].
+//!
+//! A session takes up to [`HostConfig::max_players`] players, the host
+//! included. A player is told apart by the id in their `Hello`, so one who
+//! comes back is let in again while the session is full; a guest that plays
+//! keeps a sync connection and a live one open, and counts once.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -11,17 +16,17 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use tsmp_core::manifest::{Manifest, hash_file};
 
 use crate::discovery::{Announcer, Beacon};
-use crate::live::Relay;
+use crate::live::{PeerId, Refusal, Relay, RemoteEvent, Role, Timing};
 use crate::paths::safe_join;
 use crate::protocol::{
-    GuestStatus, Hello, Message, PROTOCOL_VERSION, Root, SaveInfo, Session, read_message, write_message,
+    GuestStatus, Hello, Message, PROTOCOL_VERSION, Root, SaveInfo, Session, read_message, speaks, write_message,
 };
 use crate::rendezvous::{Listing, ServerAddress};
 use crate::{Error, POLL, Result, file_err, keep_alive};
@@ -35,6 +40,20 @@ use crate::{Error, POLL, Result, file_err, keep_alive};
 /// a write on another handle of it.
 const STALL: Duration = Duration::from_secs(30);
 
+/// Players a session takes unless told otherwise, the host included.
+pub const DEFAULT_MAX_PLAYERS: usize = 2;
+/// The most players a session can be set to take.
+pub const MAX_PLAYERS: usize = 8;
+/// What a guest that would be one player too many is told, in place of the
+/// host's `Hello`.
+pub const SESSION_FULL: &str = "session is full";
+/// What a guest is told in place of the host's `Hello` when there may be room
+/// for it, but a launcher from before player ids is in the session while it
+/// asks, or asks while others are: such a launcher cannot be told from
+/// another of its kind, so it plays only as the one guest.
+pub const SESSION_MIXED: &str =
+    "a player with another version of TSMP is in the session; update TSMP on every computer";
+
 pub struct HostConfig {
     pub hello: Hello,
     pub mods_dir: PathBuf,
@@ -44,6 +63,22 @@ pub struct HostConfig {
     pub save: Option<PathBuf>,
     /// Every player loads a save of their own; see [`Session::own_families`].
     pub own_families: bool,
+    /// Players the session takes, the host included: [`DEFAULT_MAX_PLAYERS`]
+    /// unless set, and never fewer than two or more than [`MAX_PLAYERS`].
+    pub max_players: usize,
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        Self {
+            hello: Hello::default(),
+            mods_dir: PathBuf::new(),
+            mods: Manifest::default(),
+            save: None,
+            own_families: false,
+            max_players: DEFAULT_MAX_PLAYERS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +86,12 @@ pub enum HostEvent {
     GuestJoined { id: u64, address: SocketAddr, hello: Hello },
     GuestStatus { id: u64, status: GuestStatus },
     GuestLeft { id: u64 },
+    /// A guest's live connection joined the relay as `peer`, or replaced
+    /// the one it had. `player` is the id in its `Hello`, which ties it to its
+    /// `GuestJoined`.
+    LiveJoined { player: Option<String>, peer: PeerId },
+    /// The live connection of `peer` ended and no newer one replaced it.
+    LiveLeft { peer: PeerId },
 }
 
 /// What every guest is served.
@@ -60,6 +101,7 @@ struct Shared {
     session: Session,
     save: Option<PathBuf>,
     live: Relay,
+    max_players: usize,
 }
 
 /// Takes in guests, however they reached the host, and serves each one on a
@@ -71,6 +113,9 @@ struct Lobby {
     /// Connections being served, so that closing the lobby ends them. A
     /// connection is taken out of here once it is closed.
     connections: Mutex<HashMap<u64, TcpStream>>,
+    /// The player of each connection past its `Hello`, until it ends or, for
+    /// a live one, the relay has it.
+    players: Mutex<HashMap<u64, Option<String>>>,
     next_id: AtomicU64,
     /// [`STALL`], shorter in tests.
     stall: Duration,
@@ -100,6 +145,7 @@ impl Lobby {
             // Errors here mean this guest went away or misbehaved; either way
             // the connection is over and the host carries on.
             let served = lobby.serve(stream, address, id).unwrap_or(Served::Refused);
+            lobby.players.lock().unwrap().remove(&id);
             if let Some(handle) = lobby.connections.lock().unwrap().remove(&id) {
                 // A live connection belongs to the relay now.
                 if !matches!(served, Served::Live) {
@@ -116,6 +162,15 @@ impl Lobby {
     /// nor the connection has been closed.
     fn serving(&self, id: u64) -> bool {
         !self.stop.load(Ordering::Relaxed) && self.connections.lock().unwrap().contains_key(&id)
+    }
+
+    /// The players in the session, the host included.
+    fn player_count(&self) -> u32 {
+        let mut players: Vec<Option<String>> = self.players.lock().unwrap().values().cloned().collect();
+        players.extend(self.shared.live.players());
+        players.sort();
+        players.dedup();
+        players.len() as u32 + 1
     }
 
     fn close(&self) {
@@ -160,20 +215,24 @@ impl Host {
         let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
-
-        let announcer = if announce {
-            let beacon = Beacon::new(
-                PROTOCOL_VERSION,
-                config.hello.name.clone(),
-                port,
-                config.hello.game_version.clone(),
-            );
-            Some(Announcer::start(beacon)?)
-        } else {
-            None
-        };
+        let max_players = config.max_players.clamp(2, MAX_PLAYERS);
 
         let (events, receiver) = mpsc::channel();
+        let on_remote = {
+            let events: Sender<HostEvent> = events.clone();
+            move |event| {
+                let _ = events.send(match event {
+                    RemoteEvent::Joined { peer, player } => HostEvent::LiveJoined { player, peer },
+                    RemoteEvent::Left { peer } => HostEvent::LiveLeft { peer },
+                });
+            }
+        };
+        let beacon = Beacon::new(
+            PROTOCOL_VERSION,
+            config.hello.name.clone(),
+            port,
+            config.hello.game_version.clone(),
+        );
         let lobby = Arc::new(Lobby {
             shared: Shared {
                 hello: config.hello,
@@ -184,14 +243,27 @@ impl Host {
                     own_families: config.own_families,
                 },
                 save: config.save,
-                live: Relay::start()?,
+                live: Relay::with(Role::Host { max_players }, Timing::default(), Some(Box::new(on_remote)))?,
+                max_players,
             },
             events,
             stop: AtomicBool::new(false),
             connections: Mutex::new(HashMap::new()),
+            players: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             stall,
         });
+
+        let announcer = if announce {
+            // Weak: the announcer is the host's, and goes with it.
+            let lobby: Weak<Lobby> = Arc::downgrade(&lobby);
+            Some(Announcer::start_with(move || {
+                let players = lobby.upgrade().map_or(1, |lobby| lobby.player_count());
+                beacon.clone().with_players(players, max_players as u32)
+            })?)
+        } else {
+            None
+        };
         let thread = thread::spawn({
             let lobby = lobby.clone();
             move || {
@@ -285,29 +357,49 @@ impl Lobby {
         if !self.wait_for_message(&mut reader, id)? {
             return Ok(Served::Refused);
         }
-        let hello = match read_message(&mut reader)? {
-            Some(Message::Hello(hello)) => hello,
-            Some(Message::JoinLive(hello)) => {
-                write_message(&mut writer, &Message::Hello(shared.hello.clone()))?;
-                // The guest sends nothing more until it has read the reply, so
-                // nothing of the frame stream can be sitting in the buffer.
-                if hello.protocol != PROTOCOL_VERSION || !reader.buffer().is_empty() {
-                    return Ok(Served::Refused);
-                }
-                // The relay sets the timeouts it wants on its own handles.
-                reader.get_ref().set_read_timeout(None)?;
-                drop(writer);
-                shared.live.add_remote(reader.into_inner())?;
-                return Ok(Served::Live);
-            }
+        let (hello, live) = match read_message(&mut reader)? {
+            Some(Message::Hello(hello)) => (hello, false),
+            Some(Message::JoinLive(hello)) => (hello, true),
             _ => {
                 write_message(&mut writer, &error("expected hello"))?;
                 return Ok(Served::Refused);
             }
         };
-        write_message(&mut writer, &Message::Hello(shared.hello.clone()))?;
-        if hello.protocol != PROTOCOL_VERSION {
+        if !speaks(hello.protocol) {
+            // Our own version, which the guest tells the player is not theirs.
+            write_message(&mut writer, &Message::Hello(shared.hello.clone()))?;
             return Ok(Served::Refused);
+        }
+        let reply = match self.admit(&hello, id) {
+            Ok(reply) => reply,
+            // Before any `Hello`, so that the guest says why rather than that
+            // the connection closed.
+            Err(refusal) => {
+                let message = match refusal {
+                    Refusal::Full => SESSION_FULL,
+                    Refusal::Legacy => SESSION_MIXED,
+                };
+                write_message(&mut writer, &error(message))?;
+                return Ok(Served::Refused);
+            }
+        };
+        write_message(&mut writer, &Message::Hello(reply))?;
+        if live {
+            // The guest sends nothing more until it has read the reply, so
+            // nothing of the frame stream can be sitting in the buffer.
+            if !reader.buffer().is_empty() {
+                return Ok(Served::Refused);
+            }
+            // The relay sets the timeouts it wants on its own handles.
+            reader.get_ref().set_read_timeout(None)?;
+            drop(writer);
+            // Full only if another player took the last place since the
+            // reply; the relay has closed the connection then.
+            return match shared.live.add_remote(reader.into_inner(), hello.player, hello.name) {
+                Ok(_) => Ok(Served::Live),
+                Err(Error::Full) => Ok(Served::Refused),
+                Err(e) => Err(e),
+            };
         }
         // Options are set on the handle they are for: on Windows they do not
         // carry over to other handles of the same socket.
@@ -334,6 +426,33 @@ impl Lobby {
         // The guest did join, whatever ended the connection.
         let _ = result;
         Ok(Served::Synced)
+    }
+
+    /// The host's `Hello` to a guest that says `hello`, if the session has a
+    /// place for it, and the guest counted in from now on: here, until the
+    /// connection ends or, for a live one, the relay has it and counts it.
+    /// Otherwise why it has none.
+    ///
+    /// The reply is in the guest's own version of the protocol, which is all
+    /// a launcher before version 3 checks.
+    fn admit(&self, hello: &Hello, id: u64) -> std::result::Result<Hello, Refusal> {
+        let shared = &self.shared;
+        // Held while deciding, so that two guests cannot take one place.
+        let mut players = self.players.lock().unwrap();
+        let mut present: Vec<Option<String>> = players.values().cloned().collect();
+        shared.live.admits(&hello.player, &present)?;
+        players.insert(id, hello.player.clone());
+        present.extend(shared.live.players());
+        present.push(hello.player.clone());
+        present.sort();
+        present.dedup();
+        Ok(Hello {
+            protocol: hello.protocol,
+            peer: shared.live.peer_for(&hello.player),
+            players: present.len() as u32 + 1,
+            max_players: shared.max_players as u32,
+            ..shared.hello.clone()
+        })
     }
 
     /// Waits until the guest's next message starts to arrive, or its
@@ -421,23 +540,196 @@ mod tests {
             name: name.into(),
             game_version: None,
             packs: Default::default(),
+            player: Some(format!("{name}-id")),
+            ..Default::default()
         }
     }
 
     fn start_host() -> (Host, tempfile::TempDir) {
-        start_host_with_stall(STALL)
+        start_host_with(DEFAULT_MAX_PLAYERS, STALL)
     }
 
     fn start_host_with_stall(stall: Duration) -> (Host, tempfile::TempDir) {
+        start_host_with(DEFAULT_MAX_PLAYERS, stall)
+    }
+
+    fn start_host_with(max_players: usize, stall: Duration) -> (Host, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let config = HostConfig {
             hello: hello("host"),
             mods_dir: dir.path().to_path_buf(),
-            mods: Manifest::default(),
-            save: None,
-            own_families: false,
+            max_players,
+            ..HostConfig::default()
         };
         (Host::start_with_stall(config, 0, false, stall).unwrap(), dir)
+    }
+
+    /// A connection that has said `hello`, as a sync one or a live one, and
+    /// the host's answer.
+    fn say(host: &Host, hello: Hello, live: bool) -> (TcpStream, Message) {
+        let guest = connect(host);
+        let message = if live { Message::JoinLive(hello) } else { Message::Hello(hello) };
+        write_message(&mut &guest, &message).unwrap();
+        let reply = read_message(&mut &guest).unwrap().expect("the host closed the connection");
+        (guest, reply)
+    }
+
+    fn wait_for_event(host: &Host, what: impl Fn(&HostEvent) -> bool) -> HostEvent {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let event = host.wait(left).expect("timed out waiting for an event");
+            if what(&event) {
+                return event;
+            }
+        }
+    }
+
+    fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn full() -> Message {
+        Message::Error {
+            message: SESSION_FULL.into(),
+        }
+    }
+
+    #[test]
+    fn the_reply_says_which_peer_the_guest_is_and_how_many_play() {
+        let (host, _dir) = start_host_with(4, STALL);
+        let (_a, reply) = say(&host, hello("a"), false);
+        let Message::Hello(reply) = reply else { panic!("{reply:?}") };
+        assert_eq!((reply.protocol, reply.peer, reply.players, reply.max_players), (PROTOCOL_VERSION, 1, 2, 4));
+        assert_eq!(reply.player.as_deref(), Some("host-id"));
+        let (_b, reply) = say(&host, hello("b"), false);
+        let Message::Hello(reply) = reply else { panic!("{reply:?}") };
+        assert_eq!((reply.peer, reply.players), (2, 3));
+        // The same player on a second connection is the same peer, counted once.
+        let (_a_live, reply) = say(&host, hello("a"), true);
+        let Message::Hello(reply) = reply else { panic!("{reply:?}") };
+        assert_eq!((reply.peer, reply.players), (1, 3));
+        assert_eq!(host.lobby.player_count(), 3);
+    }
+
+    #[test]
+    fn a_full_session_refuses_a_new_player_before_its_hello() {
+        let (host, _dir) = start_host();
+        let (_a, reply) = say(&host, hello("a"), false);
+        assert!(matches!(reply, Message::Hello(_)));
+        wait_for_event(&host, |event| matches!(event, HostEvent::GuestJoined { .. }));
+
+        for live in [false, true] {
+            let (b, reply) = say(&host, hello("b"), live);
+            assert_eq!(reply, full());
+            assert!(matches!(read_message::<Message>(&mut &b), Ok(None) | Err(_)));
+        }
+        assert!(host.live().status().remotes.is_empty());
+        // The player who is in may open its live connection, and come back.
+        let (_live, reply) = say(&host, hello("a"), true);
+        assert!(matches!(reply, Message::Hello(_)));
+        wait_until("a's live connection", || host.live().status().remotes.len() == 1);
+        let (_again, reply) = say(&host, hello("a"), false);
+        assert!(matches!(reply, Message::Hello(_)));
+        // b was never let in.
+        let b_joined = |event: &HostEvent| matches!(event, HostEvent::GuestJoined { hello, .. } if hello.name == "b");
+        assert!(!host.poll().iter().any(b_joined));
+    }
+
+    #[test]
+    fn a_guest_that_plays_counts_once_until_both_its_connections_end() {
+        let (host, _dir) = start_host();
+        let (sync, _) = say(&host, hello("a"), false);
+        let (live, _) = say(&host, hello("a"), true);
+        wait_until("a's live connection", || host.live().status().remotes.len() == 1);
+        drop(sync);
+        wait_for_event(&host, |event| matches!(event, HostEvent::GuestLeft { .. }));
+        assert_eq!(say(&host, hello("b"), false).1, full());
+        drop(live);
+        wait_for_event(&host, |event| matches!(event, HostEvent::LiveLeft { .. }));
+        assert!(matches!(say(&host, hello("b"), false).1, Message::Hello(_)));
+    }
+
+    #[test]
+    fn live_connections_are_told_as_they_join_and_leave() {
+        let (host, _dir) = start_host();
+        let (first, _) = say(&host, hello("a"), true);
+        assert_eq!(
+            wait_for_event(&host, |event| matches!(event, HostEvent::LiveJoined { .. })),
+            HostEvent::LiveJoined {
+                player: Some("a-id".into()),
+                peer: 1
+            }
+        );
+        // A reconnection joins again, as the same peer, and nothing leaves.
+        let (second, _) = say(&host, hello("a"), true);
+        assert!(matches!(
+            wait_for_event(&host, |event| matches!(event, HostEvent::LiveJoined { .. } | HostEvent::LiveLeft { .. })),
+            HostEvent::LiveJoined { peer: 1, .. }
+        ));
+        drop(first);
+        drop(second);
+        assert_eq!(
+            wait_for_event(&host, |event| matches!(event, HostEvent::LiveLeft { .. })),
+            HostEvent::LiveLeft { peer: 1 }
+        );
+        assert!(host.poll().is_empty());
+    }
+
+    #[test]
+    fn a_guest_of_version_2_joins_as_the_one_guest_and_is_answered_in_its_version() {
+        let (host, _dir) = start_host_with(4, STALL);
+        let old = Hello {
+            protocol: 2,
+            player: None,
+            ..hello("old")
+        };
+        let (sync, reply) = say(&host, old.clone(), false);
+        // Launchers of version 2 refuse a host that answers in any other.
+        let Message::Hello(reply) = reply else { panic!("{reply:?}") };
+        assert_eq!(reply.protocol, 2);
+        let (stream, reply) = say(&host, old, true);
+        assert!(matches!(reply, Message::Hello(Hello { protocol: 2, .. })));
+        wait_until("the old guest's live connection", || host.live().status().remotes.len() == 1);
+        assert_eq!(host.live().status().remotes[0].player, None);
+        // Frames cross as they always did.
+        let mut game = TcpStream::connect((Ipv4Addr::LOCALHOST, host.live().port())).unwrap();
+        game.set_read_timeout(Some(WAIT)).unwrap();
+        wait_until("the host's game", || host.live().status().game_connected);
+        // Its mod says its version as soon as it connects; until then what
+        // the guest sends waits for it.
+        let state = serde_json::json!({"type": "state", "role": "host", "in_zone": true, "v": 2}).to_string();
+        game.write_all(&crate::live::frame(crate::live::KIND_CONTROL, 0, state.as_bytes())).unwrap();
+        (&stream).write_all(&crate::live::frame(crate::live::KIND_MSG, 3, b"old")).unwrap();
+        loop {
+            let frame = crate::live::read_frame(&mut game).unwrap().unwrap();
+            if frame[0] == crate::live::KIND_MSG {
+                assert_eq!(frame, crate::live::frame(crate::live::KIND_MSG, 3, b"old"));
+                break;
+            }
+        }
+        // Nobody else joins while it is there, though there would be room,
+        // and is told why.
+        let mixed = Message::Error {
+            message: SESSION_MIXED.into(),
+        };
+        assert_eq!(say(&host, hello("new"), false).1, mixed);
+        // Nor may another of its kind join while others play.
+        drop(sync);
+        drop(stream);
+        wait_until("the old guest to leave", || host.lobby.player_count() == 1);
+        let (_new, reply) = say(&host, hello("new"), false);
+        assert!(matches!(reply, Message::Hello(_)));
+        let other = Hello {
+            protocol: 2,
+            player: None,
+            ..hello("other")
+        };
+        assert_eq!(say(&host, other, false).1, mixed);
     }
 
     fn connect(host: &Host) -> TcpStream {

@@ -33,6 +33,11 @@ that waits for the other game gives up when nothing has moved for a while,
 however long the whole takes. A guest that gives up plays on by itself and
 tries again later.
 
+A host keeps what it knows of each guest in a `peer.Peer` of its own, under
+the number its launcher gave that guest; a guest has one for the host. For
+now a session has one guest at most, and everything the host says to it
+alone goes to that peer (see `Session.send`).
+
 Pure logic with no game imports: the game is reached through the `game`
 adapter (see live.Game) so this can be tested outside the game.
 """
@@ -41,13 +46,19 @@ import base64
 import random
 import time
 
-from tsmp import frames, transfer, wire
+from tsmp import frames, wire
+from tsmp.peer import LEGACY, Peer
 
 HOST = "host"
 GUEST = "guest"
 # What the two mods say to each other. Games that speak another version are
-# not joined; the launcher normally makes sure both run the same mod.
-PROTOCOL = 2
+# not joined; the launcher normally makes sure both run the same mod. From 3
+# a host's launcher may number its guests (see tsmp/frames.py, ROUTED).
+PROTOCOL = 3
+# Controls of the launcher's own, about its remotes rather than from one:
+# `link {remotes}` from every launcher, and from a host's launcher of version
+# 3 also `peer_up {peer, name, player}` and `peer_gone {peer}`.
+LINK_CONTROLS = frozenset(["link", "peer_up", "peer_gone"])
 
 # Commands the guest's game client issues that act on the shared world: they
 # are executed by the host instead of locally.
@@ -204,6 +215,10 @@ class Session:
         client_cheat(line)             guest: pass a line to our game client
     `send(frame)` queues a packed frame for the launcher; `clock()` tells the
     time in seconds.
+
+    The host keeps a `peer.Peer` for each guest in `peers`; a guest keeps one
+    for the host. The `remote_*` attributes are those of the guest's host,
+    and on the host those of its one guest, for whoever just looks.
     """
 
     def __init__(self, game, consts, send, log=None, clock=time.monotonic):
@@ -212,18 +227,18 @@ class Session:
         self._send = send
         self._log = log or (lambda text: None)
         self._clock = clock
-        self._transfers = transfer.Transfers(send, clock)
         self.role = None
+        # How many remotes our launcher has: on the host, the guests whose
+        # links are up.
         self.remotes = 0
-        self.remote_in_zone = False
-        self.remote_sim_id = 0
-        self.remote_zone = 0
-        self.remote_lot = ""
-        self.remote_save = 0
-        # The world the other game's client shows.
-        self.remote_world = ""
-        self.remote_building = False
-        self._remote_version = PROTOCOL
+        # Guest: the host. Host: each guest by its peer number, kept while
+        # its link is down, as it may come back.
+        self._host = Peer(LEGACY, self.send, clock)
+        self.peers = {}
+        # Host: our launcher numbers its remotes, and unwraps ROUTED frames.
+        self._routed = False
+        # Host: the guest whose command runs, which the replies are for.
+        self._executing = None
         self._in_zone = False
         self._zone = 0
         self._lot = ""
@@ -234,7 +249,6 @@ class Session:
         self._boot = "{:08x}".format(random.getrandbits(32))
         self._loads = 0
         self._was_live = False
-        self._reported_sim_id = 0
         self._remote_depth = 0
         self._seen_local = set()
         # What we last told the other game of ourselves.
@@ -310,10 +324,6 @@ class Session:
         self._gave = 0.0
         # Guest: the gift on its way, if any.
         self._gift = 0
-        # Host: the request being answered, (id, zone, lot), and the one
-        # to answer once the snapshot under way is taken.
-        self._saving = None
-        self._asked = None
         # Host: since when a save of ours for a guest runs, 0 when none
         # does. The game finishes a save it began whatever happens to the
         # request, and two must not run at once.
@@ -321,30 +331,8 @@ class Session:
         # Host: how many saves for guests were begun; only the latest one
         # answers.
         self._takes = 0
-        # Host: until when the game is held paused for a guest that loads,
-        # and when it was last paused for it.
-        self._hold_until = 0.0
+        # Host: when the game was last paused for a guest that loads.
         self._paused_at = 0.0
-        # Host: how far our game was when the hold began, and whether the
-        # hold ran out with a guest perhaps still loading what we saved;
-        # checked once a second.
-        self._held_at = ""
-        self._lapsed = False
-        self._looked_at = 0.0
-        # Host: the request we hold for, and how far our game was when its
-        # snapshot was taken.
-        self._held_for = 0
-        self._taken_at = ""
-        # Host: since when the link has been down while we hold, 0 while up.
-        self._link_lost_at = 0.0
-        # Host: sims a guest travels to our lot with.
-        self._travellers = []
-        # Host: sims made the other player's on our lot, and those it plays
-        # on another, which our lot is to be kept free of.
-        self._welcomed = []
-        self._away = []
-        # Host: the world our lot was last cleared of them in.
-        self._sent_off_in = ""
         self.forwarded = 0
         self.executed = 0
         self.relayed = 0
@@ -355,34 +343,51 @@ class Session:
     @property
     def live(self):
         """True while the two games are joined: messages flow host -> guest
-        and commands guest -> host."""
-        return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
-                and self.same_zone and self.same_save and self._phase == IDLE and self.speaks_our_version
-                and bool(self._world) and self._world == self.remote_world)
+        and commands guest -> host. On the host, with any guest."""
+        return any(self._live_with(peer) for peer in self._all_peers())
+
+    def _live_with(self, peer):
+        return (self.role is not None and peer.up and self._in_zone and peer.in_zone
+                and self._same_zone(peer) and self._same_save(peer) and self._phase == IDLE
+                and self._speaks(peer) and bool(self._world) and self._world == peer.world)
 
     @property
     def same_zone(self):
+        return self._same_zone(self._remote)
+
+    def _same_zone(self, peer):
         """False when both are known to be on different lots. Lots are
         compared by what names them in any save, ids are made up by every
         new game."""
-        if self._lot and self.remote_lot:
-            return self._lot == self.remote_lot
-        return not self._zone or not self.remote_zone or self._zone == self.remote_zone
+        if self._lot and peer.lot:
+            return self._lot == peer.lot
+        return not self._zone or not peer.zone or self._zone == peer.zone
 
     @property
     def same_save(self):
+        return self._same_save(self._remote)
+
+    def _same_save(self, peer):
         """False when both are known to play different saves."""
-        return not self._save or not self.remote_save or self._save == self.remote_save
+        return not self._save or not peer.save or self._save == peer.save
 
     @property
     def speaks_our_version(self):
-        return self._remote_version == PROTOCOL
+        return self._speaks(self._remote)
+
+    @staticmethod
+    def _speaks(peer):
+        return peer.version is None or peer.version == PROTOCOL
 
     @property
     def apart(self):
-        """True while both play, each on a lot of its own."""
-        return (self.role is not None and self.remotes > 0 and self._in_zone and self.remote_in_zone
-                and not (self.same_zone and self.same_save))
+        """True while both play, each on a lot of its own. On the host, with
+        any guest."""
+        return any(self._apart_with(peer) for peer in self._all_peers())
+
+    def _apart_with(self, peer):
+        return (self.role is not None and peer.up and self._in_zone and peer.in_zone
+                and not (self._same_zone(peer) and self._same_save(peer)))
 
     @property
     def stale(self):
@@ -391,7 +396,68 @@ class Session:
     @property
     def holding(self):
         """Host: the game is kept paused for a guest that loads."""
-        return bool(self._hold_until)
+        return any(peer.hold_until for peer in self.peers.values())
+
+    # -- the other games -------------------------------------------------
+
+    def _all_peers(self):
+        """The other games we know of: the host's guests, or the guest's host."""
+        return list(self.peers.values()) if self.role == HOST else [self._host]
+
+    @property
+    def _remote(self):
+        """The guest's host. On the host its one guest: the first whose link
+        is up, else the first at all, else nobody."""
+        if self.role != HOST:
+            return self._host
+        ordered = sorted(self.peers.items())
+        for _, peer in ordered:
+            if peer.up:
+                return peer
+        return ordered[0][1] if ordered else Peer(LEGACY, lambda frame, to: None, self._clock)
+
+    def _peer(self, ident):
+        """Host: the guest numbered `ident`, known from now on."""
+        peer = self.peers.get(ident)
+        if peer is not None:
+            return peer
+        if len(self.peers) == 1 and (ident == LEGACY or LEGACY in self.peers):
+            # The one remote, named by a launcher that numbers its remotes
+            # where one before named none, or the other way round: still the
+            # same game, keeping what we had of it.
+            (peer,) = self.peers.values()
+            del self.peers[peer.ident]
+            peer.ident = ident
+        else:
+            peer = Peer(ident, self.send, self._clock)
+        self.peers[ident] = peer
+        return peer
+
+    def _from(self, ident):
+        """The peer a frame came from: `ident` from a ROUTED frame, None for
+        a plain one. A host whose launcher names its remotes may still get
+        plain frames from one: those that crossed before the launcher heard
+        that we speak version 3. None when it cannot be told whose it is."""
+        if self.role != HOST:
+            return self._host
+        if ident is not None:
+            self._routed = True
+            return self._peer(ident)
+        if LEGACY in self.peers:
+            return self.peers[LEGACY]
+        if len(self.peers) <= 1:
+            return self._peer(next(iter(self.peers)) if self.peers else LEGACY)
+        return None
+
+    def send(self, frame, to=None):
+        """Queue a packed frame for the launcher: for every other game, or,
+        on the host, for the guest numbered `to` alone."""
+        if to and self._routed:
+            frame = frames.route(to, frame)
+        self._send(frame)
+
+    def _to(self, peer, frame):
+        self.send(frame, to=peer.ident)
 
     @property
     def _muted(self):
@@ -431,8 +497,11 @@ class Session:
     def _reset(self, role):
         self.role = role
         self.remotes = 0
-        self._forget_remote()
-        self._transfers.forget()
+        # A launcher that comes up anew may be another one, older or newer.
+        self._routed = False
+        self._host.reset()
+        for peer in self.peers.values():
+            peer.reset()
         self._world = ""
         self._idle()
         self._behind = False
@@ -442,15 +511,9 @@ class Session:
         self._retry_at = 0.0
         self._failures = 0
         self._gave = self._clock()
-        self._saving = None
-        self._asked = None
-        self._hold_until = 0.0
-        self._lapsed = False
-        self._welcomed = []
         self._lost_loading = False
         self._whole = False
         self._travel = None
-        self._travellers = []
 
     def _idle(self):
         self._phase = IDLE
@@ -482,27 +545,18 @@ class Session:
         self._loads += 1
         self._world = "{}.{}".format(self._boot, self._loads)
 
-    def _forget_remote(self):
-        self.remote_in_zone = False
-        self.remote_zone = 0
-        self.remote_lot = ""
-        self.remote_save = 0
-        self.remote_world = ""
-        self.remote_sim_id = 0
-        self.remote_building = False
-        self._remote_version = PROTOCOL
-        self._reported_sim_id = 0
-
     def _announce(self, want=False):
-        """Tell the other game our state. `want` asks it to answer with its
-        own, which a game that has just (re)connected needs."""
+        """Tell the other games our state. `want` asks them to answer with
+        their own, which a game that has just (re)connected needs. Always to
+        every guest, even when one asked: our launcher reads what it shows
+        of our game from it, and a guest that did not ask answers once more."""
         if self.role is None:
             return
         fields = self._state_fields()
         self._announced = dict(fields)
         if want:
             fields["want"] = True
-        self._send(frames.control("state", **fields))
+        self.send(frames.control("state", **fields))
 
     def _state_fields(self):
         # A stale guest is in a zone, but not in one the host can play with.
@@ -828,7 +882,7 @@ class Session:
             fields["household"] = str(household)
         if self._travel is not None:
             fields["travellers"] = [str(sim_id) for sim_id in self._travel[4]]
-        self._send(frames.control("resync", **fields))
+        self.send(frames.control("resync", **fields))
 
     def _offered(self, incoming):
         """The host offers its state."""
@@ -900,35 +954,35 @@ class Session:
 
     # -- the host answering a guest -------------------------------------
 
-    def _resync(self, message):
+    def _resync(self, message, peer):
         request = (frames.number(message.get("id")), frames.number(message.get("zone")), str(message.get("lot") or ""))
         if self.role != HOST:
             return
         if not self._in_zone:
-            self._refuse_resync(request[0])
+            self._refuse_resync(peer, request[0])
             return
         household = frames.number(message.get("household"))
         if household and not self._call("has_household", 1, household):
             # Our game was started again from a save without it.
             self._log("the other player's household is not in our save; asking for it")
-            self._send(frames.control("resync_failed", id=request[0], missing=True))
+            self._to(peer, frames.control("resync_failed", id=request[0], missing=True))
             return
-        self._hold_for(request)
-        self._asked = request
+        self._hold_for(peer, request)
+        peer.asked = request
         # The sims a guest travels with, to be on our lot with it.
-        self._travellers = [frames.number(sim_id) for sim_id in message.get("travellers") or []]
+        peer.travellers = [frames.number(sim_id) for sim_id in message.get("travellers") or []]
         if not self._taking or self._clock() - self._taking > SAVE_SECONDS:
-            self._take()
+            self._take(peer)
 
-    def _hold_for(self, request):
+    def _hold_for(self, peer, request):
         """Hold, and say the world, for a guest whose snapshot is of our own
         lot: it will join. Asked again at every save, as we may have moved."""
         target = self._call("snapshot_zone", 0, request[1], request[2])
         if self._in_zone and (target == self._zone if target else self._on_our_lot(request[1], request[2])):
-            self._hold()
-            self._held_for = request[0]
-        elif self._held_for == request[0]:
-            self._held_for = 0
+            self._hold(peer)
+            peer.held_for = request[0]
+        elif peer.held_for == request[0]:
+            peer.held_for = 0
 
     def _on_our_lot(self, zone, lot):
         """Whether a guest that asks for the state of that zone and lot will
@@ -937,69 +991,84 @@ class Session:
             return lot == self._lot
         return not zone or not self._zone or zone == self._zone
 
-    def _take(self):
-        request, self._asked = self._asked, None
-        self._hold_for(request)
-        self._saving = request
+    def _take(self, peer):
+        request, peer.asked = peer.asked, None
+        self._hold_for(peer, request)
+        peer.saving = request
         self._taking = self._clock()
         self._takes += 1
         number = self._takes
         world = self._world
         self._log("the other player is loading; saving for them")
         try:
-            self._game.snapshot(lambda payload: self._taken(number, request, world, payload), request[1], request[2])
+            self._game.snapshot(lambda payload: self._taken(peer, number, request, world, payload),
+                                request[1], request[2])
         except Exception as error:
             self._log("could not save for the other player: {}".format(error))
-            self._taken(number, request, world, None)
+            self._taken(peer, number, request, world, None)
 
-    def _taken(self, number, request, world, payload):
+    def _taken(self, peer, number, request, world, payload):
         if number != self._takes:
             # A later save runs, and answers.
             return
         self._taking = 0.0
-        current, self._saving = self._saving, None
+        current, peer.saving = peer.saving, None
         if self.role != HOST:
             return
-        if self._asked is not None:
+        self._answer(peer, current, request, world, payload)
+        if not self._taking:
+            # A guest that asked while the save ran for another is answered
+            # now, as one that asked again is in `_answer`.
+            for _, waiting in sorted(self.peers.items()):
+                if waiting.asked is None:
+                    continue
+                if self._in_zone:
+                    self._take(waiting)
+                    break
+                self._refuse_resync(waiting, waiting.asked[0])
+                waiting.asked = None
+
+    def _answer(self, peer, current, request, world, payload):
+        if peer.asked is not None:
             # Asked again meanwhile: what was saved may be older than what
             # the guest asks after, as when its household came in between.
             if self._in_zone:
-                self._take()
+                self._take(peer)
             else:
-                self._refuse_resync(self._asked[0])
-                self._asked = None
+                self._refuse_resync(peer, peer.asked[0])
+                peer.asked = None
             return
-        if current is not request or not self.remotes:
+        if current is not request or not peer.up:
             # Asked for by a guest that has gone since.
             return
         if payload is not None and world != self._world and self._in_zone:
             # Our zone was loaded again while we saved: save it as it is now.
-            self._asked = request
-            self._take()
+            peer.asked = request
+            self._take(peer)
         elif payload is None or world != self._world:
-            self._refuse_resync(request[0])
+            self._refuse_resync(peer, request[0])
         else:
             # Only a guest we held for joins on this world; one we did not
             # hold for, as it asked for another lot, finds out it is on ours
             # and asks again.
-            held = request[0] == self._held_for
+            held = request[0] == peer.held_for
             if held:
                 # What our game is at in the state the guest will show.
-                self._taken_at = self._call("progress", "")
-            self._transfers.send("state", request[0], payload, world=world if held else "")
+                peer.taken_at = self._call("progress", "")
+            peer.transfers.send("state", request[0], payload, world=world if held else "")
 
-    def _refuse_resync(self, request):
+    def _refuse_resync(self, peer, request):
         """The guest gives up on this answer; it holds us again if it asks
         again."""
-        self._send(frames.control("resync_failed", id=request))
-        self._hold_until = 0.0
+        self._to(peer, frames.control("resync_failed", id=request))
+        peer.hold_until = 0.0
 
-    def _hold(self):
-        if not self._hold_until:
+    def _hold(self, peer):
+        if not peer.hold_until:
             self._tell("the other player is loading; the game stays paused until they are in")
-            self._held_at = self._call("progress", "")
-        self._lapsed = False
-        self._hold_until = self._clock() + HOLD_SECONDS
+            peer.held_at = self._call("progress", "")
+        peer.lapsed = False
+        peer.hold_until = self._clock() + HOLD_SECONDS
         self._pause()
 
     def _pause(self):
@@ -1010,43 +1079,52 @@ class Session:
             self._log("could not pause for the other player: {}".format(error))
 
     def _keep_holding(self, now):
-        self._watch_lapse(now)
-        if not self._hold_until:
+        for peer in list(self.peers.values()):
+            self._keep_holding_for(peer, now)
+
+    def _keep_holding_for(self, peer, now):
+        self._watch_lapse(peer, now)
+        if not peer.hold_until:
             return
-        if self.live or not self._in_zone or self.remote_in_zone:
+        # Whoever plays with us now ends the hold too, as the one guest
+        # did when a hold was the session's: the player who replaced the
+        # guest we held for, which left, is in.
+        if self.live or not self._in_zone or peer.in_zone or self._remote.in_zone:
             # In, or gone from our zone, or playing by itself: a guest that
             # is loading says it is not in a zone. A save that crosses our
             # zone loading again joins only if held for again.
-            self._hold_until = 0.0
+            peer.hold_until = 0.0
             if not self._in_zone:
-                self._held_for = 0
+                peer.held_for = 0
             self._log("the game is no longer held for the other player")
-        elif now > self._hold_until or (self._link_lost_at and now - self._link_lost_at > LINK_SECONDS):
-            self._hold_until = 0.0
-            self._link_lost_at = 0.0
-            self._lapsed = True
+        elif now > peer.hold_until or (peer.link_lost_at and now - peer.link_lost_at > LINK_SECONDS):
+            peer.hold_until = 0.0
+            peer.link_lost_at = 0.0
+            peer.lapsed = True
             self._log("the other player did not get in; the game is no longer held for them")
         elif now - self._paused_at > PAUSE_SECONDS:
             self._pause()
 
-    def _watch_lapse(self, now):
+    def _watch_lapse(self, peer, now):
         """After a hold ran out: once our game has moved on from where the
         hold began, a guest still loading what we saved would join on a
         world behind ours, so it is another world."""
-        if not self._lapsed or now - self._looked_at < PAUSE_SECONDS:
+        if not peer.lapsed or now - peer.looked_at < PAUSE_SECONDS:
             return
-        self._looked_at = now
+        peer.looked_at = now
+        # Not while anyone plays with us: a new world would send them back
+        # to loading for the sake of a guest that may have gone.
         if self.live or not self._in_zone:
-            self._lapsed = False
+            peer.lapsed = False
             return
         progress = self._call("progress", "")
-        if not progress or progress != self._held_at:
-            self._lapsed = False
+        if not progress or progress != peer.held_at:
+            peer.lapsed = False
             self._log("our game moved on since the other player's state was saved")
             self._new_world()
             self._announce()
 
-    def _merge(self, incoming):
+    def _merge(self, peer, incoming):
         if self.role != HOST:
             return
         request = incoming.ident
@@ -1060,35 +1138,35 @@ class Session:
             fields = {"id": request, "ok": False, "final": final}
             if getattr(error, "missing", False):
                 fields["missing"] = True
-            self._send(frames.control("merged", **fields))
+            self._to(peer, frames.control("merged", **fields))
         else:
-            self._send(frames.control("merged", id=request, ok=True, outcome=str(outcome or "")))
+            self._to(peer, frames.control("merged", id=request, ok=True, outcome=str(outcome or "")))
 
-    def _welcome(self):
-        if self.role != HOST or not self.remote_sim_id or not self._in_zone:
+    def _welcome(self, peer):
+        if self.role != HOST or not peer.sim_id or not self._in_zone:
             return
         try:
-            theirs = self._game.welcome(self.remote_sim_id, tuple(self._welcomed), tuple(self._travellers))
+            theirs = self._game.welcome(peer.sim_id, tuple(peer.welcomed), tuple(peer.travellers))
         except Exception as error:
             self._log("could not bring the other player's sim in: {}".format(error))
             return
         if not theirs:
-            self._log("the other player's sim {} is not theirs to play here".format(self.remote_sim_id))
+            self._log("the other player's sim {} is not theirs to play here".format(peer.sim_id))
             return
         # What the guest plays now; sims it played before are ours again.
-        self._welcomed = list(theirs)
+        peer.welcomed = list(theirs)
 
-    def _send_off(self, away=None):
+    def _send_off(self, peer, away=None):
         """Host: the guest took its sims to another lot, or says it plays
         `away` there. Left here they would go on being simulated, and our
         next save would undo what the guest does with them there. Once for
         each load of our lot."""
-        away = self._away if away is None else away
-        sims = list(self._welcomed) + [sim for sim in away if sim not in self._welcomed]
-        if not self._welcomed and sims == self._away and self._sent_off_in == self._world:
+        away = peer.away if away is None else away
+        sims = list(peer.welcomed) + [sim for sim in away if sim not in peer.welcomed]
+        if not peer.welcomed and sims == peer.away and peer.sent_off_in == self._world:
             return
-        self._away, self._welcomed = sims, []
-        self._sent_off_in = self._world
+        peer.away, peer.welcomed = sims, []
+        peer.sent_off_in = self._world
         if sims:
             try:
                 self._game.send_off(sims)
@@ -1107,7 +1185,8 @@ class Session:
             self._in_zone = in_zone
             self._read_zone()
             # The host forgets our sim when we leave a zone.
-            self._reported_sim_id = 0
+            for peer in self._all_peers():
+                peer.reported_sim_id = 0
             self._zone_changed()
             self._announce()
         if (self._cas is not None and self._in_zone and self._clock() - self._cas[2] > CAS_SECONDS
@@ -1117,11 +1196,12 @@ class Session:
             self._cas = None
             if self.live:
                 self._go_stale("Create-a-Sim did not open; loading the host's state again")
-        self._transfers.pump()
-        if self.role == HOST:
-            # A guest gives up on these after as long, and says nothing if
-            # its link went down meanwhile.
-            self._transfers.expire(STALL_SECONDS)
+        for peer in self._all_peers():
+            peer.transfers.pump()
+            if self.role == HOST:
+                # A guest gives up on these after as long, and says nothing
+                # if its link went down meanwhile.
+                peer.transfers.expire(STALL_SECONDS)
         self._keep_holding(self._clock())
         self._check()
         if self.role == GUEST and (self.live or self.apart):
@@ -1143,14 +1223,15 @@ class Session:
             # A client built again is not in build mode.
             self._building = False
             if self.remotes:
-                self._send(frames.control("building", on=False))
+                self.send(frames.control("building", on=False))
         if self.role == HOST:
             self._world = ""
             if self._in_zone:
                 self._new_world()
-                if self._away and self.remote_in_zone and not self.same_zone:
-                    # Our lot was loaded again, perhaps with them on it.
-                    self._send_off()
+                for peer in list(self.peers.values()):
+                    if peer.away and peer.in_zone and not self._same_zone(peer):
+                        # Our lot was loaded again, perhaps with them on it.
+                        self._send_off(peer)
             return
         if self._phase == LOADING:
             if not self._in_zone:
@@ -1205,12 +1286,13 @@ class Session:
         # would show a pause that pressing play, which changes nothing here,
         # never lifts. Paused, both agree, and either player resumes.
         self._pause()
-        if self.remote_sim_id:
-            self._joined()
+        for peer in list(self.peers.values()):
+            if peer.sim_id and self._live_with(peer):
+                self._joined(peer)
 
-    def _joined(self):
+    def _joined(self, peer):
         try:
-            self._game.joined(self.remote_sim_id)
+            self._game.joined(peer.sim_id)
         except Exception as error:
             self._log("could not note the other player's household: {}".format(error))
 
@@ -1218,18 +1300,18 @@ class Session:
         sim_id = self._game.active_sim_id() or 0
         if sim_id != self._reported_sim_id:
             self._reported_sim_id = sim_id
-            self._send(frames.control("active_sim", sim_id=str(sim_id)))
+            self.send(frames.control("active_sim", sim_id=str(sim_id)))
 
-    def _lost(self, why):
+    def _lost(self, peer, why):
         """The other game cannot be reached, for now or for good."""
-        self._transfers.forget()
+        peer.transfers.forget()
         was_live = self._was_live
-        self._forget_remote()
+        peer.forget()
         if self.role == HOST:
-            self._saving = None
-            self._asked = None
-            if self._hold_until and not self._link_lost_at:
-                self._link_lost_at = self._clock()
+            peer.saving = None
+            peer.asked = None
+            if peer.hold_until and not peer.link_lost_at:
+                peer.link_lost_at = self._clock()
             return
         if self.role != GUEST:
             return
@@ -1253,79 +1335,136 @@ class Session:
 
     # -- frames from the other side -------------------------------------
 
-    def frame(self, kind, ident, payload):
+    def frame(self, kind, ident, payload, peer=None):
+        """A frame from the launcher. `peer` is the guest a host's launcher
+        says it comes from (see tsmp/frames.py, ROUTED), None when it says
+        nothing."""
+        message = frames.parse_json(payload) or {} if kind == frames.CONTROL else None
+        if message is not None and peer is None and message.get("type") in LINK_CONTROLS:
+            # The launcher's own, about its remotes. Those it says itself
+            # are never wrapped: one that came from a guest is not believed,
+            # and `_control` leaves it aside.
+            self._link(message)
+            self._check()
+            return
+        remote = self._from(peer)
+        if remote is None:
+            self._log("dropped a frame from a guest our launcher did not name")
+            return
         if kind == frames.CONTROL:
-            self._control(frames.parse_json(payload) or {})
+            self._control(message, remote)
         elif kind == frames.MSG:
             if self.role == GUEST and self.live:
                 self.delivered += 1
                 self._game.deliver(ident, payload)
         elif kind == frames.COMMAND:
-            if self.role == HOST and self.live:
-                self._execute(frames.parse_json(payload) or {})
+            if self.role == HOST and self._live_with(remote):
+                self._execute(frames.parse_json(payload) or {}, remote)
         elif kind == frames.PART:
-            done = self._transfers.part(ident, payload)
+            done = remote.transfers.part(ident, payload)
             if done is not None:
-                self._finished(done)
+                self._finished(done, remote)
             self._check()
 
-    def _finished(self, incoming):
+    def _finished(self, incoming, peer):
         if incoming.what == "state":
             self._adopt(incoming.payload)
         elif incoming.what == "household":
-            self._merge(incoming)
+            self._merge(peer, incoming)
 
-    def _seen(self, message):
+    def _seen(self, message, peer):
         """Host: the guest that is loading still takes our state, or gave
         up on what we hold for."""
-        if not self._hold_until:
+        if not peer.hold_until:
             return
         ident = frames.number(message.get("id"))
-        outgoing = self._transfers.outgoing(ident)
+        outgoing = peer.transfers.outgoing(ident)
         if outgoing is None or outgoing.what != "state":
             return
         if message.get("type") == "got":
-            self._hold_until = max(self._hold_until, self._clock() + HOLD_SECONDS)
-        elif message.get("type") == "drop" and ident == self._held_for and self._asked is None:
-            self._hold_until = 0.0
+            peer.hold_until = max(peer.hold_until, self._clock() + HOLD_SECONDS)
+        elif message.get("type") == "drop" and ident == peer.held_for and peer.asked is None:
+            peer.hold_until = 0.0
             self._log("the other player gave up loading; the game is no longer held for them")
 
-    def _control(self, message):
+    def _link(self, message):
+        """Our launcher's remotes come and go. A host's launcher of version 3
+        names each with `peer_up` and `peer_gone`, and still says `link`
+        for mods before it, which a host that heard those leaves aside."""
         kind = message.get("type")
-        if kind == "link":
+        if self.role != HOST:
+            if kind != "link":
+                return
             remotes = frames.number(message.get("remotes"))
             self.remotes = remotes
+            self._host.up = remotes > 0
             if remotes == 0:
-                self._lost("the link is down")
+                self._lost(self._host, "the link is down")
             else:
-                # Whoever just connected has not heard our state yet, nor we
-                # theirs, and knows nothing of what was under way.
-                self._link_lost_at = 0.0
-                self._transfers.forget()
-                self._look_sent = False
-                self._announce(want=True)
-                self._send_look()
-                if self._building:
-                    self._send(frames.control("building", on=True))
-        elif kind == "gone":
-            self._lost("the other game is gone")
+                self._linked(self._host)
+            return
+        if kind == "link":
+            if frames.number(message.get("remotes")) == 0:
+                for peer in list(self.peers.values()):
+                    self._unlinked(peer)
+            elif not self._routed:
+                self._linked(self._peer(LEGACY))
+            return
+        self._routed = True
+        ident = frames.number(message.get("peer"))
+        if kind == "peer_up":
+            peer = self._peer(ident)
+            peer.name = str(message.get("name") or "")
+            peer.player = str(message.get("player") or "")
+            self._linked(peer)
+        elif ident in self.peers:
+            self._unlinked(self.peers[ident])
+
+    def _linked(self, peer):
+        """Whoever just connected has not heard our state yet, nor we
+        theirs, and knows nothing of what was under way."""
+        peer.up = True
+        if self.role == HOST:
+            self.remotes = sum(1 for other in self.peers.values() if other.up)
+            # Any link that comes up ends the wait for a lost one, as when
+            # there was one guest to wait for.
+            for other in self.peers.values():
+                other.link_lost_at = 0.0
+        peer.link_lost_at = 0.0
+        peer.transfers.forget()
+        self._look_sent = False
+        self._announce(want=True)
+        self._send_look()
+        if self._building:
+            self._to(peer, frames.control("building", on=True))
+
+    def _unlinked(self, peer):
+        """Host: a guest's link is down, for now or for good."""
+        peer.up = False
+        self.remotes = sum(1 for other in self.peers.values() if other.up)
+        self._lost(peer, "the link is down")
+
+    def _control(self, message, peer):
+        kind = message.get("type")
+        if kind == "gone":
+            self._lost(peer, "the other game is gone")
         elif kind == "state":
-            self._state(message)
+            self._state(message, peer)
         elif kind in ("offer", "got", "drop"):
-            self._seen(message)
-            offer = self._transfers.receive(message)
+            self._seen(message, peer)
+            offer = peer.transfers.receive(message)
             if offer is None:
                 pass
             elif offer.what == "state":
                 self._offered(offer)
             elif offer.what == "household" and self.role == HOST:
-                done = self._transfers.accept(offer)
+                done = peer.transfers.accept(offer)
                 if done is not None:
-                    self._finished(done)
+                    self._finished(done, peer)
             else:
-                self._transfers.refuse(offer.ident)
+                peer.transfers.refuse(offer.ident)
         elif kind == "resync":
-            self._resync(message)
+            self._resync(message, peer)
         elif kind == "resync_failed":
             if self.role == GUEST and self._phase == ASKING and frames.number(message.get("id")) == self._request:
                 if message.get("missing") and self._whole and self._whole_world == self._asked_world:
@@ -1354,79 +1493,81 @@ class Session:
                     self._cas = None
                     self._log("could not open Create-a-Sim: {}".format(error))
         elif kind == "appearance":
-            self._appearance(message)
+            self._appearance(message, peer)
         elif kind == "appearance_done":
             self._appearance_done(message)
         elif kind == "building":
-            self._remote_build_mode(message)
+            self._remote_build_mode(message, peer)
         elif kind == "active_sim":
-            self.remote_sim_id = frames.number(message.get("sim_id"))
-            if self.role == HOST and self.apart:
-                if self.remote_sim_id:
-                    self._send_off([self.remote_sim_id])
-            elif self.live:
-                self._welcome()
-            if self.live and self.remote_sim_id:
-                self._joined()
+            peer.sim_id = frames.number(message.get("sim_id"))
+            if self.role == HOST and self._apart_with(peer):
+                if peer.sim_id:
+                    self._send_off(peer, [peer.sim_id])
+            elif self._live_with(peer):
+                self._welcome(peer)
+            if self._live_with(peer) and peer.sim_id:
+                self._joined(peer)
         self._check()
 
-    def _state(self, message):
+    def _state(self, message, peer):
         if message.get("role") == self.role:
             self._log("the other game is also a {}; ignoring it".format(self.role))
             return
         if message.get("want"):
             self._announce()
         version = frames.number(message.get("v"))
-        if version != self._remote_version:
-            self._remote_version = version
+        if version != peer.version:
+            peer.version = version
             if version != PROTOCOL:
                 self._log("the other game runs another version of the mod ({}, ours {}); not joining".format(
                     version, PROTOCOL))
         was_live = self.live
-        was_zone, was_lot = self.remote_zone, self.remote_lot
-        self.remote_in_zone = bool(message.get("in_zone"))
-        self.remote_zone = frames.number(message.get("zone"))
-        self.remote_lot = str(message.get("lot") or "")
-        self.remote_save = frames.number(message.get("save"))
+        was_zone, was_lot = peer.zone, peer.lot
+        peer.in_zone = bool(message.get("in_zone"))
+        peer.zone = frames.number(message.get("zone"))
+        peer.lot = str(message.get("lot") or "")
+        peer.save = frames.number(message.get("save"))
         world = str(message.get("world") or "")
-        if not self.remote_in_zone or world != self.remote_world:
-            self.remote_building = False
-        self.remote_world = world
-        if self.role == HOST and self._taken_at and self.remote_world and self.remote_world == self._world:
+        if not peer.in_zone or world != peer.world:
+            peer.building = False
+        peer.world = world
+        if self.role == HOST and peer.taken_at and peer.world and peer.world == self._world:
             # The guest shows the state we saved for it: if our game moved
             # on since, it is behind ours, and loads again.
-            taken, self._taken_at = self._taken_at, ""
+            taken, peer.taken_at = peer.taken_at, ""
             now_at = self._call("progress", "")
             if now_at and now_at != taken:
                 self._log("our game moved on while the other player loaded; they load it again")
                 self._new_world()
-                self.remote_world = ""
+                peer.world = ""
                 self._announce()
-        if self.role == GUEST and was_live and not self.remote_in_zone:
+        if self.role == GUEST and was_live and not peer.in_zone:
             # Its zone will be built again, and its game client with it.
             self._go_stale("the host left its lot; waiting for it", tell=True)
         if (self.role == GUEST and self._phase in (ASKING, RECEIVING) and self._joining
-                and (not self.remote_in_zone or self.remote_world != self._asked_world)):
+                and (not peer.in_zone or peer.world != self._asked_world)):
             # What is on its way is of a world the host has left.
-            self._transfers.drop(self._request)
+            peer.transfers.drop(self._request)
             self._go_stale("the host's lot changed while it sent its state; waiting for it")
-        if not self.remote_in_zone:
-            self.remote_sim_id = 0
-            self._reported_sim_id = 0
-        elif self.role == HOST and not self.same_zone and (self.remote_zone, self.remote_lot) != (was_zone, was_lot):
-            self._send_off()
+        if not peer.in_zone:
+            peer.sim_id = 0
+            peer.reported_sim_id = 0
+        elif self.role == HOST and not self._same_zone(peer) and (peer.zone, peer.lot) != (was_zone, was_lot):
+            self._send_off(peer)
 
-    def _execute(self, message):
+    def _execute(self, message, peer):
         name = message.get("name")
         args = message.get("args")
         if not isinstance(name, str) or not isinstance(args, list) or not _forwarded(name):
             return
         self.executed += 1
         self._remote_depth += 1
+        executing, self._executing = self._executing, peer
         try:
-            self._game.execute(name, [str(a) for a in args], self.remote_sim_id)
+            self._game.execute(name, [str(a) for a in args], peer.sim_id)
         finally:
             self._remote_depth -= 1
+            self._executing = executing
 
     # -- hooks into the local game --------------------------------------
 
@@ -1447,14 +1588,15 @@ class Session:
         if self.role == HOST:
             if msg_id in consts.owned:
                 owner = wire.first_varint(data, consts.owned[msg_id])
-                if owner and self._guests(owner):
-                    self._relay(msg_id, data)
+                guest = self._owner(owner) if owner else None
+                if guest is not None:
+                    self._relay(msg_id, data, to=guest)
                     return None
                 if owner and msg_id not in consts.shared:
                     return data
             if msg_id in consts.replies:
                 if self._remote_depth:
-                    self._relay(msg_id, data)
+                    self._relay(msg_id, data, to=self._executing)
                     return None
                 return data
             if msg_id in consts.host_only:
@@ -1511,10 +1653,17 @@ class Session:
             except Exception as error:
                 self._log("could not travel: {}".format(error))
 
-    def _guests(self, sim_id):
+    def _owner(self, sim_id):
+        """Host: the guest that plays `sim_id`, or None for our own player."""
+        for _, peer in sorted(self.peers.items()):
+            if self._guests(peer, sim_id):
+                return peer
+        return None
+
+    def _guests(self, peer, sim_id):
         """Whether `sim_id` is played by the guest: the sim it controls, or
         one of that sim's household when the host plays another household."""
-        theirs = self.remote_sim_id
+        theirs = peer.sim_id
         if not theirs:
             return False
         if sim_id == theirs:
@@ -1538,10 +1687,11 @@ class Session:
         if self.role != HOST or not self.live:
             return True
         for sim_id in _numbers(line):
-            if self._guests(sim_id):
+            guest = self._owner(sim_id)
+            if guest is not None:
                 # The guest's own client edits it, and we take the new look.
                 self._log("passing {!r} to the other player's game: it is for their sim".format(line))
-                self._send(frames.control("cas", line=line))
+                self._to(guest, frames.control("cas", line=line))
                 return False
         return True
 
@@ -1564,16 +1714,17 @@ class Session:
             return
         self._building = on
         if self.remotes and self.role is not None:
-            self._send(frames.control("building", on=on))
-        if on and self.remote_building and self.same_zone and self.same_save:
+            self.send(frames.control("building", on=on))
+        if on and any(peer.building and self._same_zone(peer) and self._same_save(peer)
+                      for peer in self._all_peers()):
             self._tell(BOTH_BUILDING)
 
-    def _remote_build_mode(self, message):
+    def _remote_build_mode(self, message, peer):
         on = bool(message.get("on"))
-        if on == self.remote_building:
+        if on == peer.building:
             return
-        self.remote_building = on
-        if not (self.same_zone and self.same_save and self.remote_in_zone):
+        peer.building = on
+        if not (self._same_zone(peer) and self._same_save(peer) and peer.in_zone):
             return
         if not on:
             self._tell("the other player left build mode")
@@ -1630,18 +1781,18 @@ class Session:
         if self._look is None or self._look_sent or not self.remotes or not self.same_save:
             return
         sim_id, look, names = self._look
-        self._send(frames.control("appearance", sim_id=str(sim_id), look=base64.b64encode(look).decode("ascii"),
+        self.send(frames.control("appearance", sim_id=str(sim_id), look=base64.b64encode(look).decode("ascii"),
                                   fields=list(names)))
         self._look_sent = True
         self._log("sent the new look of sim {} to the host".format(sim_id))
 
-    def _appearance(self, message):
+    def _appearance(self, message, peer):
         """Host: the guest edited one of its sims in Create-a-Sim."""
         sim_id = frames.number(message.get("sim_id"))
         if self.role != HOST or not sim_id:
             return
         ok = False
-        if sim_id == self.remote_sim_id or sim_id in self._welcomed or sim_id in self._away:
+        if sim_id == peer.sim_id or sim_id in peer.welcomed or sim_id in peer.away:
             try:
                 look = base64.b64decode(str(message.get("look") or ""))
                 names = [str(name) for name in message.get("fields") or []]
@@ -1649,7 +1800,7 @@ class Session:
                 ok = True
             except Exception as error:
                 self._log("could not give sim {} its new look: {}".format(sim_id, error))
-        self._send(frames.control("appearance_done", sim_id=str(sim_id), ok=ok))
+        self._to(peer, frames.control("appearance_done", sim_id=str(sim_id), ok=ok))
 
     def _appearance_done(self, message):
         if self.role != GUEST or self._look is None or frames.number(message.get("sim_id")) != self._look[0]:
@@ -1658,16 +1809,22 @@ class Session:
         if not message.get("ok"):
             self._tell("the host could not take the new look of your sim")
 
-    def _relay(self, msg_id, data):
+    def _relay(self, msg_id, data, to=None):
+        """Host: a message for the guests' game clients, or for the guest
+        `to` alone."""
         self.relayed += 1
-        self._send(frames.pack(frames.MSG, msg_id, data))
+        frame = frames.pack(frames.MSG, msg_id, data)
+        if to is None:
+            self.send(frame)
+        else:
+            self._to(to, frame)
 
     def command(self, name, args):
         """The local game client issued a command. Returns False if it must
         not run locally."""
         if name == BUILD_COMMAND:
             self._build_mode(bool(args) and str(args[0]) not in ("0", "False", "false"))
-        if self.role == HOST and self._hold_until and name in CLOCK_NAMES:
+        if self.role == HOST and self.holding and name in CLOCK_NAMES:
             self._log("{} refused: the other player is loading".format(name))
             return False
         if self.role == GUEST and name.startswith(CAS_PREFIXES) and self._muted:
@@ -1683,7 +1840,7 @@ class Session:
             return True
         if _forwarded(name):
             self.forwarded += 1
-            self._send(frames.command(name, args))
+            self.send(frames.command(name, args))
             return False
         if name.startswith(BLOCK_PREFIXES):
             return False
@@ -1701,3 +1858,18 @@ def _numbers(text):
 
 def _forwarded(name):
     return name in FORWARD_NAMES or name.startswith(FORWARD_PREFIXES)
+
+
+def _remote_field(name):
+    """What the guest knows of its host, or the host of its one guest."""
+    return property(lambda self: getattr(self._remote, name),
+                    lambda self, value: setattr(self._remote, name, value))
+
+
+for _name, _field in (("remote_in_zone", "in_zone"), ("remote_zone", "zone"), ("remote_lot", "lot"),
+                      ("remote_save", "save"), ("remote_world", "world"), ("remote_sim_id", "sim_id"),
+                      ("remote_building", "building"), ("_remote_version", "version"),
+                      ("_reported_sim_id", "reported_sim_id"), ("_transfers", "transfers")):
+    setattr(Session, _name, _remote_field(_field))
+del _name, _field
+

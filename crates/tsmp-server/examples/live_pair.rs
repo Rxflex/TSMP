@@ -27,6 +27,8 @@ fn hello(name: &str) -> Hello {
         name: name.into(),
         game_version: None,
         packs: Default::default(),
+        player: Some(format!("{name}-id")),
+        ..Default::default()
     }
 }
 
@@ -39,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mods: Manifest::default(),
         save: None,
         own_families: false,
+        max_players: tsmp_net::host::DEFAULT_MAX_PLAYERS,
     };
     let mut host = Host::start(config, 0, false)?;
     let (_server, route) = if online {

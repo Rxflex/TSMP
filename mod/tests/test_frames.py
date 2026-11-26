@@ -34,6 +34,25 @@ class FramesTest(unittest.TestCase):
         (_, _, payload), = frames.Decoder().feed(frames.control("state", role="host", in_zone=True))
         self.assertEqual(frames.parse_json(payload), {"type": "state", "role": "host", "in_zone": True})
 
+    def test_a_routed_frame_holds_a_whole_frame_under_the_peer(self):
+        inner = frames.pack(frames.MSG, 11, b"abc")
+        self.assertEqual(frames.route(3, inner), bytes.fromhex("08" "03000000" "0c000000") + inner)
+        (routed,) = frames.Decoder().feed(frames.route(3, inner))
+        self.assertEqual(frames.unroute(*routed), (frames.MSG, 11, b"abc", 3))
+        self.assertEqual(frames.unroute(frames.MSG, 11, b"abc"), (frames.MSG, 11, b"abc", None))
+
+    def test_a_routed_frame_may_hold_the_largest_frame(self):
+        header = bytes.fromhex("08" "01000000") + (frames.MAX_PAYLOAD + 9).to_bytes(4, "little")
+        self.assertEqual(frames.Decoder().feed(header), [])
+        with self.assertRaises(ValueError):
+            frames.Decoder().feed(bytes.fromhex("08" "01000000") + (frames.MAX_PAYLOAD + 10).to_bytes(4, "little"))
+
+    def test_a_routed_frame_that_does_not_hold_one_frame_is_rejected(self):
+        inner = frames.pack(frames.MSG, 11, b"abc")
+        for payload in (inner[:5], inner[:-1], inner + b"x", frames.route(2, inner)):
+            with self.assertRaises(ValueError):
+                frames.unroute(frames.ROUTED, 1, payload)
+
     def test_parse_json_rejects_garbage(self):
         self.assertIsNone(frames.parse_json(b"\xff\xfe"))
         self.assertIsNone(frames.parse_json(b"[1]"))

@@ -449,20 +449,25 @@ payload`, little endian.
 | 3 CONTROL | 0 | JSON `{"type": ...}` |
 | 4 NATIVE | hash of the call | a call a game client made into its simulation past Python |
 | 7 PART | transfer id | `u32 offset`, then a piece of a large payload |
+| 8 ROUTED | peer | one whole frame of another kind, between the host's game and its launcher only (see [Several guests](#several-guests)) |
 
 Control messages:
 
 - `link {remotes}` (launcher -> its game: how many other launchers are
   connected), `gone` (launcher -> the other side: the game here
   disconnected), `beat` (launcher -> launcher, never passed to a game).
+- `peer_up {peer, name, player}`, `peer_gone {peer}` (host's launcher ->
+  its game: which guest joined or left, see
+  [Several guests](#several-guests)).
 - `state {role, in_zone, v, loaded, syncing, joined, apart, stopped, zone?,
   lot?, save?, world?, want?}` (game -> game); `stopped` when a guest gave up
   for good on the other's save. `in_zone` is false for a stale
   guest even in a zone; `loaded`, `syncing` (stale), `joined` (live) and
   `apart` are for the launchers to show: loading the other's game, waiting
   for it, getting in step, each on its own lot or save, playing alone for
-  now after a failure, or joined. `v` is the version of this protocol (games that
-  speak another one are not joined), `zone` the zone's id as the host names
+  now after a failure, or joined. `v` is the version of this protocol
+  (`PROTOCOL` in `tsmp/session.py`, now 3; games that speak another one are
+  not joined), `zone` the zone's id as the host names
   it, `lot` the lot it is on (`"<lot_description_id>:<active_plex>"`),
   `save` the `guid` of the game's `SaveGameData`, `world` the world its game
   client shows (see below), `want` asks for the other's state in return.
@@ -511,6 +516,131 @@ games have the same zone loaded and their game clients show the same world
   commands still run against the muted local simulation and are logged once
   each in `tsmp.log` ("local command while live") as a list of what remains
   to be routed.
+
+### Several guests
+
+A host can take more than one guest. For now `HostConfig::max_players`
+(`crates/tsmp-net/src/host.rs`, the host included) is 2 everywhere, so a
+session still has one guest, but the launchers and the host's relay already
+tell guests apart. Version 3 of the launcher protocol and version 3 of the
+session protocol (`PROTOCOL` in `tsmp/session.py`) add what follows; nothing
+of it changes what a guest's game, or the wire between two launchers, carries.
+
+**Players.** Each install makes a random id once (32 hex digits) and keeps
+it in the launcher's `player` setting; `TSMP_PLAYER` overrides it for
+several launchers on one machine. The `Hello` that opens either connection
+carries it, and the host's `Hello` reply says which peer the guest is in the
+live session, how many players are in the session with it (the host and the
+guest included) and how many the session takes:
+
+```
+guest: {"type":"hello","protocol":3,"name":"Sam","game_version":"1.0","packs":[],"player":"3f…"}
+host:  {"type":"hello","protocol":3,"name":"Alex","game_version":"1.0","packs":[],"player":"9c…",
+        "peer":1,"players":2,"max_players":2}
+```
+
+Fields that hold nothing (`player` null, the numbers 0) are left out, so a
+`Hello` without them reads as version 2 wrote it; older launchers ignore the
+fields they do not know. A host speaks versions 2 and 3 and answers in the
+guest's own, which is all a launcher of version 2 checks; a launcher of
+version 3 joins only a host that answers in version 3, and tells its player
+to update both otherwise. The discovery beacon gains `players` and
+`max_players` the same way (0 from an older host).
+
+**Admission.** The host counts players by their id across sync and live
+connections, since a guest that plays keeps both open. A `Hello` or
+`JoinLive` of a player not in the session while it is full is answered with
+`{"type":"error","message":"session is full"}` in place of the `Hello`
+reply, so the guest can say why. A player who is in may always connect
+again; their new live connection replaces the old one. A launcher of version
+2 sends no id: all of them are one player to the host, taken only while no
+other guest is in the session, and nobody else is taken while it is there.
+Either is refused with `"a player with another version of TSMP is in the
+session; update TSMP on every computer"` instead, as there may well be room.
+While the host's game speaks a session protocol older than 3, the relay takes
+one remote whatever `max_players` says. Remotes it took before the game said
+its version, past the first, are dropped once it says an older one; they
+dial again and are refused.
+
+**Peers.** The host's relay numbers each player the first time they join,
+from 1, and keeps that number for as long as the host's launcher runs,
+however often they reconnect, so that the host's mod keeps a guest's state
+across a link drop. Peer 0 means every guest. The launcher hears
+`HostEvent::LiveJoined {player, peer}` when a live connection joins the
+relay (also when it replaces an older one of the same player) and
+`HostEvent::LiveLeft {peer}` when one ends and nothing replaced it.
+
+**`ROUTED` frames** (kind 8) pass between the host's game and the host's
+launcher only. The id is the peer; the payload is one whole frame of any
+other kind, header and all:
+
+| bytes | field |
+|---|---|
+| 0 | `u8` 8 |
+| 1-4 | `u32` peer |
+| 5-8 | `u32` length of the inner frame: 9 + its payload |
+| 9- | the inner frame: `u8 kind, u32 id, u32 length, payload` |
+
+All little endian, as every frame. A routed frame from the host's game may
+be up to 64 MiB + 9 long, one header past the limit of any other. One that
+does not hold exactly one frame, or holds a routed one, is dropped, and so is
+every routed frame a relay reads from a launcher or from a guest's game:
+nothing a guest sends can pass for what another guest sent. A frame read from
+a launcher is never longer than 64 MiB, so that wrapped it is still one the
+host's mod reads.
+
+- Guest to host's game: once the host's game has sent a `state` with
+  `v` of 3 or more since it connected, its relay wraps every frame a remote
+  sends in `ROUTED(peer)`, the `gone` of a guest's launcher whose game left
+  included. For a game of an older version frames pass as they are. Until a
+  game that connected has sent its first `state`, what its relay has for it
+  from the remotes waits (up to 256 MiB, past which the game is dropped as
+  one whose queue is full), and the relay's own controls wait behind it, so
+  that it is then sent in order, wrapped or not as that `state` says. The
+  mod sends `state` as soon as it connects.
+- Host's game to guests: `ROUTED(k)` is unwrapped and the inner frame sent
+  to peer k only; nothing is sent if k is not connected. A plain frame, or
+  `ROUTED(0)`, goes to every guest. Each remote may have 256 MiB waiting to
+  be written, and all of them together 512 MiB: past that the remote
+  furthest behind is dropped, and dials again.
+- The host's mod wraps only once its launcher has shown, in this
+  connection, that it numbers its remotes: a `peer_up` or `peer_gone` came,
+  or a routed frame. So it never sends one to a launcher of version 2, which
+  would pass it on to the guest as it is. It wraps what is for one guest
+  alone: a transfer to it (`offer`, `PART`, `got`, `drop`), the answers to
+  its requests (`resync_failed`, `merged`, `appearance_done`), `cas`, the
+  dialogs of its sims, the replies to its commands and the `building` it is
+  told of when its link comes up. The stream of messages, `state` and
+  `building` otherwise go plain, to every guest; `state` stays plain also
+  when it answers one guest's `want`, so the launcher always reads its
+  game's version and status from it.
+- The host's mod takes a plain frame as from the one guest of a host's
+  launcher of version 2, which names nobody (peer 0 to the mod), or else
+  from its only guest. A plain frame that
+  reaches it while it has several guests and none of version 2 is dropped,
+  as it cannot tell whose it is.
+
+**Controls** from the host's relay to its game, plain `CONTROL` frames and
+sent whatever the game's version (older mods ignore types they do not know).
+The mod takes these only plain: one that reaches it wrapped came from a
+guest, and is left aside.
+
+- `{"type":"peer_up","peer":1,"name":"Sam","player":"3f…"}` when a remote
+  joins, and for each remote there is, in the order they joined, when the game
+  connects. `player` is `null` for a launcher of version 2. A `peer_up` for a
+  peer that is up already means it reconnected: what was under way with it
+  is lost.
+- `{"type":"peer_gone","peer":1}` when a remote leaves and no newer
+  connection of the same player replaced it.
+- `link {remotes}` as before, right after each of these and after a game
+  connects, for mods of version 2. A mod of version 3 that heard `peer_up`
+  or `peer_gone` in this connection reads from it only that no remote is
+  left (`remotes` 0); from a launcher that names nobody, it takes a
+  `link` with remotes as the one guest of version 2 coming up.
+
+A guest's relay has one remote, the host's launcher; a new connection to the
+host replaces the old one, it never wraps and sends no `peer_up` or
+`peer_gone`.
 
 ### Following the host through a reload
 

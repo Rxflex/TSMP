@@ -16,6 +16,12 @@
 //! A second connection carries the live session. It opens with `JoinLive`
 //! in place of `Hello`; after the host's `Hello` reply the stream switches to
 //! the relay's frame format for good (see [`crate::live`]).
+//!
+//! A host speaks every version from [`OLDEST_PROTOCOL_VERSION`] up to its own
+//! and answers a guest's `Hello` in the guest's version, which is all a guest
+//! checks: launchers from before version 3 refuse any other. A guest sends
+//! its own version and joins only a host that answers in it. A host that is
+//! full answers `Error` in place of `Hello`.
 
 use std::io::{ErrorKind, Read, Write};
 
@@ -27,20 +33,62 @@ use tsmp_core::packs::PackSet;
 use crate::{Error, Result};
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// 3: a `Hello` names the player, and the host's reply says which peer of
+/// its live session the guest is and how many players there are.
+pub const PROTOCOL_VERSION: u32 = 3;
+/// The oldest version a host still takes guests of. Version 2 is version 3
+/// without the fields it added, so a guest of it joins as the session's one
+/// guest from before players had names (see [`crate::live`]).
+pub const OLDEST_PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 47800;
 
 /// A manifest of a few thousand mods is well under a megabyte; anything near
 /// this limit is not a real message.
 const MAX_FRAME: usize = 64 << 20;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether a host takes a guest that speaks `protocol`.
+pub fn speaks(protocol: u32) -> bool {
+    (OLDEST_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&protocol)
+}
+
+/// A new id for a player: made once per install and kept, so that the host
+/// knows a guest that comes back from one that is new.
+pub fn new_player_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the system has a source of randomness");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The fields added since version 2 are left out of the JSON while they hold
+/// nothing, and older launchers ignore them when they do not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol: u32,
     /// Shown to the other player; the computer name by default.
     pub name: String,
     pub game_version: Option<String>,
     pub packs: PackSet,
+    /// Who is playing, from [`new_player_id`]. A name may change and two
+    /// computers may share one; this does not. Launchers before version 3
+    /// send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+    /// In the host's reply: the guest's peer in the live session, the same
+    /// every time the same player joins (see [`crate::live::PeerId`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub peer: u32,
+    /// In the host's reply: the players in the session with this guest,
+    /// the host and the guest included.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub players: u32,
+    /// In the host's reply: how many players the session takes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_players: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,12 +222,17 @@ mod tests {
             name: "Хост".into(),
             game_version: Some("1.129.39.1030".into()),
             packs: ["EP01".to_string(), "GP04".to_string()].into(),
+            player: Some(new_player_id()),
+            peer: 2,
+            players: 3,
+            max_players: 4,
         }));
         round_trip(Message::JoinLive(Hello {
             protocol: PROTOCOL_VERSION,
             name: "guest".into(),
             game_version: None,
             packs: Default::default(),
+            ..Default::default()
         }));
         round_trip(Message::GetSession);
         round_trip(Message::Session(Session {
@@ -207,6 +260,51 @@ mod tests {
         }));
         round_trip(Message::Status(GuestStatus::Ready));
         round_trip(Message::Error { message: "no".into() });
+    }
+
+    #[test]
+    fn a_hello_reads_the_same_across_versions_2_and_3() {
+        // What a launcher of version 2 sends and reads.
+        let old = r#"{"type":"hello","protocol":2,"name":"old","game_version":null,"packs":["EP01"]}"#;
+        let Message::Hello(hello) = serde_json::from_str(old).unwrap() else {
+            panic!("not a hello");
+        };
+        assert_eq!((hello.protocol, hello.player, hello.peer, hello.players), (2, None, 0, 0));
+        assert!(speaks(hello.protocol));
+        assert!(!speaks(1) && !speaks(PROTOCOL_VERSION + 1));
+
+        // A hello without the new fields is written as version 2 wrote it.
+        let bare = Hello {
+            protocol: 2,
+            name: "old".into(),
+            packs: ["EP01".to_string()].into(),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_string(&Message::Hello(bare)).unwrap(), old);
+
+        // Version 2 ignored fields it did not know, so it reads a reply of
+        // version 3; and what version 3 adds survives.
+        let reply = Hello {
+            protocol: 2,
+            name: "host".into(),
+            player: Some("abc".into()),
+            peer: 1,
+            players: 2,
+            max_players: 2,
+            ..Default::default()
+        };
+        let text = serde_json::to_value(Message::Hello(reply.clone())).unwrap();
+        assert_eq!(text["player"], "abc");
+        let number = |name: &str| text[name].as_u64();
+        assert_eq!((number("peer"), number("players"), number("max_players")), (Some(1), Some(2), Some(2)));
+        assert_eq!(serde_json::from_value::<Message>(text).unwrap(), Message::Hello(reply));
+    }
+
+    #[test]
+    fn player_ids_are_random() {
+        let id = new_player_id();
+        assert_eq!(id.len(), 32);
+        assert_ne!(id, new_player_id());
     }
 
     #[test]

@@ -424,15 +424,18 @@ def _tick():
         kind = event[0]
         if kind == bridge_module.FRAME:
             try:
-                if event[1] == frames.CONTROL and b'"type":"log"' in event[3]:
-                    for line in (frames.parse_json(event[3]) or {}).get("lines") or []:
+                # On the host, what a guest sent comes wrapped with the peer
+                # its launcher numbered that guest.
+                kind, ident, payload, peer = frames.unroute(event[1], event[2], event[3])
+                if kind == frames.CONTROL and b'"type":"log"' in payload:
+                    for line in (frames.parse_json(payload) or {}).get("lines") or []:
                         log.info(str(line)[:MAX_LOG_LINE + 16], forward=False)
-                elif event[1] == frames.CONTROL and b'"type":"native' in event[3]:
-                    native.control(frames.parse_json(event[3]) or {})
-                elif event[1] == frames.NATIVE:
-                    native.incoming(event[2], event[3])
+                elif kind == frames.CONTROL and b'"type":"native' in payload:
+                    native.control(frames.parse_json(payload) or {})
+                elif kind == frames.NATIVE:
+                    native.incoming(ident, payload)
                 else:
-                    _session.frame(event[1], event[2], event[3])
+                    _session.frame(kind, ident, payload, peer)
             except Exception:
                 log.exception("frame handling failed")
         elif kind == bridge_module.UP:
@@ -504,5 +507,9 @@ def describe():
         ),
     ]
     if _session.role == session_module.HOST:
-        lines.append("other player's sim: {}".format(_session.remote_sim_id or "none"))
+        for ident, peer in sorted(_session.peers.items()):
+            lines.append("guest {}{}: {}, {}, sim {}".format(
+                ident, " ({})".format(peer.name) if peer.name else "",
+                "connected" if peer.up else "not connected",
+                "in game" if peer.in_zone else "not in game", peer.sim_id or "none"))
     return lines + native.status_lines()

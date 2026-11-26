@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::mappings::{self, Support};
 use crate::picture;
+use crate::settings;
 use crate::update;
 use tsmp_core::clock::{UtcTime, unix_now};
 use tsmp_core::game::GameInstall;
@@ -26,9 +27,9 @@ use tsmp_core::saves::{SaveFile, list_saves};
 use tsmp_core::status::ModStatus;
 use tsmp_net::discovery::{Browser, Found};
 use tsmp_net::guest::{Connection, Progress, sync_mods, sync_save};
-use tsmp_net::host::{Host, HostConfig, HostEvent};
+use tsmp_net::host::{DEFAULT_MAX_PLAYERS, Host, HostConfig, HostEvent};
 use tsmp_net::live::{LiveLink, LiveStatus};
-use tsmp_net::protocol::{DEFAULT_PORT, GuestStatus, Hello, PROTOCOL_VERSION, Session};
+use tsmp_net::protocol::{DEFAULT_PORT, GuestStatus, Hello, PROTOCOL_VERSION, Session, new_player_id};
 use tsmp_net::rendezvous::{ListingStatus, ServerAddress};
 use tsmp_net::route::Route;
 
@@ -45,12 +46,16 @@ pub struct Env {
     pub packs: PackSet,
     /// Shown to the other player.
     pub name: String,
+    /// Tells this player apart in a session, whatever their name; see
+    /// [`settings::PLAYER`].
+    pub player: String,
     pub script_mods_enabled: bool,
 }
 
 impl Env {
     /// `TSMP_INSTALL_DIR` and `TSMP_USER_DIR` together override detection;
-    /// `TSMP_NAME` overrides the player name.
+    /// `TSMP_NAME` overrides the player name and `TSMP_PLAYER` the player's
+    /// id, for several launchers on one machine.
     pub fn detect() -> Result<Self, String> {
         let overrides = (std::env::var_os("TSMP_INSTALL_DIR"), std::env::var_os("TSMP_USER_DIR"));
         let game = match overrides {
@@ -61,9 +66,20 @@ impl Env {
             .iter()
             .find_map(|key| std::env::var(key).ok().filter(|name| !name.trim().is_empty()))
             .unwrap_or_else(|| "Player".into());
-        Self::new(game, name)
+        let mut env = Self::new(game, name)?;
+        env.player = std::env::var("TSMP_PLAYER")
+            .ok()
+            .filter(|player| !player.trim().is_empty())
+            .or_else(|| settings::PLAYER.load())
+            .unwrap_or_else(|| {
+                settings::PLAYER.store(&env.player);
+                env.player.clone()
+            });
+        Ok(env)
     }
 
+    /// A player of a new id, which [`Env::detect`] replaces with the one
+    /// this install keeps.
     pub fn new(game: GameInstall, name: String) -> Result<Self, String> {
         let packs = installed_packs(&game.install_dir).map_err(|e| e.to_string())?;
         let script_mods_enabled = game.script_mods_enabled().unwrap_or(false);
@@ -71,6 +87,7 @@ impl Env {
             game,
             packs,
             name,
+            player: new_player_id(),
             script_mods_enabled,
         })
     }
@@ -81,6 +98,8 @@ impl Env {
             name: self.name.clone(),
             game_version: self.game.version.clone(),
             packs: self.packs.clone(),
+            player: Some(self.player.clone()),
+            ..Hello::default()
         }
     }
 }
@@ -725,14 +744,14 @@ impl Model {
             None => None,
         };
         if live != self.live {
-            if let Some(status) = live {
+            if let Some(status) = &live {
                 let yes = |on: bool| if on { "yes" } else { "no" };
                 self.note(format!(
                     "Session: mod connected: {}, in a lot: {}, other launchers: {}, their game in a lot: {}",
                     yes(status.game_connected),
                     yes(status.game_in_zone),
-                    status.remotes,
-                    yes(status.remote_in_zone)
+                    status.remotes.len(),
+                    yes(status.remotes.iter().any(|remote| remote.in_zone))
                 ));
             }
             changed = true;
@@ -882,6 +901,8 @@ impl Model {
                             }
                             running.guests.retain(|g| g.id != id)
                         }
+                        // The roster does not show who is in the live session yet.
+                        HostEvent::LiveJoined { .. } | HostEvent::LiveLeft { .. } => {}
                     }
                 }
                 let listed = running.host.listing().map(|listing| listing.status());
@@ -1097,6 +1118,7 @@ fn start_host(
         mods: mods.clone(),
         save: save.as_ref().map(|save| save.path.clone()),
         own_families,
+        max_players: DEFAULT_MAX_PLAYERS,
     };
     // The usual port may be taken, e.g. by another launcher on this machine.
     // Guests find the host by its beacon, so any port will do.
@@ -1423,19 +1445,19 @@ mod tests {
             game
         };
         pump_until(&mut [&mut host, &mut guest], |m| {
-            m.iter().all(|model| model.live.is_some_and(|live| live.remotes == 1))
+            m.iter().all(|model| model.live.as_ref().is_some_and(|live| live.remotes.len() == 1))
         });
-        assert!(!host.live.unwrap().is_live());
+        assert!(!host.live.as_ref().unwrap().is_live());
         let _host_game = in_zone(host_port, "host");
         let _guest_game = in_zone(guest_port, "guest");
         pump_until(&mut [&mut host, &mut guest], |m| {
-            m.iter().all(|model| model.live.is_some_and(|live| live.is_live()))
+            m.iter().all(|model| model.live.as_ref().is_some_and(|live| live.is_live()))
         });
 
         // The guest closing its launcher is noticed by the host.
         guest.back();
         pump_until(&mut [&mut host], |m| {
-            host_running(m[0]).unwrap().guests.is_empty() && m[0].live.unwrap().remotes == 0
+            host_running(m[0]).unwrap().guests.is_empty() && m[0].live.as_ref().unwrap().remotes.is_empty()
         });
         guest.pump();
         assert_eq!(guest.live, None);
@@ -1577,7 +1599,7 @@ mod tests {
         guest.confirm_sync();
         pump_until(&mut [&mut host, &mut guest], |m| {
             matches!(join_stage(m[1]), JoinStage::Ready(_) | JoinStage::Failed(_))
-                && m.iter().all(|model| model.live.is_some_and(|live| live.remotes == 1))
+                && m.iter().all(|model| model.live.as_ref().is_some_and(|live| live.remotes.len() == 1))
         });
         assert!(matches!(join_stage(&guest), JoinStage::Ready(_)));
         assert_eq!(fs::read_to_string(guest_user.join("saves/Slot_00000002.save")).unwrap(), "shared save");
@@ -1590,7 +1612,7 @@ mod tests {
         pump_until(&mut [&mut host], |_| server.stats().sessions == 0);
         assert!(host_running(&host).unwrap().online.is_none());
         host.pump();
-        assert_eq!(host.live.unwrap().remotes, 1);
+        assert_eq!(host.live.as_ref().unwrap().remotes.len(), 1);
         assert_eq!(server.stats().tunnels, 2);
     }
 

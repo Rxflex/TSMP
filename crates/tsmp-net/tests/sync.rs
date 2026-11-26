@@ -28,6 +28,8 @@ fn hello(name: &str, packs: &[&str]) -> Hello {
         name: name.into(),
         game_version: Some("1.0".into()),
         packs: packs.iter().map(|p| p.to_string()).collect(),
+        player: Some(format!("{name}-id")),
+        ..Default::default()
     }
 }
 
@@ -39,6 +41,7 @@ fn start_host(mods_dir: &Path, save: Option<&Path>) -> (Host, SocketAddr) {
             mods: Manifest::scan(mods_dir, None).unwrap(),
             save: save.map(Path::to_path_buf),
             own_families: false,
+            max_players: tsmp_net::host::DEFAULT_MAX_PLAYERS,
         },
         0,
         false,

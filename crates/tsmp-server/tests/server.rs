@@ -28,6 +28,8 @@ fn hello(name: &str) -> Hello {
         name: name.into(),
         game_version: Some("1.0".into()),
         packs: Default::default(),
+        player: Some(format!("{name}-id")),
+        ..Default::default()
     }
 }
 
@@ -67,6 +69,7 @@ fn start_host(mods_dir: &Path, save: Option<&Path>) -> Host {
         mods: Manifest::scan(mods_dir, None).unwrap(),
         save: save.map(Path::to_path_buf),
         own_families: false,
+        max_players: tsmp_net::host::DEFAULT_MAX_PLAYERS,
     };
     Host::start(config, 0, false).unwrap()
 }
@@ -188,7 +191,7 @@ fn a_guest_syncs_and_plays_through_the_server() {
     let mut host_game = Game::connect(host.live().port());
     let mut guest_game = Game::connect(link.port());
     wait_for("the launchers to join", || {
-        host.live().status().remotes == 1 && link.status().remotes == 1
+        host.live().status().remotes.len() == 1 && link.status().remotes.len() == 1
     });
     host_game.in_zone("host");
     guest_game.in_zone("guest");
@@ -206,7 +209,7 @@ fn a_guest_syncs_and_plays_through_the_server() {
     drop(link);
     drop(connection);
     wait_for("the host to see the guest leave", || {
-        host.live().status().remotes == 0 && server.stats().tunnels == 0
+        host.live().status().remotes.is_empty() && server.stats().tunnels == 0
     });
 
     // Closing the host takes the session off the server at once.
