@@ -24,8 +24,8 @@ launcher does the setup. It finds the other computer, copies the mods and the
 save, and starts both games with the packs both players own.
 
 <p align="center">
-  <a href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe"><img alt="Download tsmp.exe" src="https://img.shields.io/badge/download-tsmp.exe-ffc857?style=for-the-badge&labelColor=16223a"></a>
-  <a href="https://github.com/Rxflex/TSMP/releases"><img alt="All releases" src="https://img.shields.io/badge/all%20releases-GitHub-8fb4ff?style=for-the-badge&labelColor=16223a"></a>
+  <a href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe"><img alt="Download for Windows: tsmp.exe, free" src="docs/assets/download/download-en.png" width="360"></a><br>
+  <sub><a href="https://github.com/Rxflex/TSMP/releases">All releases</a></sub>
 </p>
 
 <p align="center">
@@ -138,7 +138,9 @@ network that is all; from different networks you also need a session server
    the host's `Mods` folder when hosting starts, and the guest gets it with the
    sync. Other multiplayer mods patch the same functions, so the launcher moves
    S4MP files it finds into the backup folder; remove any other one first.
-2. Both players run `tsmp.exe`. Windows asks once to allow it through the
+2. Both players run `tsmp.exe`. It is not code-signed, so on the first run
+   Windows may show "Windows protected your PC": click **More info**, then
+   **Run anyway**. Then Windows asks once to allow `tsmp.exe` through the
    firewall: allow it on private networks, or the host will not be found.
 3. One player chooses **Host a session** and picks the save to share.
 4. The other chooses **Join a session**, picks the host from the list, reads
@@ -524,10 +526,11 @@ through Steam, which may ask you to confirm the launch arguments.
 <summary><b>Is it safe? Windows or my antivirus warns about it.</b></summary>
 
 The code is open, and every release lists the SHA-256 checksums of its files.
-The release files are not code-signed, so Windows may warn the first time; you
-can also build everything from source. Windows asks once to allow `tsmp.exe`
-through the firewall: allow it on private networks, or the host will not be
-found.
+The release files are not code-signed, so on the first run Windows may show
+"Windows protected your PC": click **More info**, then **Run anyway**. Some
+antivirus programs are also wary of new unsigned programs. You can also build
+everything from source. Windows asks once to allow `tsmp.exe` through the
+firewall: allow it on private networks, or the host will not be found.
 
 Joining runs the host's script mods on your computer, and script mods are
 unrestricted code. Only join people you trust.

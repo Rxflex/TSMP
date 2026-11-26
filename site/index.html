@@ -66,7 +66,7 @@
   "@type": "FAQPage",
   "mainEntity": [
     {"@type": "Question", "name": "Is there official multiplayer in The Sims 4?", "acceptedAnswer": {"@type": "Answer", "text": "No. The game has no multiplayer of its own. TSMP is a fan project that adds it with a script mod and a launcher. It is not affiliated with or endorsed by Electronic Arts."}},
-    {"@type": "Question", "name": "How do I play The Sims 4 with a friend?", "acceptedAnswer": {"@type": "Answer", "text": "Both players run tsmp.exe. One chooses Host a session and picks a save, the other chooses Join a session, picks the host and presses Sync, and both start the game. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See How to play and Playing over the internet."}},
+    {"@type": "Question", "name": "How do I play The Sims 4 with a friend?", "acceptedAnswer": {"@type": "Answer", "text": "Both players run tsmp.exe. One chooses Host a session and picks a save, the other chooses Join a session, picks the host and presses Sync, and both press Start game in the launcher and load the shared save. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See How to play and Playing over the internet."}},
     {"@type": "Question", "name": "Is TSMP free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is open source under the MIT licence. There is no paid version and no early-access tier."}},
     {"@type": "Question", "name": "Does each player need their own copy of the game?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Each player needs their own Windows computer with their own copy of The Sims 4, at the same game version. The launcher warns when the two versions differ. The base game is free on the EA app and Steam."}},
     {"@type": "Question", "name": "How many people can play?", "acceptedAnswer": {"@type": "Answer", "text": "Two: one host and one guest."}},
@@ -231,11 +231,77 @@ ol.plain li::marker{color:var(--yellow);font-weight:700}
 .faq .a p:last-child{margin-bottom:0}
 
 .help{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:24px}
-.final{text-align:center}
-.final .art{max-width:900px;margin:0 auto 28px}
-.final .cta{justify-content:center;margin:0 0 12px}
-.final .fine{margin:0 auto}
 .help .card p{margin-bottom:0}
+
+/* download */
+.nav .nav-dl{display:inline-flex;align-items:center;gap:6px;color:var(--ink);background:var(--yellow);border-radius:999px;padding:4px 14px 4px 11px;font-weight:600}
+.nav .nav-dl:hover{color:var(--ink);background:#ffd47a}
+.nav .nav-dl svg{width:16px;height:16px;flex:none}
+@media (max-width:440px){.nav .wide{display:none}}
+@media (max-width:359px){.nav{flex-wrap:nowrap;gap:6px 10px}.top .wrap{gap:10px}.nav .nav-dl{padding:4px 11px}.nav .nav-dl svg{display:none}}
+.dl-art{max-width:900px;margin:0 auto 48px}
+.dl-top{display:grid;gap:32px;align-items:center;margin-bottom:56px}
+@media (min-width:900px){.dl-top{grid-template-columns:1fr 1fr;gap:56px}}
+.dl-lead{font-size:1.12rem;color:#d3dcec;max-width:30em}
+.dl-btn{display:inline-block;margin:6px 0 4px -8px;border-radius:24px;transition:transform .15s ease,filter .15s ease}
+.dl-btn:hover{transform:translateY(-2px);filter:brightness(1.04)}
+.dl-btn img{width:360px}
+.dl-meta{font-size:.95rem;color:var(--muted);margin:0 0 14px}
+#dl-info:not(:empty){color:var(--text);font-weight:500}
+.dl-meta .nw{white-space:nowrap}
+.dl-alt{font-size:.95rem;color:var(--muted);margin:0}
+.dl-alt a{color:var(--muted)}
+.dl-alt a:hover{color:var(--yellow)}
+.dl-need{background:rgba(255,200,87,.07);border:1px solid rgba(255,200,87,.3);border-radius:var(--radius);padding:24px 24px 10px}
+.dl-need h3{font-size:1.15rem;margin-bottom:18px}
+.dl-check{list-style:none;margin:0;padding:0}
+.dl-check li{position:relative;padding-left:38px;margin:0 0 16px;color:#cdd6e7;font-size:.99rem}
+.dl-check li::before{content:"";position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(99,217,176,.5);background:rgba(99,217,176,.14) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2363d9b0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 12.5 4 4 8-9'/%3E%3C/svg%3E") center/14px no-repeat}
+.dl-check b{display:block}
+.dl-check .ui{font-weight:500}
+.dl-steps-h{font-size:clamp(1.25rem,2.4vw,1.6rem);margin-bottom:22px;scroll-margin-top:16px}
+.dl-steps{list-style:none;padding:0;margin:0 0 32px;display:grid;gap:16px}
+@media (min-width:760px){.dl-steps{grid-template-columns:1fr 1fr}}
+.dl-steps>li{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 22px 20px;min-width:0}
+.dl-step-top{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.dl-step-top img,.dl-step-top svg{width:48px;height:48px;flex:none}
+.dl-step-top h4{margin:0;font-family:var(--head);font-weight:700;font-size:1.12rem;line-height:1.3;letter-spacing:-.01em}
+.dl-n{display:block;font:600 .78rem/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--mint);margin-bottom:4px}
+.dl-steps p{color:#cdd6e7;margin:0 0 12px;font-size:.99rem}
+.dl-steps p:last-child{margin-bottom:0}
+.dl-steps .small{font-size:.93rem;color:var(--muted)}
+.dl-steps .small a{color:var(--muted)}
+.mock{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0 14px}
+.win{flex:1 1 180px;min-width:0;border-radius:10px;padding:14px 14px 12px;font:500 .8rem/1.35 "Segoe UI",var(--body);box-shadow:0 10px 24px -12px rgba(0,0,0,.6)}
+.win .t{display:block;font-size:.92rem;font-weight:600;margin-bottom:8px}
+.win .bar{display:block;height:6px;border-radius:3px;margin:0 0 6px;opacity:.35;background:currentColor}
+.win .bar.s{width:62%}
+.win .row{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;flex-wrap:wrap}
+.win .b{padding:4px 10px;border:1px solid;border-radius:3px;white-space:nowrap}
+.win .lnk{text-decoration:underline;display:inline-block;margin-top:4px}
+.win .hit{position:relative;outline:3px solid var(--yellow);outline-offset:3px;border-radius:3px}
+.win .hit::before{content:attr(data-n);position:absolute;left:-14px;top:-14px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--yellow);color:var(--ink);font:700 .72rem/20px var(--head);text-align:center;text-decoration:none}
+.win.ss{background:#1e4d8f;color:#fff}
+.win.ss .b{border-color:rgba(255,255,255,.75)}
+.win.fw{background:#eef2f8;color:#1b2946}
+.win.fw .b{border-color:#8a97ad;background:#fff}
+.win .file{display:flex;align-items:center;gap:10px;margin-top:10px;padding:8px 10px;border-radius:4px;background:#dde7f7}
+.win .file svg{width:22px;height:22px;flex:none}
+.win .file small{margin-left:auto;color:#5b6a84;font-size:.74rem}
+.win .tick{display:flex;align-items:center;gap:8px;margin:10px 0 6px}
+.win .tick i{width:16px;height:16px;border-radius:3px;background:#2a62c9 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 12.5 4 4 8-9'/%3E%3C/svg%3E") center/12px no-repeat;flex:none}
+.dl-more{border:1px solid var(--line);border-radius:var(--radius);background:rgba(27,41,70,.5)}
+.dl-more summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 20px;font-weight:600}
+.dl-more summary::-webkit-details-marker{display:none}
+.dl-more summary::after{content:"+";font:600 1.5rem/1 var(--head);color:var(--yellow);flex:none;transition:transform .15s ease}
+.dl-more[open] summary::after{transform:rotate(45deg)}
+.dl-more summary small{display:block;font-weight:400;color:var(--muted);font-size:.92rem}
+.dl-files{list-style:none;margin:0;padding:0 20px}
+.dl-files li{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line)}
+.dl-files img{width:32px;height:32px;flex:none;margin-top:2px}
+.dl-files p{margin:0;color:#cdd6e7;font-size:.96rem}
+.dl-files a.f{font-family:var(--mono);font-weight:600;font-size:.95rem}
+.dl-more .foot{margin:0;padding:14px 20px 18px;border-top:1px solid var(--line);font-size:.95rem;color:var(--muted)}
 
 footer{border-top:1px solid var(--line);padding:40px 0 48px;color:var(--muted);font-size:.95rem}
 footer .wrap{display:grid;gap:20px}
@@ -256,7 +322,8 @@ footer a:hover{color:var(--yellow)}
       <a class="opt" href="#playing">How to play</a>
       <a class="opt" href="#playing-over-the-internet">Over the internet</a>
       <a class="opt" href="#faq">FAQ</a>
-      <a href="https://github.com/Rxflex/TSMP">GitHub</a>
+      <a class="nav-dl" href="#download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>Download</a>
+      <a class="wide" href="https://github.com/Rxflex/TSMP">GitHub</a>
       <a class="lang" href="ru/" hreflang="ru" lang="ru" title="Русская версия">RU</a>
     </nav>
   </div>
@@ -279,7 +346,7 @@ footer a:hover{color:var(--yellow)}
           View on GitHub
         </a>
       </div>
-      <p class="fine">One file for Windows, with the mod inside. Each player needs their own computer and their own copy of The&nbsp;Sims&nbsp;4, at the same version. The project is experimental: <a href="#status">see what has been tried</a>.</p>
+      <p class="fine">One file for Windows, with the mod inside. Each player needs their own computer and their own copy of The&nbsp;Sims&nbsp;4, at the same version. On the first run Windows may ask twice: <a href="#first-run">here is what to press</a>. The project is experimental: <a href="#status">see what has been tried</a>.</p>
     </div>
     <figure class="shot">
       <img src="assets/screens/en-home.png" width="1120" height="840" fetchpriority="high" alt="The TSMP launcher's home screen: Play The Sims 4 together, with Host a session and Join a session, and the detected game version and packs below">
@@ -478,7 +545,7 @@ footer a:hover{color:var(--yellow)}
       </details>
       <details>
         <summary><h3>How do I play The&nbsp;Sims&nbsp;4 with a friend?</h3></summary>
-        <div class="a"><p>Both players run <code>tsmp.exe</code>. One chooses <b>Host a session</b> and picks a save, the other chooses <b>Join a session</b>, picks the host and presses <b>Sync</b>, and both start the game. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See <a href="#playing">How to play</a> and <a href="#playing-over-the-internet">Playing over the internet</a>.</p></div>
+        <div class="a"><p>Both players run <code>tsmp.exe</code>. One chooses <b>Host a session</b> and picks a save, the other chooses <b>Join a session</b>, picks the host and presses <b>Sync</b>, and both press <b>Start game</b> in the launcher and load the shared save. On one local network the host is found by itself; from different networks the host sends an invite through a session server. See <a href="#playing">How to play</a> and <a href="#playing-over-the-internet">Playing over the internet</a>.</p></div>
       </details>
       <details>
         <summary><h3>Is TSMP free?</h3></summary>
@@ -571,21 +638,104 @@ footer a:hover{color:var(--yellow)}
     </div>
   </div>
 </section>
-<section id="download" class="final" aria-labelledby="download-h">
+<section id="download" aria-labelledby="download-h">
   <div class="wrap">
-    <img class="art" src="assets/banner.jpg" width="1800" height="600" loading="lazy" alt="TSMP: two houses at night, joined by one dashed line">
-    <h2 id="download-h">Play The&nbsp;Sims&nbsp;4 together</h2>
-    <div class="cta">
-      <a class="btn btn-main" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
-        Download tsmp.exe
-      </a>
-      <a class="btn btn-alt" href="https://github.com/Rxflex/TSMP/releases">All releases</a>
+    <img class="art dl-art" src="assets/banner.jpg" width="1800" height="600" loading="lazy" alt="TSMP: two houses at night, joined by one dashed line">
+    <div class="dl-top">
+      <div>
+        <h2 id="download-h">Download TSMP</h2>
+        <p class="dl-lead">One file for Windows, with the mod inside. There is nothing to install: <code>tsmp.exe</code> puts the mod where the game needs it. Both players download it, each on their own computer.</p>
+        <a class="dl-btn" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.exe"><img src="assets/download/download-en.png" width="360" height="78" alt="Download for Windows: tsmp.exe, free"></a>
+        <p class="dl-meta"><span id="dl-info"></span><span class="nw">Windows 10 and 11 · free</span></p>
+        <p class="dl-alt">Open source under the MIT licence. <a href="https://github.com/Rxflex/TSMP/releases">All releases</a> · <a href="https://github.com/Rxflex/TSMP">Source code</a></p>
+      </div>
+      <div class="dl-need">
+        <h3>What you need</h3>
+        <ul class="dl-check">
+          <li><b>Windows 10 or 11</b>TSMP does not run on Mac, Linux or consoles; only the optional session server runs on Linux.</li>
+          <li><b>The&nbsp;Sims&nbsp;4 for each player</b>Each needs their own copy, at the same game version. The EA app and Steam both work.</li>
+          <li><b>Script mods switched on in the game</b>In <span class="ui">Game Options → Other</span>, tick <span class="ui">Enable Custom Content and Mods</span> and <span class="ui">Script Mods Allowed</span>, then restart the game.</li>
+          <li><b>A friend to play with</b>On one home network that is all. From different networks you also need a <a href="#playing-over-the-internet">session server</a>.</li>
+        </ul>
+      </div>
     </div>
-    <p class="fine">Free and open source. Every release lists the SHA&#8209;256 checksums of its files.</p>
+
+    <h3 class="dl-steps-h" id="first-run">From download to the first game</h3>
+    <ol class="dl-steps">
+      <li>
+        <div class="dl-step-top">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="tile-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#213258"/><stop offset="1" stop-color="#16233c"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="14" fill="url(#tile-a)" stroke="#8fb5ff" stroke-opacity=".35" stroke-width="2"/><path d="M32 14v23m0 0-9.5-9.5M32 37l9.5-9.5" fill="none" stroke="#ffc857" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 39v6a4 4 0 0 0 4 4h24a4 4 0 0 0 4-4v-6" fill="none" stroke="#8fb4ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div><span class="dl-n">Step 1</span><h4>Download tsmp.exe</h4></div>
+        </div>
+        <p>Press the yellow button. The browser saves <code>tsmp.exe</code> to your Downloads folder. Open it from there with a double click.</p>
+        <div class="mock" role="img" aria-label="The Downloads folder with tsmp.exe in it: open it with a double click">
+          <div class="win fw"><span class="t">Downloads</span><span class="file hit" data-n="2×"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2.5" fill="#fff" stroke="#5b6a84" stroke-width="1.5"/><path d="M2 8.5h20" stroke="#5b6a84" stroke-width="1.5"/><path d="M12 11v5m0 0-2.2-2.2M12 16l2.2-2.2" fill="none" stroke="#2a62c9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>tsmp.exe<small>Application</small></span></div>
+        </div>
+        <p class="small">If the browser says the file is not commonly downloaded, choose <b>Keep</b> (in Edge it is under the <b>…</b> menu next to the file).</p>
+      </li>
+      <li>
+        <div class="dl-step-top">
+          <img src="assets/download/icon-checksum.png" width="48" height="48" alt="">
+          <div><span class="dl-n">Step 2 · only if it appears</span><h4>If Windows warns you</h4></div>
+        </div>
+        <p>On the first run Windows may show <b>“Windows protected your PC”</b>. This is normal for a new program that is not code-signed. Click <b>More info</b>, then <b>Run anyway</b>.</p>
+        <div class="mock" role="img" aria-label="The Windows warning: first click More info, then Run anyway">
+          <div class="win ss"><span class="t">Windows protected your PC</span><span class="bar"></span><span class="bar s"></span><span class="lnk hit" data-n="1">More info</span></div>
+          <div class="win ss"><span class="t">Windows protected your PC</span><span class="bar"></span><span class="bar s"></span><span class="row"><span class="b hit" data-n="2">Run anyway</span><span class="b">Don’t run</span></span></div>
+        </div>
+        <p class="small">Some antivirus programs are wary of new unsigned programs too. The code is open, and every release lists the SHA&#8209;256 checksums of its files.</p>
+      </li>
+      <li>
+        <div class="dl-step-top">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="tile-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#213258"/><stop offset="1" stop-color="#16233c"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="14" fill="url(#tile-b)" stroke="#8fb5ff" stroke-opacity=".35" stroke-width="2"/><path d="M13 18h34v27H13zM13 27h34M13 36h34M24 18v9M36 18v9M18 27v9M30 27v9M42 27v9M24 36v9M36 36v9" fill="none" stroke="#8fb4ff" stroke-width="3" stroke-linejoin="round"/><circle cx="46" cy="45" r="11" fill="#63d9b0" stroke="#1a2a48" stroke-width="3"/><path d="m40.5 45 3.7 3.7 6.6-7.2" fill="none" stroke="#16223a" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div><span class="dl-n">Step 3</span><h4>Allow it through the firewall</h4></div>
+        </div>
+        <p>Windows asks once whether <code>tsmp.exe</code> may use the network. Make sure <b>Private networks</b> is ticked and press <b>Allow access</b>. Without this the two computers will not find each other.</p>
+        <div class="mock" role="img" aria-label="The firewall question: Private networks ticked, then Allow access">
+          <div class="win fw"><span class="bar"></span><span class="bar s"></span><span class="tick"><i></i>Private networks</span><span class="row"><span class="b hit" data-n="✓">Allow access</span><span class="b">Cancel</span></span></div>
+        </div>
+      </li>
+      <li>
+        <div class="dl-step-top">
+          <img src="assets/download/icon-launcher.png" width="48" height="48" alt="">
+          <div><span class="dl-n">Step 4</span><h4>Host or join</h4></div>
+        </div>
+        <p>One of you chooses <span class="ui">Host a session</span> and picks the save to share. The other chooses <span class="ui">Join a session</span>, picks the host and presses <span class="ui">Sync</span>. Then both press <span class="ui">Start game</span> in the launcher and load the shared save.</p>
+        <p>Keep the launcher open while you play: it carries the session. Every step with pictures is in <a href="#playing">How to play</a>.</p>
+        <p class="small">Joining runs the host’s script mods on your computer. Only join people you trust.</p>
+      </li>
+    </ol>
+
+    <details class="dl-more">
+      <summary><span>Other files<small>Most players need only tsmp.exe.</small></span></summary>
+      <ul class="dl-files">
+        <li><img src="assets/download/icon-mod.png" width="32" height="32" alt=""><p><a class="f" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp.ts4script">tsmp.ts4script</a><br>The mod alone, for putting into the Mods folder by hand. Not needed with <code>tsmp.exe</code>.</p></li>
+        <li><img src="assets/download/icon-server.png" width="32" height="32" alt=""><p><a class="f" href="https://github.com/Rxflex/TSMP/releases/latest/download/tsmp-server-linux-x86_64">tsmp-server-linux-x86_64</a><br>The session server, for players on different networks: run it on any x86_64 Linux computer both can reach. Not needed on one home network. <a class="more" href="#running-a-session-server">How to run it</a></p></li>
+        <li><img src="assets/download/icon-checksum.png" width="32" height="32" alt=""><p><a class="f" href="https://github.com/Rxflex/TSMP/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a><br>Checksums, to make sure the files downloaded whole and unchanged.</p></li>
+      </ul>
+      <p class="foot"><a href="https://github.com/Rxflex/TSMP/releases">All releases</a>, with what changed in each. You can also build everything from the <a href="https://github.com/Rxflex/TSMP">source code</a>.</p>
+    </details>
   </div>
 </section>
 </main>
+<script>
+(function () {
+  // Fills in the version, size and date of the latest release; the page reads fine without it.
+  var info = document.getElementById("dl-info");
+  if (!info || !window.fetch) return;
+  fetch("https://api.github.com/repos/Rxflex/TSMP/releases/latest")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d) return;
+      var parts = [], exe = (d.assets || []).filter(function (a) { return a.name === "tsmp.exe"; })[0];
+      if (d.tag_name) parts.push("Version " + d.tag_name.replace(/^v/, ""));
+      if (exe) parts.push((exe.size / 1048576).toFixed(1) + " MB");
+      if (d.published_at) parts.push(new Date(d.published_at).toLocaleDateString("en-GB", {day: "numeric", month: "long", year: "numeric"}));
+      if (parts.length) info.textContent = parts.join(" · ") + " · ";
+    })
+    .catch(function () {});
+})();
+</script>
 
 <footer>
   <div class="wrap">

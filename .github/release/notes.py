@@ -1,11 +1,15 @@
-"""Write the page of a release: its picture, what is new from the changelog,
-the files to download with their checksums, and every change since the last
-release, grouped by the part of the project it touched.
+"""Write the page of a release: its picture, buttons to download the
+launcher, how to start, what is new from the changelog, in English and in
+Russian, the files to download with their checksums, and every change since
+the last release, grouped by the part of the project it touched.
 
     python .github/release/notes.py v0.0.1 DIST_DIR NOTES.md TITLE.txt
 
 DIST_DIR holds the files the release publishes. Fails when the changelog
 has no section for the version, so that no release goes out undescribed.
+Once the version's tag exists, the changes are those up to the tag, so the
+page of a published release can be written again. Pictures are linked at
+the commit ASSETS_REF names, the checked out commit when it is not set.
 Runs on the Python the release job has (3.7 or newer), with git and nothing
 else.
 """
@@ -18,12 +22,17 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# What each published file is, in the order they are listed.
+# What each published file is, in the order they are listed: its icon in
+# docs/assets/download/ and what it is, in plain words.
 FILES = (
-    ("tsmp.exe", "The launcher for Windows, with the mod inside. This is the one to download."),
-    ("tsmp.ts4script", "The mod alone, for putting into the Mods folder by hand."),
-    ("tsmp-server-linux-x86_64", "The session server for players on different networks, for any x86_64 Linux."),
-    ("SHA256SUMS.txt", "The checksums of the files above."),
+    ("tsmp.exe", "icon-launcher.png",
+     "<b>The one to download.</b> The program for Windows that sets everything up, with the mod inside."),
+    ("tsmp.ts4script", "icon-mod.png",
+     "The mod alone, for the Mods folder by hand. Not needed with tsmp.exe."),
+    ("tsmp-server-linux-x86_64", "icon-server.png",
+     "For playing over the internet: the session server, to run on any x86_64 Linux computer."),
+    ("SHA256SUMS.txt", "icon-checksum.png",
+     "Checksums, to check that the files downloaded whole."),
 )
 
 # Parts of the project, by the paths their files are under. A change belongs
@@ -40,6 +49,13 @@ AREAS = (
 
 def git(*args):
     return subprocess.check_output(("git",) + args, cwd=ROOT).decode("utf-8")
+
+
+def tagged(version):
+    """Whether the tag of the version exists already."""
+    with open(os.devnull, "w") as quiet:
+        return subprocess.call(("git", "rev-parse", "--verify", "--quiet", "refs/tags/" + version),
+                               cwd=ROOT, stdout=quiet, stderr=quiet) == 0
 
 
 class Changelog:
@@ -86,12 +102,15 @@ class Change:
 
 
 class History:
-    """The changes since the previous release."""
+    """The changes since the previous release: up to the version's tag once
+    it exists, so that the page of a published release can be written again
+    later, else up to the commit being released."""
 
     def __init__(self, version):
         self.version = version
         self.previous = self._previous(version)
-        span = "{}..HEAD".format(self.previous) if self.previous else "HEAD"
+        self.end = version if tagged(version) else "HEAD"
+        span = "{}..{}".format(self.previous, self.end) if self.previous else self.end
         self.changes = self._changes(span)
 
     @staticmethod
@@ -145,13 +164,24 @@ class Notes:
         russian = Changelog(os.path.join(ROOT, "CHANGELOG.ru.md")).section(version)
         self.russian = russian[1] if russian else ""
         self.history = History(version)
+        # The pictures and the READMEs are linked at a commit, not at the
+        # tag: a commit never changes, and a page written again later can
+        # show pictures added after the release.
+        self.ref = os.environ.get("ASSETS_REF") or git("rev-parse", "HEAD").strip()
 
     def url(self, path):
         return "https://github.com/{}/{}".format(self.repository, path)
 
+    def asset(self, path):
+        return "https://raw.githubusercontent.com/{}/{}/docs/assets/{}".format(self.repository, self.ref, path)
+
+    def site(self, path=""):
+        owner, _, name = self.repository.partition("/")
+        return "https://{}.github.io/{}/{}".format(owner.lower(), name, path)
+
     def write_checksums(self):
         """SHA256SUMS.txt for the published files, beside them."""
-        names = [name for name, _ in FILES if name != "SHA256SUMS.txt" and os.path.exists(os.path.join(self.dist, name))]
+        names = [name for name, _, _ in FILES if name != "SHA256SUMS.txt" and os.path.exists(os.path.join(self.dist, name))]
         with open(os.path.join(self.dist, "SHA256SUMS.txt"), "w", encoding="utf-8", newline="\n") as f:
             for name in names:
                 f.write("{}  {}\n".format(sha256(os.path.join(self.dist, name)), name))
@@ -161,46 +191,121 @@ class Notes:
 
     def render(self):
         parts = [
-            '<p align="center">\n  <img src="https://raw.githubusercontent.com/{}/{}/docs/assets/social-preview.jpg" '
-            'alt="TSMP: two houses at night, joined by one path" width="100%">\n</p>'.format(self.repository,
-                                                                                            self.version),
+            '<p align="center">\n  <img src="{}" alt="TSMP: two houses at night, joined by one path" '
+            'width="100%">\n</p>'.format(self.asset("social-preview.jpg")),
+            self.download(),
+            # Most players read Russian: their part comes first, folded, so
+            # that it is one line for everyone else.
+            self.russian_part(),
+            self.start(),
+            "## What's new\n\n" + self.body,
+            self.files(),
+            self.changes(),
         ]
-        parts.append("## What's new\n\n" + self.body)
-        if self.russian:
-            parts.append("<details>\n<summary><b>По-русски</b></summary>\n\n{}\n\n</details>".format(self.russian))
-        parts.append(self.downloads())
-        parts.append(self.start())
-        parts.append(self.changes())
         return "\n\n".join(parts) + "\n"
 
-    def downloads(self):
+    def download(self):
+        """The two big buttons, English and Russian, for the launcher."""
+        link = self.url("releases/download/{}/tsmp.exe".format(self.version))
+        button = '  <a href="{}"><img src="{}" alt="{}" width="300"></a>'
+        exe = os.path.join(self.dist, "tsmp.exe")
+        facts = ["Windows 10 and 11"] + ([size(exe)] if os.path.exists(exe) else []) + ["free"]
+        return "\n".join([
+            '<p align="center">',
+            button.format(link, self.asset("download/download-en.png"), "Download for Windows: tsmp.exe, free"),
+            "  &nbsp;",
+            button.format(link, self.asset("download/download-ru.png"),
+                          "Скачать для Windows: tsmp.exe, бесплатно"),
+            "  <br>",
+            "  {}".format(" · ".join(facts)),
+            "  <br>",
+            "  По-русски: инструкция в блоке ниже ↓",
+            "</p>",
+        ])
+
+    def start(self):
+        return ("## How to start\n\n"
+                "1. **Download tsmp.exe** with the button above, on both computers. It is one file and there "
+                "is nothing to install: it puts the mod in place itself.\n"
+                "2. **Run it.** tsmp.exe is not code-signed, so the first time Windows may say "
+                "**Windows protected your PC**: click **More info**, then **Run anyway**. Some antivirus "
+                "programs are wary of new unsigned programs too.\n"
+                "3. **Allow it through the firewall** when Windows asks: allow it on private networks, or the "
+                "host will not be found.\n"
+                "4. **One hosts, the other joins.** One of you chooses **Host a session**, the other **Join a "
+                "session** and presses **Sync**. Then both press **Start game** and load the shared save. Keep "
+                "TSMP open while you play. On different networks you also need a session server (a friend's "
+                "or your own): the host enters its address under **Over the internet**, presses **Open** and "
+                "sends the invite; the other pastes it in **Join a session** and presses **Connect**.\n\n"
+                "**You need** Windows 10 or 11 and The Sims 4 on each computer: each player their own copy, "
+                "both at the same game version. In the game, turn on Game Options → Other → **Enable Custom "
+                "Content and Mods** and **Script Mods Allowed**, then restart the game.\n\n"
+                "TSMP is experimental: **What's new** below says what was tried on two computers and what only "
+                "in tests.\n\n"
+                "> [!WARNING]\n"
+                "> Joining runs the host's script mods on your computer. Only join people you trust.\n\n"
+                "Step by step, with pictures: [the README]({}) · [the site]({}).".format(
+                    self.url("blob/{}/README.md#playing".format(self.ref)), self.site()))
+
+    def russian_part(self):
+        """How to start and what is new, in Russian, folded away."""
+        lines = [
+            "<details>",
+            "<summary><b>🇷🇺 По-русски: как начать и что нового</b></summary>",
+            "",
+            "### Как начать",
+            "",
+            "1. **Скачайте tsmp.exe** кнопкой выше, на обоих компьютерах. Это один файл, и устанавливать "
+            "ничего не нужно: мод он сам положит куда нужно.",
+            "2. **Запустите его.** У tsmp.exe нет цифровой подписи, поэтому в первый раз Windows может написать "
+            "**«Система Windows защитила ваш компьютер»**: нажмите **Подробнее**, затем **Выполнить в любом "
+            "случае**. Некоторые антивирусы тоже настороженно относятся к новым программам без подписи.",
+            "3. **Разрешите доступ через брандмауэр**, когда Windows спросит: разрешите для частных сетей, "
+            "иначе хост не будет найден.",
+            "4. **Один создаёт сессию, второй входит в неё.** Один выбирает **Создать сессию**, второй — "
+            "**Войти в сессию** и нажимает **Синхронизировать**. Потом оба нажимают **Запустить игру** и "
+            "загружают общее сохранение. Не закрывайте TSMP во время игры. Из разных сетей нужен ещё сервер "
+            "сессий (друга или свой): хост вводит его адрес в блоке **Через интернет**, нажимает **Открыть** и "
+            "отправляет приглашение; второй вставляет его в **Войти в сессию** и нажимает **Подключиться**.",
+            "",
+            "**Нужно:** Windows 10 или 11 и The Sims 4 на каждом компьютере — у каждого своя копия, обе одной "
+            "и той же версии. В игре включите Настройки игры → Другое → **«Включить пользовательский контент "
+            "и моды»** и **«Разрешить моды-скрипты»**, затем перезапустите игру.",
+            "",
+            "Проект экспериментальный: что проверено на двух компьютерах, а что пока только в тестах, написано "
+            "в разделе «Что нового».",
+            "",
+            "> [!WARNING]",
+            "> При подключении скриптовые моды хоста запускаются на вашем компьютере. Подключайтесь только к "
+            "тем, кому доверяете.",
+            "",
+            "По шагам, с картинками: [README]({}) · [сайт]({}).".format(
+                self.url("blob/{}/README.ru.md#как-играть".format(self.ref)), self.site("ru/")),
+        ]
+        if self.russian:
+            lines += ["", "### Что нового", "", self.russian]
+        lines += ["", "</details>"]
+        return "\n".join(lines)
+
+    def files(self):
         rows = ["| File | What it is | Size | SHA-256 |", "| --- | --- | --- | --- |"]
-        for name, what in FILES:
+        for name, icon, what in FILES:
             path = os.path.join(self.dist, name)
             if not os.path.exists(path):
                 continue
             link = self.url("releases/download/{}/{}".format(self.version, name))
             digest = "" if name == "SHA256SUMS.txt" else "<code>{}…</code>".format(sha256(path)[:16])
-            rows.append("| [**{}**]({}) | {} | {} | {} |".format(name, link, what, size(path), digest))
+            picture = '<img src="{}" alt="" width="32" height="32" align="absmiddle">'.format(
+                self.asset("download/" + icon))
+            rows.append("| {}&nbsp;[**{}**]({}) | {} | {} | {} |".format(picture, name, link, what,
+                                                                        size(path).replace(" ", "&nbsp;"), digest))
         game = self.game_version()
-        needs = "**Needs** Windows and The Sims 4{} with script mods enabled in the game options.".format(
+        needs = "**Needs** Windows 10 or 11 and The Sims 4{} with script mods enabled in the game options.".format(
             " " + game if game else "")
         # Before the first release there is no launcher out there to update.
         if self.history.previous:
             needs += " Launchers already installed update themselves to this release."
-        return "## Download\n\n" + "\n".join(rows) + "\n\n" + needs
-
-    def start(self):
-        return ("## Getting started\n\n"
-                "1. Both players download **tsmp.exe** and run it. Windows asks once to let it through the "
-                "firewall: allow it on private networks.\n"
-                "2. One chooses **Host a session**, the other **Join a session**; over the internet the host "
-                "opens the session on a session server and sends the invite.\n"
-                "3. Both press **Start game**. The launcher says **Live. Both games are joined.** once you play "
-                "together.\n\n"
-                "More in the [README]({}) ([по-русски]({})).".format(
-                    self.url("blob/{}/README.md#playing".format(self.version)),
-                    self.url("blob/{}/README.ru.md#как-играть".format(self.version))))
+        return "## Files\n\n" + "\n".join(rows) + "\n\n" + needs
 
     def changes(self):
         changes = self.history.changes
@@ -221,10 +326,15 @@ class Notes:
                 self.url("compare/{}...{}".format(self.history.previous, self.version))))
         return "\n".join(lines).rstrip()
 
-    @staticmethod
-    def game_version():
-        """The newest game version the mappings describe."""
-        names = [name[:-5] for name in os.listdir(os.path.join(ROOT, "mappings")) if name.endswith(".json")]
+    def game_version(self):
+        """The newest game version the mappings describe, those of the
+        version's tag once it exists."""
+        if self.history.end == "HEAD":
+            names = os.listdir(os.path.join(ROOT, "mappings"))
+        else:
+            names = [os.path.basename(path) for path in
+                     git("ls-tree", "--name-only", self.history.end, "mappings/").split()]
+        names = [name[:-5] for name in names if name.endswith(".json")]
         versions = [name for name in names if re.match(r"^\d+(\.\d+)+$", name)]
         return max(versions, key=lambda name: tuple(int(part) for part in name.split("."))) if versions else ""
 

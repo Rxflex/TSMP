@@ -1,0 +1,48 @@
+name: release page
+
+# Writes the page of a release that is already published again, from the
+# changelogs and .github/release/notes.py as they are on the branch it is
+# started on: for a page whose text or pictures were improved after the
+# release. Started by hand (Actions, release page, Run workflow) with the
+# version, such as v0.0.1. The files of the release are downloaded only to
+# list their sizes and checksums; nothing is uploaded and no file of the
+# release changes, only its title and page.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The published release whose page to write again, such as v0.0.1"
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The page lists the changes between the release's tag and the
+          # previous one.
+          fetch-depth: 0
+
+      - name: Download the published files
+        run: gh release download "$VERSION" -D dist -p "tsmp*"
+
+      # The pictures are linked at the commit this runs on, so pictures added
+      # after the release show on its page.
+      - name: Write the release page
+        run: |
+          python3 .github/release/notes.py "$VERSION" dist notes.md title.txt
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the release page
+        run: gh release edit "$VERSION" --title "$(cat title.txt)" --notes-file notes.md
