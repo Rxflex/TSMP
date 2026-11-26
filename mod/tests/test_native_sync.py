@@ -2,6 +2,7 @@
 what the two agree on. Two `Sync` objects stand in for the two games, with
 a fake recorder for each and frames carried between them by hand."""
 
+import collections
 import os
 import struct
 import sys
@@ -19,6 +20,16 @@ def op(name, limit_is_size=True):
     return native.Op(native.BUILD_OP, 1, 2, 12, limit_is_size, name.encode())
 
 
+WALL_OP = 0xC6BE180D
+BULLDOZE_OP = 0x6D016A95
+
+
+def typed(kind, name="op"):
+    """An operation of the op type `kind`, which is what a refusal names:
+    the first u32 after the stream's header, which has been read."""
+    return native.Op(native.BUILD_OP, 1, 2, 12, True, bytes(12) + struct.pack("<I", kind) + name.encode())
+
+
 class FakeRecorder:
     """What `Sync` needs of `native.Recorder`."""
 
@@ -29,6 +40,18 @@ class FakeRecorder:
         self.oversized = []
         self.replayed = []
         self.forgotten = 0
+        self.lot_data = None
+        self.lot_loads = 0
+        self.failures = collections.deque()
+
+    def load(self, lot=0x3B4AB2C0, size=104065, crc=0x1234):
+        """The simulation sent its client the lot data of a zone."""
+        self.lot_data = (lot, size, crc)
+        self.lot_loads += 1
+
+    def refuse(self, kind, code=0x1001):
+        """The simulation refused an operation of type `kind`."""
+        self.failures.append((code, kind))
 
     def take(self):
         made, sizes = self.made, self.oversized
@@ -51,8 +74,9 @@ class FakeRecorder:
 class Game:
     """One side: a Sync, its recorder, and where it is."""
 
-    def __init__(self, run, known=True):
+    def __init__(self, run, known=True, cross=False):
         self.sync = native.Sync(lambda: known, run=run)
+        self.sync.cross = cross
         self.recorder = self.sync.recorder = FakeRecorder()
         self.place = LOT
         self.live = False
@@ -427,6 +451,235 @@ class JournalTest(Pair):
         self.assertEqual(len(sent(self.host)), native.SEND_OPS)
         self.tick()
         self.assertEqual(len(self.guest.replayed()), native.SEND_OPS + 5)
+
+
+class CrossSaveTest(Pair):
+    """Families from saves of their own: each game's walls come from its own
+    save, so edits are only shared on a lot both loaded the same."""
+
+    def setUp(self):
+        self.host = Game(run=1, cross=True)
+        self.guest = Game(run=2, cross=True)
+
+    def test_different_walls_share_nothing_and_say_so_once(self):
+        self.host.recorder.load(size=104065, crc=0x1111)
+        self.guest.recorder.load(size=104858, crc=0x2222)
+        self.host.recorder.made.append(op("wall"))
+        self.host.tick()
+        self.join()
+        self.host.recorder.made.append(op("floor"))
+        self.tick()
+        self.assertEqual(sent(self.host), [])
+        self.assertEqual(self.host.sync.sent, 0)
+        self.assertEqual(self.guest.replayed(), [])
+        self.assertFalse(self.host.sync.active)
+        self.assertEqual(self.host.sync.state(), native.DIFFERENT_WALLS)
+        self.assertIn(native.DIFFERENT_WALLS, self.guest.sync.describe()[0])
+        for game in (self.host, self.guest):
+            self.assertEqual(len(game.noted(native.DIFFERENT_WALLS)), 1)
+            self.assertTrue(game.noted("walls of zone 1001: here 3b4ab2c0-"))
+            self.assertTrue(game.noted("(different)"))
+        # An edit that is sent all the same is not replayed.
+        shared = native.Shared(LOT[1], LOT[0], 1, 1, False, op("wall"))
+        self.guest.sync.incoming(native.BUILD_OP, shared.frame()[9:])
+        self.guest.tick()
+        self.assertEqual(self.guest.replayed(), [])
+        self.assertTrue(self.guest.noted("not replayed: build mode sync is " + native.DIFFERENT_WALLS))
+
+    def test_the_same_walls_share_as_before(self):
+        self.host.recorder.load()
+        self.guest.recorder.load()
+        self.host.recorder.made.append(op("wall"))
+        self.host.tick()
+        self.join()
+        self.guest.recorder.made.append(op("paint"))
+        self.tick()
+        self.assertEqual(self.guest.replayed(), ["wall"])
+        self.assertEqual(self.host.replayed(), ["paint"])
+        self.assertTrue(self.host.noted("(the same)"))
+        self.assertTrue(self.host.noted("sync with the other game: on"))
+
+    def test_walls_not_known_share_nothing(self):
+        # The host's zone was loaded before its recorder was hooked.
+        self.guest.recorder.load()
+        self.host.recorder.made.append(op("wall"))
+        self.join()
+        self.assertEqual(self.guest.replayed(), [])
+        self.assertEqual(self.host.sync.state(), native.UNKNOWN_WALLS)
+        self.assertEqual(self.guest.sync.state(), native.UNKNOWN_WALLS)
+
+    def test_walls_learnt_after_the_greeting_are_told_and_sharing_starts(self):
+        self.guest.recorder.load()
+        self.host.recorder.made.append(op("wall"))
+        self.join()
+        self.assertEqual(self.guest.replayed(), [])
+        # The host's zone is loaded again, with the same walls as the guest's.
+        self.host.place = None
+        self.tick(1)
+        self.host.recorder.load()
+        self.host.place = LOT
+        self.tick()
+        self.assertEqual(self.guest.replayed(), ["wall"])
+        self.assertEqual(self.guest.sync.state(), "on")
+
+    def test_edits_refused_before_the_host_knew_are_sent_again(self):
+        # The host has not heard yet that the guest's save is its own.
+        self.host.sync.cross = False
+        self.guest.recorder.load()
+        self.host.recorder.made.append(op("wall"))
+        self.join()
+        self.assertEqual(self.guest.replayed(), [])
+        self.assertTrue(self.guest.noted("not replayed: build mode sync is " + native.UNKNOWN_WALLS))
+        # It hears, and its zone is loaded again with the guest's walls.
+        self.host.sync.cross = True
+        self.host.place = None
+        self.tick(1)
+        self.host.recorder.load()
+        self.host.place = LOT
+        self.tick(5)
+        self.assertEqual(self.guest.replayed(), ["wall"])
+
+    def test_lot_data_seen_before_the_zone_changed_is_not_the_next_zones(self):
+        self.host.recorder.load()
+        self.host.tick()
+        self.assertTrue(self.host.sync.arch)
+        # Straight to another zone, with no lot data of its own.
+        self.host.place = OTHER_LOT
+        self.host.tick()
+        self.assertIsNone(self.host.sync.arch)
+        # Left, then loaded: the lot data comes while nothing runs.
+        self.host.place = None
+        self.host.tick()
+        self.host.recorder.load(lot=0x3951B050, size=170602)
+        self.host.tick()
+        self.host.place = LOT
+        self.host.tick()
+        self.assertEqual(self.host.sync.arch, "3951b050-170602-00001234")
+
+    def test_one_family_shares_whatever_the_walls(self):
+        self.host.sync.cross = self.guest.sync.cross = False
+        self.host.recorder.load(crc=0x1111)
+        self.guest.recorder.load(crc=0x2222)
+        self.host.recorder.made.append(op("wall"))
+        self.join()
+        self.assertEqual(self.guest.replayed(), ["wall"])
+        # The fingerprints are logged all the same, to see if they can be trusted.
+        self.assertTrue(self.host.noted("(different)"))
+        self.assertEqual(self.host.sync.state(), "on")
+
+    def test_a_link_drop_loses_nothing(self):
+        self.host.recorder.load()
+        self.guest.recorder.load()
+        self.guest.recorder.ready = False
+        self.join()
+        self.host.recorder.made.append(op("one"))
+        self.tick()
+        # Dropped before it could be replayed; the guest's game runs on.
+        self.host.live = self.guest.live = False
+        self.tick()
+        self.guest.recorder.ready = True
+        self.host.recorder.made.append(op("two"))
+        self.join()
+        self.assertEqual(self.guest.replayed(), ["one", "two"])
+
+
+class RestartTest(Pair):
+    """A game started again has replayed none of the other's operations as
+    far as it knows, but its save holds those it replayed before."""
+
+    def restart_guest(self, cross):
+        self.host = Game(run=1, cross=cross)
+        self.guest = Game(run=2, cross=cross)
+        for game in (self.host, self.guest):
+            game.recorder.load()
+        self.join()
+        self.host.recorder.made += [op("one"), op("two")]
+        self.tick()
+        self.assertEqual(self.guest.replayed(), ["one", "two"])
+        self.host.live = self.guest.live = False
+        self.tick()
+        self.guest = Game(run=5, cross=cross)
+        self.guest.recorder.load()
+        self.host.recorder.made.append(op("three"))
+        self.join()
+
+    def test_what_was_replayed_before_is_not_replayed_again(self):
+        self.restart_guest(cross=True)
+        self.assertEqual(self.guest.replayed(), ["three"])
+        self.assertEqual(self.guest.sync.applied[LOT], (1, 3))
+        self.assertTrue(self.host.noted("build op(s) 1-2 of zone 1001, sent to it before"))
+        self.assertTrue(self.guest.noted("build op(s) 1-2 of the other game on zone 1001 were replayed"))
+        self.assertEqual(self.guest.sync.duplicates, 0)
+
+    def test_one_family_replays_everything_as_before(self):
+        self.restart_guest(cross=False)
+        self.assertEqual(self.guest.replayed(), ["one", "two", "three"])
+
+    def test_a_held_notice_does_not_undo_what_was_replayed(self):
+        self.join()
+        self.host.recorder.made.append(op("one"))
+        self.tick()
+        self.guest.sync.control({"type": "native_held", "save": "77", "zone": "1001", "run": "1", "seq": 9})
+        self.assertEqual(self.guest.sync.applied[LOT], (1, 1))
+        self.guest.sync.control({"type": "native_held", "save": "77"})
+        self.assertTrue([line for line in self.guest.sync.notes() if "native_held not understood" in line])
+
+
+class RefusalTest(Pair):
+    """The simulation refuses an operation it cannot apply, in message 719,
+    after the call was made."""
+
+    def test_a_refused_replay_is_not_counted_as_replayed(self):
+        self.join()
+        self.host.recorder.made.append(typed(WALL_OP))
+        self.tick()
+        self.assertEqual(self.guest.sync.replayed, 1)
+        self.guest.recorder.refuse(WALL_OP)
+        self.tick()
+        self.assertEqual(self.guest.sync.replayed, 0)
+        self.assertEqual(self.guest.sync.failed_here, 1)
+        self.assertEqual(self.guest.sync.failed_own, 0)
+        line = self.guest.sync.describe()[0]
+        self.assertIn("replayed 0", line)
+        self.assertIn("refused here 1 (codes 0x1001 x1)", line)
+        self.assertTrue(self.guest.noted("1 replayed build op(s) of the other game refused here (codes 0x1001 x1)"))
+
+    def test_a_refusal_of_our_own_is_counted_apart(self):
+        self.join()
+        self.host.recorder.made.append(typed(WALL_OP))
+        self.tick()
+        self.guest.recorder.made.append(typed(BULLDOZE_OP))
+        self.guest.recorder.refuse(BULLDOZE_OP, code=0x1003)
+        self.guest.recorder.refuse(0)
+        self.tick()
+        self.assertEqual(self.guest.sync.replayed, 1)
+        self.assertEqual(self.guest.sync.failed_here, 0)
+        self.assertEqual(self.guest.sync.failed_own, 2)
+        self.assertIn("own refused 2 (codes 0x1001 x1, 0x1003 x1)", self.guest.sync.describe()[0])
+
+    def test_each_refusal_takes_one_operation_oldest_first(self):
+        self.join()
+        self.guest.recorder.made.append(typed(WALL_OP, "mine"))
+        self.guest.tick()
+        self.host.recorder.made.append(typed(WALL_OP, "theirs"))
+        self.tick()
+        self.guest.recorder.refuse(WALL_OP)
+        self.tick()
+        # The guest's own edit came first.
+        self.assertEqual((self.guest.sync.failed_own, self.guest.sync.failed_here), (1, 0))
+        self.guest.recorder.refuse(WALL_OP)
+        self.tick()
+        self.assertEqual((self.guest.sync.failed_own, self.guest.sync.failed_here), (1, 1))
+
+    def test_a_refusal_long_after_the_replay_is_not_its(self):
+        self.join()
+        self.host.recorder.made.append(typed(WALL_OP))
+        self.tick()
+        for _ in range(native.REFUSAL_TICKS + 1):
+            self.guest.tick()
+        self.guest.recorder.refuse(WALL_OP)
+        self.guest.tick()
+        self.assertEqual((self.guest.sync.replayed, self.guest.sync.failed_own), (1, 1))
 
 
 class PayloadTest(unittest.TestCase):

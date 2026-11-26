@@ -40,8 +40,14 @@ class Peer:
         # answer once the snapshot under way is taken.
         self.saving = None
         self.asked = None
-        # Host: sims the guest travels to our lot with.
+        # Host: sims the guest travels to our lot with, and the household it
+        # said it plays when it last asked for our state.
         self.travellers = []
+        self.household = 0
+        # Host: the guest plays a family of its own, brought in from a save
+        # of its own (see Session.cross_save). Its lots are not ours, and
+        # what it plays is only its household.
+        self.cross = False
         # Host: until when the game is held paused for the guest, which
         # loads; how far our game was when the hold began, and whether the
         # hold ran out with the guest perhaps still loading what we saved,
@@ -54,6 +60,14 @@ class Peer:
         # snapshot was taken.
         self.held_for = 0
         self.taken_at = ""
+        # Host: how often the guest was sent back to loading since it was
+        # last joined, as our game moved on while it loaded; and, once it
+        # was let in all the same, what had moved (see Session._state).
+        self.moved_on = 0
+        self.drift = ""
+        # Host: we sent the guest back to loading, and it has not said since
+        # that it left its zone for it.
+        self.bumped = False
         # Host: since when the link has been down while we hold, 0 while up.
         self.link_lost_at = 0.0
         # Host: sims made the guest's on our lot, and those it plays on
@@ -131,7 +145,12 @@ class Peer:
         self.lapsed = False
         self.welcomed = []
         self.travellers = []
+        self.household = 0
+        self.cross = False
         self.epoch = 0
+        self.moved_on = 0
+        self.drift = ""
+        self.bumped = False
         self.building_sent = ()
         self.forget_places()
         # Another launcher may give this number to another player, and what

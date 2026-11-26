@@ -952,6 +952,49 @@ saves. Instead:
    playing, which the host's save now has, so the guest goes on playing its
    own household in the host's world.
 
+A guest that put in place a save it had to rename (`resync.cross_save`) makes
+it its own where it is its own (`resync._keep_ours`), as the host's save
+names the host's household and account everywhere. The household it played
+stays `save_slot.active_household_id` and the `active_household_id_on_save`
+of its zones, or the game would start its sims anew. Every record of the
+host's account (`AccountData`, `save_slot.nucleus_id`, the households'
+`account_id`, the sims' and zones' `nucleus_id`, the neighbourhoods'
+`owner_id` and lot owners) becomes the guest's own, so that its game,
+logged in as the guest, takes the guest's lots for its player's. Its home,
+while the host is not on it, keeps the guest's own objects and the places of
+its sims there: the host's simulation ran them on other walls. For the same
+reason the host sends no objects of the home of a household from another
+save. In such a session the host never moves its own game for a guest's
+travel: the guest is told to travel (a `travel` control) and asks for the
+state of the lot it goes to; the host's game, which paused itself as it
+ordered the travel, gets back the speed it had on the tick before. An order
+that reaches a guest still getting in step waits until it is done. A host's
+own travel to the home of a household from another save is let go, and its
+player told once that the walls there are only in the other game. The host
+is told the guest plays a save of its own by the `save` of its gift, or by
+`cross` in the guest's state.
+
+Once put in place, the host's save carries the host's guid, so a guest's
+game started again from it would take itself for a copy of the host's save
+until its first snapshot. `resync.CrossSaves` keeps, in `cross-saves.json`
+next to `households.json`, each save the host's was put in place in that
+way with the household played there, and `resync.cross_save` is true in it
+while that household is the one played (a copy of the host's save handed
+over later for One family together plays the host's). A save of the guest's
+that 0.0.1 gave the host's `AccountData` has nothing of the guest's account
+left but the `creator_id` and `creator_name` of the household it made; in a
+save of that same host's (one guid) those are taken for the guest's account
+(`resync._our_account`), else the host's account stays and the log says so.
+
+Everything of this section is done only in such a session. With One family
+together the guest's game is a copy of the host's save, nothing is renamed,
+and the session, resync and the record of households behave as they did
+before 0.0.2: any save of the guest puts the waiting snapshot in place, a
+travel the game does not start is waited for until `RELOAD_SECONDS`, a
+guest is sent back to loading for as long as the host's game moves on
+while it loads, and a hold pauses the game again once a second and refuses
+only play and speed.
+
 When the host refuses for good (`final`: what came cannot be read, or holds
 no household), both keep playing their own saves unjoined, and it is not
 tried again for that save. Any other failure (the host is between zones,
@@ -1178,15 +1221,47 @@ with two games on two networks.
 
 ## Known problems
 
-**Each with their own family is broken in practice.** The first real game with
-it, on two computers, kept falling apart: the session came apart again and
-again, the guest could not use build mode, loading went round in a loop, and
-the guest fell into a black void where nothing could be done. What
-[Households from different saves](#households-from-different-saves) describes
-holds in the tests, not yet in the game. Until it is fixed the launcher marks
-the mode as an alpha and points to One family together for a stable game.
-Both launchers still copy every save to `saves.tsmp-backup/` before such a
-session.
+**Each with their own family is an alpha.** The first real game with it, on
+two computers, kept falling apart: the session came apart again and again, the
+guest could not use build mode, loading went round in a loop, and the guest
+fell into a black void where nothing could be done. Version 0.0.2 fixes the
+causes its logs showed, described in
+[Households from different saves](#households-from-different-saves), but no
+real game has been played with them yet. The launcher still marks the mode as
+an alpha and points to One family together for a stable game, and both
+launchers still copy every save to `saves.tsmp-backup/` before such a session.
+What remains by design, or is not fixed yet:
+
+- Walls, floors, roofs, stairs and terrain never travel between two saves. On
+  the other player's lot each game shows the other's objects on its own
+  save's version of the lot, so doors and windows can hang without walls.
+  Build operations are shared only on a lot whose lot data both games loaded
+  the same (`native.Sync.arch_match`). The fingerprint is taken at load only:
+  once either game edits the lot, the two stop matching until both load it
+  again. The first zone after a game starts is loaded before the recorder is
+  hooked, so sharing stays off there.
+- A host that visits a guest's home runs it on the host save's version of
+  that lot, and routes sims on that lot's navigation mesh: sims may walk
+  oddly there. The host's player is told so on the way; the travel is not
+  stopped. Meeting on the host's lot is the safe way.
+- A travel the game did not start within `TRAVEL_START_SECONDS` (15 s) of the
+  order is given up, and a save that leaves the zone without travelling
+  (Manage Worlds, the main menu) drops the waiting snapshot. Giving up does
+  not bring back a game client that already faded out for the travel: its
+  player may still have to leave through Manage Worlds and load the save.
+  Leaving that way while loading still means one more load to get back in.
+- A guest whose game the host's has sent away while it was getting in step
+  travels once it is; until then its sim is gone from the host's lot.
+- After a session the guest's scratch save may hold the host's world with the
+  guest's family in it.
+- While a guest with a family of its own loads the host's game is held
+  paused, paused again every tick, and the players' clock commands are
+  refused, build mode's own pause aside. If it moves on anyway the guest
+  loads once more, then joins and both players are told how far the host's
+  game had moved.
+- `native.Sync` is still kept for one other game: with several guests,
+  what each says it has overwrites the others'. Each join also replays one
+  operation twice, in both modes, as both games greet with `want`.
 
 ## Open questions
 

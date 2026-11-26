@@ -7,7 +7,13 @@ player would, and the host by itself. Whatever happens:
 - when a guest is joined, its game client was built from a snapshot of the
   host's current world, taken when the host's game was where it still is,
   and it shows the world the host has it show (the host's, or one of its
-  own after it fell behind: see Session._world_for);
+  own after it fell behind: see Session._world_for); but for a guest with
+  a family of its own the host let in a moment behind, after it had sent
+  it back to loading once already as its game moved on
+  (session.MOVED_ON_RELOADS), which is told;
+- a player with a family of its own who leaves through the menu while
+  their game loads the host's state, and loads a lot of their own save, is
+  not joined on it;
 - what one guest does, or the host short of loading its zone again, never
   takes another guest out of the game;
 - while the host holds its game for a guest that loads, the game stays
@@ -17,7 +23,10 @@ player would, and the host by itself. Whatever happens:
 - no sim is played by two guests at once;
 - once things calm down (the links are up, all are on one lot, saves work),
   every guest is joined before long, and the host's game is not held
-  paused for longer than a hold lasts after the last load.
+  paused for longer than a hold lasts after the last load; even when the
+  host's game moves on while a guest loads, each guest with a family of
+  its own loads at most CALM_ADOPTS times for each load of the host's
+  zone. One of one family loads again until it is in step, as ever.
 
 One guest stands for the two-player game, three for a group, one of whom
 may leave for good before things calm down. The launcher
@@ -44,6 +53,10 @@ STEPS = int(os.environ.get("TSMP_FUZZ_STEPS", "80"))
 # steps: half the runs, each half as long again.
 GROUP_RUNS = max(1, RUNS // 2)
 GROUP_STEPS = STEPS * 3 // 2
+# Once calm, the loads of one guest for one load of the host's zone: the
+# first, and one more for a host that moved on (session.MOVED_ON_RELOADS),
+# and one for a hold that ran out meanwhile.
+CALM_ADOPTS = 3
 
 
 class Member:
@@ -63,6 +76,9 @@ class Member:
         game.sim_id = self.sim
         if own_family:
             game.save = 2
+            # As resync tells it from the names of its zones, or from its
+            # record of such saves after a load from the menu.
+            game.cross = True
         # What the guest's client was built from.
         game.shows = None
         self.linked = True
@@ -77,6 +93,9 @@ class Member:
         self.held_until = (0.0, None, "")
         # Where a travel the guest's game ordered and the session held goes.
         self.travelling_to = None
+        # Once calm: the host's world, and how many snapshots the guest had
+        # adopted when it began.
+        self.calm_from = (None, 0)
 
     @property
     def game(self):
@@ -272,6 +291,37 @@ class Group:
         self.last_load = self.host.now
         self.settle()
 
+    def leaves_through_menu(self, member, lot=None):
+        """The guest's player leaves through the menu (Manage Worlds) while
+        its game loads the host's state, and loads a lot of its own save:
+        the game saves without travelling, which drops the snapshot that
+        waited, and the zone loaded is one from the menu."""
+        guest = member.player
+        if guest.session._phase != session.LOADING or not member.own_family:
+            # With one family any save of the guest's puts the host's in
+            # place, as it always did.
+            return
+        if member.loading is None:
+            guest.leave()
+        member.loading = None
+        member.travelling_to = None
+        if guest.game.put and not guest.game.loads_its_own:
+            guest.game.put -= 1
+        guest.game.by_hand = True
+        guest.game.shows = None
+        guest.arrive(lot)
+        self.settle()
+
+    def host_moves_on(self):
+        """The host's game moves on while it is paused, as its player builds:
+        what a guest that loads gets is behind it. A guest joined on the
+        state as it was is kept in step by the host's messages."""
+        before = self.state_of_host()
+        self.host.game.ticks += 1
+        for member in self.guests:
+            if self.joined(member) and member.game.shows == before:
+                member.game.shows = self.state_of_host()
+
     def reload_host(self, lot=None):
         self.host.leave()
         self.settle()
@@ -384,7 +434,7 @@ class Group:
             # it out again: more of the time goes to what lets them in.
             self.help(test)
             return
-        choice = rng.randrange(19)
+        choice = rng.randrange(21)
         if choice == 0:
             self.by(test, None, self.tick, rng.choice([0.5, 5, 20, 60, 200]))
         elif choice == 1:
@@ -427,6 +477,12 @@ class Group:
         elif choice == 17:
             member = self.pick()
             self.by(test, member, self.guest_opens_cas, member)
+        elif choice == 18:
+            member = self.pick(loads=False)
+            self.by(test, member, self.leaves_through_menu, member, rng.choice([None, 7, 8]))
+        elif choice == 19:
+            if any(member.session._phase == session.LOADING for member in self.guests):
+                self.by(test, None, self.host_moves_on)
         else:
             self.by(test, None, self.tick, 1)
         for member in self.guests:
@@ -485,12 +541,15 @@ class Group:
                 self.guest_loads(member, 7)
         self.last_load = self.host.now
 
-    def calm_step(self):
+    def calm_step(self, moves_on=False):
+        """`moves_on`: the host's game moves on while each guest loads."""
         self.answer_snapshot()
         for member in self.guests:
             self.answer_contribution(member)
         for member in self.guests:
             if member.session._phase == session.LOADING:
+                if moves_on:
+                    self.host_moves_on()
                 self.guest_loads(member)
             elif not member.session.stale and member.game.zone_number != self.host.game.zone_number:
                 # The guest goes where the host is.
@@ -535,8 +594,17 @@ class Group:
             joined = self.joined(member)
             name = "{}, guest {}".format(where, member.number)
             if joined and not member.was_joined:
-                test.assertEqual(member.game.shows, self.state_of_host(),
-                                 "{}: joined on a client built from another state of the host".format(name))
+                peer = self.peer_of(member)
+                if peer.drift:
+                    # Let in a moment behind: the host's world, an older
+                    # moment of it, and both players were told.
+                    test.assertEqual(member.game.shows.split(b"@")[0], self.state_of_host().split(b"@")[0],
+                                     "{}: let in behind on another world of the host".format(name))
+                    test.assertTrue(any("moment behind" in notice for notice in member.game.notices),
+                                    "{}: let in behind without a word".format(name))
+                else:
+                    test.assertEqual(member.game.shows, self.state_of_host(),
+                                     "{}: joined on a client built from another state of the host".format(name))
                 test.assertEqual(member.session._world, host._world_for(self.peer_of(member)),
                                  "{}: joined showing another world than the host has it show".format(name))
             if joined:
@@ -573,7 +641,17 @@ class Group:
     def check_calm(self, test, where):
         """Calm, a hold ends once the guest it is for gets in, and that is
         not long after it began or the last load: the host is never held for
-        ever."""
+        ever. And no guest loads over and over for one load of the host's
+        zone."""
+        world = self.host.session._world
+        for member in self.guests:
+            if not member.own_family:
+                # One family together loads until it is in step, as ever.
+                continue
+            if member.calm_from[0] != world:
+                member.calm_from = (world, len(member.game.adopted))
+            test.assertLessEqual(len(member.game.adopted) - member.calm_from[1], CALM_ADOPTS,
+                                 "{}: guest {} loaded again and again".format(where, member.number))
         held = set(ident for ident, peer in self.host.session.peers.items() if peer.hold_until)
         if held - self.held:
             self.last_load = self.host.now
@@ -597,10 +675,13 @@ class FuzzTest(unittest.TestCase):
         group.calm()
         if group.gone:
             where += " guest {} gone".format(group.gone[0].number)
+        # In some runs the host's game moves on during every load. A guest
+        # of one family would load for as long as that lasts, as ever.
+        moves_on = rng.random() < 0.3 and all(member.own_family for member in group.guests)
         # Long enough for a guest whose gift was refused to try again after
         # the longest wait (session.RETRY_SECONDS), and be answered.
         for step in range(200):
-            group.calm_step()
+            group.calm_step(moves_on)
             group.check(self, "{} calm {}".format(where, step))
             group.check_calm(self, "{} calm {}".format(where, step))
             # The game may stay held a while for a guest that left, and a

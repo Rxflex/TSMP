@@ -79,10 +79,11 @@ log for both games (each mod sends its log lines to the other side, and the
 launcher shows the latest ones under the session status).
 
 **Tried with two computers and broken for now:** each with their own family.
-In a real game the session kept coming apart, the guest could not use build
-mode, loading went round in a loop and the guest fell into a black void. Until
-this is fixed the mode is an alpha; for a stable game play **One family
-together**. See [Known problems](docs/internals.md#known-problems).
+In the first real game the session kept coming apart, the guest could not use
+build mode, loading went round in a loop and the guest fell into a black void.
+Version 0.0.2 fixes what that game showed, but the fixes have not been tried in
+a real game yet, so the mode stays an alpha; for a stable game play **One
+family together**. See [Known problems](docs/internals.md#known-problems).
 
 **New, so far only run against the game's protocol in tests:** playing over the
 internet, Create-a-Sim for the guest, different lots, and the session keeping
@@ -234,11 +235,11 @@ it in advance.
 </p>
 
 > [!WARNING]
-> This way of playing is an alpha at a very early stage and often breaks: in
-> a real game the session kept coming apart, the guest could not use build
-> mode, loading went round in a loop and the guest fell into a black void. For
-> a stable game play **One family together**, and keep backups of your saves
-> (the launchers make them too, see below).
+> This way of playing is an alpha at a very early stage and may still break.
+> The first real game with it went badly; version 0.0.2 fixes what that game
+> showed, but nobody has played with the fixes yet. For a stable game play
+> **One family together**, and keep backups of your saves (the launchers make
+> them too, see below).
 
 Each player can bring a household from a save of their own. The host picks
 **Each with their own family** when they start hosting, and then no save is
@@ -248,6 +249,35 @@ goes on playing it there, in the host's world. Whenever the guest plays on a
 lot of its own, its household is given to the host again every few minutes
 and before it comes back. Both launchers back up their saves before such a
 session, because each game may write the other's family into its own.
+
+What to expect for now:
+
+- **Walls are not shared.** Walls, floors, roofs, stairs and terrain stay as
+  each player's own save has them. On the other player's lot you see their
+  furniture on *your* save's version of that lot, so a door or window may
+  hang where your save has no wall. Build-mode edits reach the other game
+  only on a lot whose walls are exactly the same in both saves.
+- **Build on your own lot, apart.** Change your home while the other player
+  is not there. Edits made while you are both on one lot are not copied.
+- **Meet on the host's lot.** When the host visits your home, the host's game
+  runs that lot on its own version of it, and sims may walk oddly there.
+- **"Go home" moves only you.** Sending your sim home from the host's lot
+  loads your home in your game; the host stays where it is.
+- **Do not leave while loading.** Avoid Manage Worlds, the main menu and
+  save-and-quit while your game loads the other player's state. After about
+  15 seconds the mod stops waiting; if the screen is still black, leave
+  through Manage Worlds and load your save. The host's world is no longer put
+  in your game that way.
+- **Pauses.** The host's game stays paused while a guest loads, and pressing
+  play is refused. If the host's game moves on anyway, the guest loads once
+  more and then joins, and both players are told.
+- **Your save may hold the host's world.** After a session the save your game
+  played may hold the host's world with your family in it. Keep the backups
+  in `saves.tsmp-backup/`, and do not save over your own save from inside a
+  session unless you mean to. A save that version 0.0.1 changed names the
+  host's account on your lots; the mod gives it your account back where it
+  can tell which is yours, and if build mode is still refused on your own
+  home, restore that save from the backups.
 
 ### Running a session server
 

@@ -88,6 +88,14 @@ CAS_SCREEN = "sims.exit2cas"
 CAS_REFUSED = "Create-a-Sim cannot be opened while the other player's game is being loaded"
 # The command that brackets build mode: `1` on entering it, `0` on leaving.
 BUILD_COMMAND = "clock.build_buy_pause_unpause"
+# Commands of the game client that ask for a pause and end it, by a name
+# the pause is kept under. The game keeps those of these names as pauses of
+# its interface, which outrank the speed of the game a host sets to hold
+# it; any other as one of the game's own, which setting a speed replaces.
+REQUEST_PAUSE = "clock.request_pause"
+UNREQUEST_PAUSE = "clock.unrequest_pause"
+PAUSE_NAME = "From Command"
+MODAL_PAUSES = frozenset(["Layout Manager Set Modal Visible", "Dialog Manager Set Dialog Visible"])
 # A guest holding back a travel to the host's lot waits this long for a host
 # that left it or cannot be reached, then travels as ordered.
 TRAVEL_WAIT_SECONDS = 30.0
@@ -109,6 +117,25 @@ STALL_SECONDS = 45.0
 MERGE_SECONDS = 120.0
 # The guest's game client to start loading the host's state.
 RELOAD_SECONDS = 90.0
+# The guest's game to begin leaving its zone for the host's state. A client
+# that ignored the order to travel never does, and its player would sit in
+# front of a black screen for as long as RELOAD_SECONDS.
+TRAVEL_START_SECONDS = 15.0
+# A guest orders no travel into the host's state this soon after its own
+# zone came out of its loading screen: a client still settling in ignores
+# the order.
+SETTLE_SECONDS = 3.0
+# A guest that has been joined this long got in for good: what it counted of
+# failed attempts to get in starts again from nothing.
+LIVE_SECONDS = 10.0
+# A guest sent back to loading this soon after it loaded the host's state
+# has missed it; from the second such miss on it waits a while first.
+MISSED_SECONDS = 30.0
+MISSES_TOLD = 3
+# Host: how often a guest with a family of its own is sent back to loading
+# as our game moved on while it loaded, before it is let in a moment behind
+# ours. One of our own family is sent back until it is in step, as ever.
+MOVED_ON_RELOADS = 1
 # The other game to be back after the link was lost; the session server
 # keeps a session this long for a host whose connection dropped.
 LINK_SECONDS = 120.0
@@ -121,7 +148,9 @@ GIVE_SECONDS = 300.0
 # Host: a guest that is loading and has shown no sign of life for this long
 # is not waited for.
 HOLD_SECONDS = 300.0
-# Host: how often the game is paused again while a guest loads.
+# Host: how often the game is paused again while a guest of one family
+# loads, and how often a hold that ran out is looked at again, to see
+# whether our game moved on since.
 PAUSE_SECONDS = 1.0
 # Notifications of our own the session keeps track of at most.
 MAX_NOTICES = 8
@@ -157,7 +186,7 @@ class Consts:
     from the game's protocol modules."""
 
     def __init__(self, view_update, pie_menu, interactable, set_sim_active, host_only=(), guest_local=(),
-                 owned=None, shared=(), notice=None, travel=None):
+                 owned=None, shared=(), notice=None, travel=None, selectable=None):
         self.view_update = view_update
         # Replies to a command, wanted only by the client that issued it.
         self.replies = frozenset([pie_menu, interactable])
@@ -177,6 +206,8 @@ class Consts:
         self.notice = notice
         # The message that orders the game client to travel to a lot.
         self.travel = travel
+        # Operation type that lists the sims the client's skewer shows.
+        self.selectable = selectable
 
 
 class Session:
@@ -194,13 +225,27 @@ class Session:
                                        the game keeps for its commands goes
         snapshot(done, places)         host: save once, then done(a list with
                                        bytes or None for each (zone id, lot,
-                                       player) of `places`, a snapshot for a
-                                       guest there), or done(None)
-        adopt(payload, travellers)     guest: load the host's snapshot by
+                                       player, cross) of `places`, a snapshot
+                                       for a guest there, of a save of its own
+                                       or not), or done(None)
+        adopt(payload, travellers, joined)
+                                       guest: load the host's snapshot by
                                        reloading the zone, or travelling with
-                                       those sims; raises on failure
+                                       those sims, to join the host there or
+                                       not; raises on failure
         adoptions()                    guest: how many snapshots the game has
                                        loaded so far
+        adopted_zone()                 guest: our zone the snapshot last put in
+                                       place was for, 0 when unknown
+        cancel_adopt()                 guest: the snapshot waiting for the game
+                                       to travel is given up
+        travel(zone_id, sim_ids)       guest: travel to our zone with those sims
+        our_zone(zone_id, lot)         guest: our zone for the host's zone of
+                                       that lot, or 0
+        home_lot()                     guest: what names the lot of the home
+                                       of the household we play, or ""
+        cross_save()                   guest: the host's save was made ours
+                                       from another (see resync.cross_save)
         reload()                       guest: load our own zone again, so that
                                        its game client shows our simulation
         save_id()                      what tells one save from another, or 0
@@ -221,8 +266,8 @@ class Session:
         forget_gifts()                 host: what guests gave is no longer in
                                        our game (see household.Gifts)
         progress()                     host: text that changes whenever the
-                                       game moves on (its clock, its
-                                       objects), "" when it cannot tell
+                                       game moves on, "<clock>:<objects>",
+                                       "" when it cannot tell
         contribute(done, whole)        guest: save, then done(bytes or None)
                                        with the household it plays: all of
                                        it, or what our simulation ran
@@ -234,13 +279,24 @@ class Session:
                                        again would not help
         same_household(a, b)           True if both sim ids are in one household
         pause()                        host: pause the game
-        welcome(sim_id, before, travellers, claimed)
+        clock_speed()                  host: the speed the game runs at
+        resume_after_travel(speed)     host: undo the pause of a travel our
+                                       client was never sent, back to `speed`
+                                       (negative: unknown)
+        foreign_home(zone_id)          host: whether that zone is the home of
+                                       a household from another save
+        welcome(sim_id, before, travellers, claimed, guest_household)
                                        host: have the other player's sim on
                                        the lot and controllable, but none of
-                                       the sims `claimed` by other players;
+                                       the sims `claimed` by other players,
+                                       nor of our household when the guest
+                                       plays `guest_household` (0: any);
                                        returns the ids now theirs, none to
                                        refuse it
-        send_off(sim_ids)              host: the other player left with these
+        send_off(sim_ids, guest_household)
+                                       host: the other player left with these;
+                                       ours stay when it plays
+                                       `guest_household` (0: any)
         joined(sim_id)                 host: the other player plays it here
         notify(text)                   tell the local player something
         appearance(sim_id)             bytes of how that sim looks now, b""
@@ -366,6 +422,35 @@ class Session:
         # Guest: the request whose state of the host's our game last loaded,
         # 0 when it plays none: what we give is as new as that state.
         self._loaded_request = 0
+        # Guest: when our zone last came out of its loading screen; when we
+        # told our game to load the host's state, and the state that waits
+        # for our game to settle first.
+        self._arrived_at = 0.0
+        self._adopted_at = 0.0
+        self._adoptable = None
+        # Guest: the household we played when we asked for the host's state.
+        self._asked_household = 0
+        # Guest: when we last loaded the host's state, and how often since
+        # we were last joined for long the host's world changed right after.
+        self._loaded_at = 0.0
+        self._misses = 0
+        # Guest: since when we are joined, 0 while we are not.
+        self._live_since = 0.0
+        # Guest: we gave our household from a save of our own (see
+        # `cross_save`). Kept as long as the save we play: a launcher
+        # that comes up again does not change it.
+        self._cross = False
+        # Pauses our game client asked for that were refused while the game
+        # was held, by name: the ends of those are refused too.
+        self._refused_pauses = {}
+        # Guest: an order of the host's to travel our sim that came while
+        # we were getting in step, carried out once we are done.
+        self._ordered = None
+        # Host: the speed our game ran at on the last tick it was not held,
+        # None when not known, and the homes from other saves our player
+        # was told of on the way there.
+        self._speed = None
+        self._warned_homes = set()
         # Host: since when a save of ours for guests runs, 0 when none
         # does. The game finishes a save it began whatever happens to the
         # requests, and two must not run at once: guests that ask meanwhile
@@ -469,6 +554,19 @@ class Session:
     @property
     def stale(self):
         return self._phase != IDLE
+
+    @property
+    def cross_save(self):
+        """Each plays a family of its own, brought from a save of its own
+        into the host's. A guest: it gave its household from another save,
+        or the host's save had to be made ours. A host: with any guest that
+        did. With one family, in one save, it is False, and nothing that is
+        done only for families of their own is done."""
+        if self.role == HOST:
+            return any(peer.cross for peer in self.peers.values())
+        if self.role != GUEST:
+            return False
+        return self._cross or bool(self._call("cross_save", 0))
 
     @property
     def holding(self):
@@ -640,6 +738,7 @@ class Session:
         self._lost_loading = False
         self._whole = False
         self._travel = None
+        self._ordered = None
 
     def _idle(self):
         self._phase = IDLE
@@ -651,6 +750,7 @@ class Session:
         self._away_at = 0.0
         self._resume = ""
         self._want_give = False
+        self._adoptable = None
 
     def _read_zone(self):
         self._zone = self._call("zone_id", 0) if self._in_zone else 0
@@ -673,6 +773,7 @@ class Session:
         # Every guest is to load this one, and none is behind it yet.
         for peer in self.peers.values():
             peer.epoch = 0
+            peer.moved_on = 0
 
     def _announce(self, want=False, to=None):
         """Tell the other games our state. `want` asks them to answer with
@@ -736,6 +837,9 @@ class Session:
             fields["save"] = str(self._save)
         if in_zone and self._world:
             fields["world"] = self._world
+        if self.role == GUEST and self.cross_save:
+            # Only when it is so, as games with one family always said.
+            fields["cross"] = True
         return fields
 
     def _tell(self, text):
@@ -767,6 +871,11 @@ class Session:
         if self._phase != IDLE:
             self._catch_up(now)
             return
+        if self._ordered is not None and self._in_zone and self._travel is None:
+            # The host sent our sim away while we got in step.
+            ordered, self._ordered = self._ordered, None
+            self._travel_ordered(ordered)
+            return
         if self._world and not self.live and self._in_zone and not (self.remotes and self.remote_in_zone):
             # We loaded the host's state, and the host left it before we
             # joined: what we play from now on is ours to give.
@@ -787,6 +896,17 @@ class Session:
                 # We were muted on the host's lot: what we have of our sims
                 # is older than what the host has.
                 self._go_stale("left the host's lot")
+            elif not self._owes and not self._call("playing_adopted", True) and self._on_own_home():
+                # Our own home, in a game started again from the save that
+                # holds the host's world: the host has a copy of it, which it
+                # ran on its own save's version of the lot, without our walls.
+                # Ours is the one to play, and to give.
+                if not self._alone:
+                    self._alone = True
+                    self._gave = now
+                    self._log("on our own home with the host elsewhere; playing it by ourselves")
+                else:
+                    self._keep_giving(now)
             elif self._owes or not self._call("playing_adopted", True):
                 # What we have of our sims is older than the host's: our
                 # game started from a save, not from the host's state.
@@ -797,20 +917,51 @@ class Session:
                 self._gave = now
                 self._log("the host is on another lot; playing this one by ourselves")
             else:
-                gift = self._transfers.outgoing(self._gift)
-                if gift is not None and now - gift.progressed > STALL_SECONDS:
-                    # The host gave up on it, perhaps without a word.
-                    self._transfers.drop(self._gift)
-                    gift = None
-                if gift is None and now - self._gave > GIVE_SECONDS:
-                    self._give_household(gift=True)
+                self._keep_giving(now)
         elif self._world != self.remote_world and self.remote_world and now >= self._retry_at:
             if self._alone:
                 # Our copy of this lot was not played by the host, and the
                 # host's copy of our household was not played by us.
                 self._go_stale("on the host's lot; bringing our household over", give=True)
-            else:
+            elif not (self.cross_save and self._missed(now)):
                 self._go_stale("our game does not show the host's world; loading it")
+
+    def _keep_giving(self, now):
+        """Guest, playing a lot apart by ourselves: give our household to
+        the host now and then, so that it has what we play."""
+        gift = self._transfers.outgoing(self._gift)
+        if gift is not None and now - gift.progressed > STALL_SECONDS:
+            # The host gave up on it, perhaps without a word.
+            self._transfers.drop(self._gift)
+            gift = None
+        if gift is None and now - self._gave > GIVE_SECONDS:
+            self._give_household(gift=True)
+
+    def _missed(self, now):
+        """Guest: the host's world changed right after we loaded it. Once
+        is what happens when the host's game moved on while we loaded; more
+        often than that, each load would be missed again at once, so we wait
+        a while, longer each time, before loading again. Returns True while
+        we wait."""
+        if not self._loaded_at or now - self._loaded_at > MISSED_SECONDS or self._retry_at > self._loaded_at:
+            return False
+        self._misses += 1
+        if self._misses < 2:
+            return False
+        wait = RETRY_SECONDS[min(self._misses - 2, len(RETRY_SECONDS) - 1)]
+        self._retry_at = now + wait
+        if self._misses == MISSES_TOLD:
+            self._tell("the host's game keeps changing while we load it; trying again every little while")
+        else:
+            self._log("the host's world changed again right after we loaded it; loading again in {:.0f} s".format(wait))
+        return True
+
+    def _on_own_home(self):
+        """Guest, playing a family of its own: we are on the lot of our
+        household's home."""
+        if not self.cross_save or not self._lot:
+            return False
+        return self._call("home_lot", "") == self._lot
 
     def _go_stale(self, why, give=False, tell=False):
         if tell:
@@ -864,8 +1015,24 @@ class Session:
             else:
                 self._ask()
         elif self._phase == LOADING:
-            if not self._left and now > self._deadline:
+            cross = self.cross_save
+            if (cross and not self._left and not self._call("leaving_zone", 0)
+                    and now - self._adopted_at > TRAVEL_START_SECONDS):
+                # Told to travel, our game client never began to: the
+                # snapshot is not to be put in place by whatever save of
+                # our game comes next. With one family any save of ours
+                # puts it in place, as it always did.
+                self._call("cancel_adopt", 0)
+                self._give_up("the game did not start loading the host's state; playing on by ourselves")
+            elif not self._left and now > self._deadline:
+                if cross:
+                    self._call("cancel_adopt", 0)
                 self._give_up("the game did not load the host's state; playing on by ourselves")
+        elif self._phase == RECEIVING and self._adoptable is not None:
+            if now > self._deadline:
+                self._give_up("our game did not settle in to load the host's state; playing on by ourselves")
+            else:
+                self._adopt(self._adoptable[0])
         elif self._phase in (GIVING, RECEIVING):
             moving = self._transfers.outgoing(self._request) or self._transfers.incoming(self._request)
             if moving is not None:
@@ -941,6 +1108,9 @@ class Session:
         else:
             request = self._next(SAVING, SAVE_SECONDS)
             self._log("giving our household to the host")
+        if not self.same_save:
+            # A family of our own, which we bring into the host's save.
+            self._cross = True
         self._contributing = now
         try:
             # The host has none of what we did not run ourselves when it
@@ -1047,7 +1217,14 @@ class Session:
         self._send_look()
         # Lots compare across saves; we may still be in a save of our own.
         # A guest about to travel asks for the lot it travels to.
-        self._joining = self.same_zone or self._travel is not None
+        if self._travel is None:
+            self._joining = self.same_zone
+        elif self.cross_save:
+            # The host may have sent our sim to a lot it is not on.
+            self._joining = self._to_hosts_lot(self._travel[2], self._travel[3])
+        else:
+            # A travel held back is one to the host's lot.
+            self._joining = True
         self._asked_world = self.remote_world
         request = self._next(ASKING, SAVE_SECONDS)
         self._log("asking the host for its state")
@@ -1058,6 +1235,7 @@ class Session:
         if lot:
             fields["lot"] = lot
         household = self._call("household_id", 0)
+        self._asked_household = household
         if household:
             fields["household"] = str(household)
         if self._travel is not None:
@@ -1080,10 +1258,26 @@ class Session:
     def _adopt(self, payload):
         if self.role != GUEST or self._phase != RECEIVING or not self._in_zone:
             return
-        self._put_before = self._call("adoptions", 0)
         travellers = self._travel[4] if self._travel is not None else ()
+        now = self._clock()
+        since = self._adoptable[1] if self._adoptable is not None else now
+        if self.cross_save and (now - self._arrived_at < SETTLE_SECONDS or (
+                not (travellers or self._call("active_sim_id", 0)) and now - since < SETTLE_SECONDS)):
+            # Our zone has only just come out of its loading screen, or our
+            # player has no sim yet to travel with: a client told to travel
+            # now does not. Tried again at the next tick; a game that still
+            # has no sim after a while cannot travel at all, and says so.
+            if self._adoptable is None:
+                self._adoptable = (payload, now)
+                self._deadline = now + RELOAD_SECONDS
+            return
+        self._adoptable = None
+        self._put_before = self._call("adoptions", 0)
         try:
-            self._game.adopt(payload, travellers)
+            # A state of the host's lot comes with the world we will join
+            # on; one of a lot apart with none, and what is there of ours
+            # is ours to keep (see resync.adopt).
+            self._game.adopt(payload, travellers, joined=bool(self._offered_world))
         except Exception as error:
             self._give_up("could not load the host's state ({}); playing on by ourselves".format(error))
             return
@@ -1092,25 +1286,50 @@ class Session:
         self._lost_loading = False
         # The game travels into the host's state now.
         self._travel = None
-        self._deadline = self._clock() + RELOAD_SECONDS
+        self._adopted_at = now
+        self._deadline = now + RELOAD_SECONDS
 
     def _loaded(self):
         """Back in a zone after loading the host's state: our game client
         shows the host's world and our simulation is as the host's was."""
+        cross = self.cross_save
+        if cross and self._call("loaded_by_hand", 0):
+            # The player left through the menu while the game loaded, and
+            # loaded a save: the host's state was not put in place.
+            self._give_up("a save was loaded from the menu instead of the host's state; playing on by ourselves")
+            self._loaded_by_hand()
+            return
         if self._call("adoptions", 0) <= self._put_before:
             # The game loaded the zone, but from our own save.
             self._give_up("the game loaded our own state, not the host's; playing on by ourselves")
             return
+        if cross and not self._landed_where_asked():
+            # The player left through the menu while the game loaded, and
+            # loaded something else: the host's state is in place, on
+            # another lot than the one it was for.
+            self._landed_elsewhere("the game loaded another lot than the host's state was for")
+            return
+        household = self._call("household_id", 0)
+        if cross and self._asked_household and household and household != self._asked_household:
+            # The host's save makes another household than ours the one
+            # played, and our player would play the host's family.
+            self._landed_elsewhere("this game now plays another household; switch back to yours", tell=True)
+            return
         self._log("loaded the host's state")
         world, lost = self._offered_world, self._lost_loading
         self._loaded_request = self._request
+        self._loaded_at = self._clock()
         self._idle()
         self._lost_loading = False
         self._alone = False
         self._owes = False
         self._whole = False
-        self._failures = 0
-        self._retry_at = 0.0
+        if not cross:
+            self._failures = 0
+            self._retry_at = 0.0
+        # With a family of our own, what we counted of failed attempts
+        # starts again once we have been joined a while (`_watch_live`): a
+        # state loaded only to be sent back at once is no success.
         if lost and not self.remotes and self._joining:
             # Our game client shows the host's world, which the host may
             # still show once it is back.
@@ -1122,6 +1341,38 @@ class Session:
         else:
             self._world = world
             self._behind = self._shows_host = False
+
+    def _landed_where_asked(self):
+        """Guest: the zone we are in is the one the host's state we loaded
+        was for, as far as the game can tell. By lot where both are known;
+        else by id, which is ours on both sides, as the host's state was
+        renamed to our zones before it was put in place."""
+        adopted = self._call("adopted_zone", 0)
+        if not adopted:
+            return True
+        lot = self._call("lot_of", "", adopted)
+        if lot and self._lot:
+            return lot == self._lot
+        return not self._zone or adopted == self._zone
+
+    def _landed_elsewhere(self, why, tell=False):
+        """Guest: after a load of the host's state, our game is not where
+        that state has us: we join nothing, play on as a load from the menu
+        would have us, and `_follow` loads the host's state again after a
+        while, longer each time."""
+        if tell:
+            self._tell(why)
+        else:
+            self._log(why)
+        self._loaded_request = self._request
+        self._idle()
+        self._lost_loading = False
+        self._world = ""
+        self._shows_host = self._behind = False
+        self._alone = False
+        self._retry_at = self._clock() + RETRY_SECONDS[min(self._failures, len(RETRY_SECONDS) - 1)]
+        self._failures += 1
+        self._announce()
 
     def resync(self):
         """Guest: load the host's state again, as after a reload of its
@@ -1150,6 +1401,7 @@ class Session:
             return
         self._hold_for(peer, request)
         peer.asked = request
+        peer.household = household
         # The sims a guest travels with, to be on our lot with it.
         peer.travellers = [frames.number(sim_id) for sim_id in message.get("travellers") or []]
         if not self._taking or self._clock() - self._taking > SAVE_SECONDS:
@@ -1223,7 +1475,9 @@ class Session:
         self._hold_for(peer, request)
         peer.saving = request
         batch.append((peer, request, self._world_for(peer)))
-        places.append((request[1], request[2], self._key(peer)))
+        # A guest from a save of its own keeps its own copy of the home of
+        # a household from another save (see resync.take).
+        places.append((request[1], request[2], self._key(peer), peer.cross))
         self._log_for(peer, "the other player is loading; saving for them")
 
     def _taken(self, number, world, batch, payloads, changes=0):
@@ -1324,6 +1578,10 @@ class Session:
     def _keep_holding(self, now):
         for peer in list(self.peers.values()):
             self._keep_holding_for(peer, now)
+        if self.cross_save and self.holding and self._in_zone:
+            # At every tick: whatever our game client unpaused meanwhile,
+            # say a dialog that closed, must not run the game on for long.
+            self._pause()
 
     def _keep_holding_for(self, peer, now):
         """Each hold ends on what its own guest does, never on what another
@@ -1331,7 +1589,11 @@ class Session:
         self._watch_lapse(peer, now)
         if not peer.hold_until:
             return
-        if self._live_with(peer) or not self._in_zone or peer.in_zone:
+        # A guest with a family of its own we just sent back to loading is
+        # in its zone only until it hears of it; once it did, being in its
+        # zone again means that it gave up.
+        sent_back = peer.cross and peer.bumped and not self._apart_with(peer)
+        if self._live_with(peer) or not self._in_zone or (peer.in_zone and not sent_back):
             # In, or gone from our zone, or playing by itself: a guest that
             # is loading says it is not in a zone. A save that crosses our
             # zone loading again joins only if held for again.
@@ -1344,7 +1606,7 @@ class Session:
             peer.link_lost_at = 0.0
             peer.lapsed = True
             self._log("{} did not get in; the game is no longer held for them".format(self._called(peer)))
-        elif now - self._paused_at > PAUSE_SECONDS:
+        elif not self.cross_save and now - self._paused_at > PAUSE_SECONDS:
             self._pause()
 
     def _watch_lapse(self, peer, now):
@@ -1463,6 +1725,9 @@ class Session:
         # gives is as new as that. One sent but never loaded does not count.
         base, since = peer.bases.get(frames.number(incoming.fields.get("loaded")), (None, 0))
         save = frames.number(incoming.fields.get("save"))
+        if save and self._save and save != self._save and not peer.cross:
+            self._log_for(peer, "the other player plays a family of its own, from a save of its own")
+            peer.cross = True
         # Only lots of our own save: a household from another is brought in
         # whole, and is not ours to keep.
         first = self._first_where(peer, since) if not save or save == self._save else None
@@ -1503,8 +1768,10 @@ class Session:
         # is this one's now. No other sim another player plays is handed.
         claimed = controlled | away | (handed - {peer.sim_id})
         try:
+            # A family of its own is all a guest plays: never one of ours,
+            # which the host's save made the one played in its game.
             theirs = self._game.welcome(peer.sim_id, tuple(peer.welcomed), tuple(peer.travellers),
-                                        tuple(sorted(claimed)))
+                                        tuple(sorted(claimed)), guest_household=peer.household if peer.cross else 0)
         except Exception as error:
             self._log("could not bring the other player's sim in: {}".format(error))
             return
@@ -1543,7 +1810,9 @@ class Session:
         peer.sent_off_in = self._world
         if sims:
             try:
-                self._game.send_off(sims)
+                # A guest playing a family of its own never played ours:
+                # our sims among them stay (see household.stays).
+                self._game.send_off(sims, guest_household=peer.household if peer.cross else 0)
             except Exception as error:
                 self._log("could not send the other player's sims off: {}".format(error))
 
@@ -1602,11 +1871,16 @@ class Session:
         if self.role is None:
             self._unattended()
             return
+        if self.role == HOST and self.cross_save and self._in_zone and not self.holding:
+            # What a guest's travel, which pauses our game, is to give back.
+            self._speed = self._call("clock_speed", -1)
         in_zone = bool(self._game.in_zone())
         zone = self._call("zone_id", 0) if in_zone else 0
         if in_zone != self._in_zone or zone != self._zone:
             self._in_zone = in_zone
             self._read_zone()
+            if in_zone:
+                self._arrived_at = self._clock()
             # The host forgets our sim when we leave a zone.
             for peer in self._all_peers():
                 peer.reported_sim_id = 0
@@ -1645,6 +1919,8 @@ class Session:
                     self._call("forget_gifts", 0)
 
     def _zone_changed(self):
+        # A client built again has no pause of its own left.
+        self._refused_pauses = {}
         if self._building:
             # A client built again is not in build mode.
             self._building = False
@@ -1691,15 +1967,21 @@ class Session:
                 # Our own reload, of our own zone.
                 self._reloading = False
             elif by_hand:
-                # The player loaded a save from the menu: what we played
-                # before is gone, and it may be an older copy of the host's
-                # save, or a save of their own, whose household is brought
-                # over again.
-                self._glued = 0
-                self._alone = False
-                self._retry_at = 0.0
-                self._failures = 0
-                self._loaded_request = 0
+                self._loaded_by_hand()
+
+    def _loaded_by_hand(self):
+        """Guest: the player loaded a save from the menu: what we played
+        before is gone, and it may be an older copy of the host's save, or a
+        save of their own, whose household is brought over again."""
+        self._glued = 0
+        self._alone = False
+        self._retry_at = 0.0
+        self._failures = 0
+        self._misses = 0
+        self._loaded_request = 0
+        self._cross = False
+        # Whatever the host had our sim do is not in that save.
+        self._ordered = None
 
     # -- the session going live and back -------------------------------
 
@@ -1712,6 +1994,15 @@ class Session:
             if live and self.role == GUEST:
                 self._behind = self._shows_host = True
                 self._report_sim()
+        if self.role == GUEST:
+            now = self._clock()
+            self._live_since = (self._live_since or now) if live else 0.0
+            if (live and now - self._live_since >= LIVE_SECONDS and (self._failures or self._misses)
+                    and self.cross_save):
+                # In for good: whatever failed before is behind us.
+                self._failures = 0
+                self._misses = 0
+                self._retry_at = 0.0
         if self.role == HOST:
             self._watch_peers()
 
@@ -1726,6 +2017,7 @@ class Session:
                     self._log_for(peer, "joined" if live else "no longer joined")
                 if live:
                     joining.append(peer)
+                    peer.moved_on = 0
         if not joining:
             return
         self._keep_holding(self._clock())
@@ -1946,6 +2238,8 @@ class Session:
         elif kind == "tell":
             if self.role == GUEST:
                 self._tell(str(message.get("text") or "")[:200])
+        elif kind == "travel":
+            self._travel_ordered(message)
         elif kind == "cas":
             line = self._our_cas_line(str(message.get("line") or ""))
             if self.role == GUEST and line and self.live:
@@ -1994,6 +2288,12 @@ class Session:
         peer.zone = frames.number(message.get("zone"))
         peer.lot = str(message.get("lot") or "")
         peer.save = frames.number(message.get("save"))
+        if not peer.in_zone:
+            # It heard that it is to load again, or is loading.
+            peer.bumped = False
+        if self.role == HOST and message.get("cross") and not peer.cross:
+            self._log_for(peer, "the other player plays a family of its own, from a save of its own")
+            peer.cross = True
         world = str(message.get("world") or "")
         if not peer.in_zone or world != peer.world:
             peer.building = False
@@ -2004,10 +2304,26 @@ class Session:
             # guests in with us are not behind.
             taken, peer.taken_at = peer.taken_at, ""
             now_at = self._call("progress", "")
+            peer.drift = ""
             if now_at and now_at != taken:
-                self._log_for(peer, "our game moved on while the other player loaded; they load it again")
-                peer.world = ""
-                self._bump(peer)
+                moved = _moved(taken, now_at)
+                if peer.cross and peer.moved_on >= MOVED_ON_RELOADS:
+                    # Sent back once already: loading again would most likely
+                    # be missed again, as each load gives our game the time
+                    # to move on. It plays on a moment behind ours.
+                    peer.drift = moved
+                    self._log_for(peer, "our game moved on again while the other player loaded ({}); letting "
+                                        "them in as they are".format(moved))
+                    self._tell("{} got in a moment behind our game".format(self._called(peer)))
+                    self._tell_guest(peer, "you got in a moment behind the host's game; what happened meanwhile "
+                                           "may look different for you")
+                else:
+                    peer.moved_on += 1
+                    peer.bumped = True
+                    self._log_for(peer, "our game moved on while the other player loaded ({}); they load it "
+                                        "again".format(moved))
+                    peer.world = ""
+                    self._bump(peer)
         if self.role == GUEST and was_live and not peer.in_zone:
             # Its zone will be built again, and its game client with it.
             self._go_stale("the host left its lot; waiting for it", tell=True)
@@ -2051,8 +2367,15 @@ class Session:
         Returns what the local client should receive instead, or None for
         nothing."""
         consts = self._consts
-        if msg_id == consts.travel and consts.travel is not None and self._holds_travel(data):
-            return None
+        if msg_id == consts.travel and consts.travel is not None:
+            if self._holds_travel(data):
+                return None
+            if self.role == HOST:
+                if self._guest_travels(data):
+                    return None
+                self._log_travel(data)
+                if self.cross_save:
+                    self._warn_of_foreign_home(data)
         if self._notices and msg_id == consts.notice:
             for text in self._notices:
                 if text in data:
@@ -2083,7 +2406,7 @@ class Session:
                 except ValueError:
                     remote = data
                 if remote:
-                    self._relay(msg_id, remote)
+                    self._relay_view_update(msg_id, remote)
                 return data
             self._relay(msg_id, data)
             return data
@@ -2096,6 +2419,122 @@ class Session:
                 return None
             return selection or None
         return None
+
+    def _relay_view_update(self, msg_id, data):
+        """Host: our view update, without our selection, for the guests
+        joined to us. A guest with a family of its own sees only its own
+        sims in its skewer: the list of our client's selectable sims holds
+        ours, and the guest's game would show both families as one."""
+        selectable = self._consts.selectable
+        crossed = [peer for peer in self._joined_peers() if peer.cross] if selectable is not None else []
+        if not crossed:
+            self._relay(msg_id, data)
+            return
+        for peer in self._joined_peers():
+            if not peer.cross:
+                self._relay(msg_id, data, to=peer)
+                continue
+            own = set(peer.welcomed) | {peer.sim_id}
+
+            def edit(op_type, op_data, own=own):
+                if op_type != selectable:
+                    return op_data
+                return wire.selectable_only(op_data, own)
+
+            try:
+                theirs = wire.edit_view_update(data, edit)
+            except ValueError:
+                theirs = data
+            if theirs:
+                self._relay(msg_id, theirs, to=peer)
+
+    def _guest_travels(self, data):
+        """Host: our game orders our client to travel. When all the sims
+        that travel are those of one guest with a family of its own, it is
+        that guest's sim that was sent somewhere, say home: the guest's game
+        travels, ours stays. The order names a zone of ours, which a guest
+        started in a save of its own may have under another id, so the
+        guest is told the lot too. Returns True when the order is the
+        guest's."""
+        zone_id, sims = wire.travel(data)
+        sims = [sim for sim in sims if sim]
+        if not zone_id or not sims:
+            return False
+        executing = self._executing if self._remote_depth else None
+        if executing is not None and executing.sim_id in sims:
+            peer = executing
+        else:
+            owners = set(self._owner(sim) for sim in sims)
+            peer = owners.pop() if len(owners) == 1 else None
+        if peer is None or not peer.cross or not self._live_with(peer):
+            return False
+        lot = self._call("lot_of", "", zone_id)
+        self._log_for(peer, "its sim travels to {:#x}{}; our game stays".format(
+            zone_id, " (lot {})".format(lot) if lot else ""))
+        self._to(peer, frames.control("travel", zone=str(zone_id), lot=lot, sims=[str(sim) for sim in sims]))
+        self._send_off(peer, sims)
+        if not self.holding:
+            # The game paused itself as it ordered the travel, for the
+            # loading screen that now never comes. A hold keeps its own.
+            self._call("resume_after_travel", 0, -1 if self._speed is None else self._speed)
+            self._log("our game is given back the speed it had before that travel ({})".format(
+                "unknown" if self._speed is None else self._speed))
+        return True
+
+    def _warn_of_foreign_home(self, data):
+        """Host: our own travel, to the home of a household taken in from a
+        save of another new game: the walls of that lot here are those of
+        our save, and its family's player has its own. Our player is told,
+        once a lot, and travels all the same."""
+        zone_id, _ = wire.travel(data)
+        if not zone_id or zone_id in self._warned_homes or not self._call("foreign_home", 0, zone_id):
+            return
+        self._warned_homes.add(zone_id)
+        self._tell("that lot is the home of a family from another save; its walls there are only in the other "
+                   "player's game")
+
+    def _log_travel(self, data):
+        """Host: what our client is ordered to travel to, and for whom: our
+        own player, or the guest whose command runs."""
+        zone_id, sims = wire.travel(data)
+        executing = self._executing if self._remote_depth else None
+        self._log("our game travels to {:#x} with sims {}{}".format(
+            zone_id, ", ".join(str(sim) for sim in sims) or "none",
+            ", as {} ordered".format(executing.label or "the other player") if executing is not None else ""))
+
+    def _travel_ordered(self, message):
+        """Guest: the host's simulation sent a sim of ours to another lot,
+        say home, as our player asked. Our game travels there, into the
+        host's state of it; the host's game stays where it is."""
+        theirs = frames.number(message.get("zone"))
+        lot = str(message.get("lot") or "")
+        sims = [sim for sim in (frames.number(sim) for sim in message.get("sims") or []) if sim]
+        if self.role != GUEST or not theirs or not sims:
+            return
+        if self._phase != IDLE or self._travel is not None:
+            # The host made our sim leave its lot already: the order is
+            # carried out once we are in step (`_follow`).
+            self._log("the host has our sim travel while we are getting in step; travelling once we are")
+            self._ordered = message
+            return
+        ours = self._call("our_zone", 0, theirs, lot)
+        if not ours:
+            # The host made our sim leave its lot already: its state is the
+            # one that shows where our sim is now.
+            self._tell("the host sent our sim to a lot our game does not have; loading the host's state instead")
+            self._go_stale("our sim was sent to a lot our game does not have; loading the host's state")
+            return
+        self._log("travelling to {:#x}{}, as our sim was sent there".format(
+            ours, " (lot {})".format(lot) if lot else ""))
+        self._travel = (None, ours, theirs, lot, sims)
+        self._go_stale("travelling as our sim was ordered")
+
+    def _to_hosts_lot(self, zone, lot):
+        """Guest: a travel to the host's zone `zone` of the lot `lot` is to
+        the lot the host is on."""
+        if lot and self.remote_lot:
+            return lot == self.remote_lot
+        return bool(zone) and zone == self.remote_zone
 
     def _holds_travel(self, data):
         """Guest: our game orders its client to travel. To the lot the host
@@ -2119,12 +2558,16 @@ class Session:
         return True
 
     def _let_travel_go(self):
-        """Guest: the held travel goes ahead as our game ordered it."""
+        """Guest: the held travel goes ahead as our game ordered it, or as
+        the host's game sent our sim, into our own copy of the lot."""
         travel, self._travel = self._travel, None
         if travel is not None and self._in_zone:
             self._log("travelling as our game ordered")
             try:
-                self._game.deliver(self._consts.travel, travel[0])
+                if travel[0] is None:
+                    self._game.travel(travel[1], travel[4])
+                else:
+                    self._game.deliver(self._consts.travel, travel[0])
             except Exception as error:
                 self._log("could not travel: {}".format(error))
 
@@ -2350,9 +2793,57 @@ class Session:
     def command(self, name, args):
         """The local game client issued a command. Returns False if it must
         not run locally."""
+        runs = self._command(name, args)
+        if name == BUILD_COMMAND:
+            # Each time: what a player who cannot build on a lot did, and
+            # whether our simulation heard of it.
+            self._log("build mode {} while {}: {}".format(
+                "on" if self._building else "off", self._doing(), "runs here" if runs else "dropped"))
+        return runs
+
+    def _doing(self):
+        """What this game does in the session, in a word, for the log."""
+        if self.live:
+            return "live"
+        if self._muted:
+            return "muted"
+        if self.stale:
+            return "getting in step"
+        if self.apart:
+            return "apart"
+        return "alone"
+
+    def _refused_while_held(self, name, args):
+        """Host, held: whether the command `name` is refused. With one family
+        only play and speed are, as ever."""
+        return self._held_clock(name, args) if self.cross_save else name in CLOCK_NAMES
+
+    def _held_clock(self, name, args):
+        """Host: whether the clock command `name` is refused while the game
+        is held. Every one but build mode's, which pauses the game itself:
+        pressing play would run the game on, and the end of a pause of the
+        game's own (by a name not in MODAL_PAUSES) would end ours with it,
+        as setting a speed replaced it. A pause asked for meanwhile is
+        noted, so that its end is refused too, even once the hold is over;
+        the end of a pause of the interface from before the hold goes
+        through, or that pause would last for ever."""
+        if not name.startswith("clock.") or name == BUILD_COMMAND:
+            return False
+        if name == REQUEST_PAUSE:
+            handle = _pause_name(args)
+            self._refused_pauses[handle] = self._refused_pauses.get(handle, 0) + 1
+        elif name == UNREQUEST_PAUSE:
+            return _pause_name(args) not in MODAL_PAUSES
+        return True
+
+    def _command(self, name, args):
         if name == BUILD_COMMAND:
             self._build_mode(bool(args) and str(args[0]) not in ("0", "False", "false"))
-        if self.role == HOST and self.holding and name in CLOCK_NAMES:
+        if self.role == HOST and name == UNREQUEST_PAUSE and self._refused_pauses.get(_pause_name(args)):
+            # The end of a pause that was refused while the game was held.
+            self._refused_pauses[_pause_name(args)] -= 1
+            return False
+        if self.role == HOST and self.holding and self._refused_while_held(name, args):
             self._log("{} refused: the other player is loading".format(name))
             held = self._held_for(but=self._executing)
             if self._executing is not None and held:
@@ -2395,6 +2886,16 @@ def _same_place(a, b):
     return bool(a[2]) and a[2] == b[2]
 
 
+def _moved(before, after):
+    """What moved between two `progress()` texts, "<ticks>:<objects>":
+    "ticks A->B, objects C->D", for the log."""
+    old, new = before.split(":", 1), after.split(":", 1)
+    parts = ["ticks {}->{}".format(old[0], new[0])]
+    if len(old) > 1 or len(new) > 1:
+        parts.append("objects {}->{}".format(old[1] if len(old) > 1 else "?", new[1] if len(new) > 1 else "?"))
+    return ", ".join(parts)
+
+
 def _names(peers):
     """The names of guests, for the player of another."""
     return ", ".join(peer.name or "another player" for peer in peers)
@@ -2403,6 +2904,12 @@ def _names(peers):
 def _numbers(text):
     """The numbers in a command line, as sim ids would be."""
     return [number for number in (frames.number(word) for word in text.split()) if number]
+
+
+def _pause_name(args):
+    """The name a pause is asked for, or ended, under, from the arguments
+    of the command."""
+    return " ".join(str(arg) for arg in args).strip().strip('"') or PAUSE_NAME
 
 
 def _forwarded(name):

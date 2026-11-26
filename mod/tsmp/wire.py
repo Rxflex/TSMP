@@ -121,10 +121,12 @@ def split_view_update(data, op_type):
     """Split a serialized `ViewUpdate` by operation type.
 
     Returns (without, only): two serialized view updates, the first holding
-    every operation except those of type `op_type` and the second holding only
-    those. Either is b"" when it would contain no operations. When no
-    operation matches, `without` is `data` itself.
+    every operation except those of type `op_type` (one type, or a set of
+    them) and the second holding only those. Either is b"" when it would
+    contain no operations. When no operation matches, `without` is `data`
+    itself.
     """
+    op_types = frozenset([op_type]) if isinstance(op_type, int) else frozenset(op_type)
     without = bytearray()
     only = bytearray()
     matched = False
@@ -142,7 +144,7 @@ def split_view_update(data, op_type):
                 put_field(common, number, wire_type, value)
                 continue
             for number, wire_type, operation in fields(value):
-                if number == 1 and wire_type == BYTES and _operation_type(operation) == op_type:
+                if number == 1 and wire_type == BYTES and _operation_type(operation) in op_types:
                     put_field(taken, number, wire_type, operation)
                 else:
                     put_field(kept, number, wire_type, operation)
@@ -158,6 +160,78 @@ def split_view_update(data, op_type):
     if not matched:
         return data, b""
     return bytes(without), bytes(only)
+
+
+def edit_view_update(data, edit):
+    """A serialized `ViewUpdate` with each operation's data replaced by
+    `edit(op_type, op_data)`, or the operation left out where that is None.
+    An operation list or entry left with no operation is left out too, and
+    b"" is returned for an update with none at all. Raises ValueError on
+    malformed input."""
+    out = bytearray()
+    entries = 0
+    for number, wire_type, entry in fields(data):
+        if number != 1 or wire_type != BYTES:
+            put_field(out, number, wire_type, entry)
+            continue
+        kept = bytearray()
+        lists = 0
+        for number, wire_type, value in fields(entry):
+            if number != 2 or wire_type != BYTES:
+                put_field(kept, number, wire_type, value)
+                continue
+            operations = bytearray()
+            for number, wire_type, operation in fields(value):
+                if number == 1 and wire_type == BYTES:
+                    operation = _edited(operation, edit)
+                    if operation is None:
+                        continue
+                put_field(operations, number, wire_type, operation)
+            if operations:
+                lists += 1
+                put_field(kept, 2, BYTES, bytes(operations))
+        if lists:
+            entries += 1
+            put_field(out, 1, BYTES, bytes(kept))
+    return bytes(out) if entries else b""
+
+
+def _edited(operation, edit):
+    op_type = 0
+    op_data = b""
+    for number, wire_type, value in fields(operation):
+        if number == 1 and wire_type == VARINT:
+            op_type = value
+        elif number == 2 and wire_type == BYTES:
+            op_data = value
+    replaced = edit(op_type, op_data)
+    if replaced is None:
+        return None
+    if replaced is op_data:
+        return operation
+    out = bytearray()
+    for number, wire_type, value in fields(operation):
+        if number != 2:
+            put_field(out, number, wire_type, value)
+    put_field(out, 2, BYTES, replaced)
+    return bytes(out)
+
+
+def selectable_only(data, sim_ids):
+    """A serialized `UpdateSelectableSims` (the data of a
+    SELECTABLE_SIMS_UPDATE operation) holding only the sims `sim_ids`, or
+    None when it would hold none. Field numbers of the game's Sims_pb2:
+    UpdateSelectableSims.sims = 1, each a SimPB whose id = 1. Raises
+    ValueError on malformed input."""
+    out = bytearray()
+    kept = 0
+    for number, wire_type, value in fields(data):
+        if number == 1 and wire_type == BYTES:
+            if first_varint(value, 1) not in sim_ids:
+                continue
+            kept += 1
+        put_field(out, number, wire_type, value)
+    return bytes(out) if kept else None
 
 
 def view_update_ops(data):

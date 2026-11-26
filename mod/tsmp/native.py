@@ -32,6 +32,16 @@ import struct
 
 from tsmp import frames
 
+# A checksum of a lot's walls; the game's Python may lack either module, and
+# then the size alone has to do.
+try:
+    from zlib import crc32 as _crc32
+except ImportError:
+    try:
+        from binascii import crc32 as _crc32
+    except ImportError:
+        _crc32 = None
+
 LIBRARY = "Simulation_x64.dll"
 
 # slots: name -> (table address, slot, expected function address)
@@ -310,7 +320,10 @@ def zones(memory, base, layout, area_tables=()):
 
 MASK32 = 0xFFFFFFFF
 SAMPLE_BYTES = 48
+# Samples kept per zone load, so that each load logs its own lot data and
+# refusals; and in all, so that a long session does not grow without end.
 MAX_SAMPLES = 40
+MAX_SAMPLES_KEPT = 4000
 # The stream handed to zone.receive holds its size and a pointer to its data.
 STREAM_SIZE = 0x20
 STREAM_POSITION = 0x24
@@ -323,6 +336,15 @@ BUILD_OP = 0x3A0F613C
 # Calls of the client that are repeated in the other game's simulation.
 SYNC_CALLS = frozenset([BUILD_OP])
 MAX_SYNC_BYTES = 1024 * 1024
+# Messages of the simulation to its client that tell about build mode.
+# 708 is the lot's data, sent when a zone loads: u32 lot id, eight bytes
+# more, then the lot's walls, floors and roofs as an "LDNB" block. 719 is a
+# refused build operation: field 1 its error code, field 2 its op type.
+LOT_DATA = 708
+OP_FAIL = 719
+LOT_WALLS_AT = 12
+MAX_LOT_BYTES = 16 * 1024 * 1024
+FAILURES_KEPT = 1024
 
 # A call of the client as it was made, with what replaying it needs. The
 # stream's limit was either its size or something else, and replay copies that.
@@ -342,7 +364,17 @@ class Recorder:
         self._hooked = {}  # object address -> table address
         self.counts = {}  # (kind, id) -> [calls, bytes]
         self.samples = []
+        self._sample_floor = 0
+        self._sample_lines = []
         self.errors = 0
+        # The newest lot data the simulation sent its client, as (lot id,
+        # size, checksum or None), and how many have been seen: what the
+        # other game's walls are compared with. Written on the game's
+        # threads; one assignment each, read on the simulation's.
+        self.lot_data = None
+        self.lot_loads = 0
+        # (error code, op type) of build operations the simulation refused.
+        self.failures = collections.deque(maxlen=FAILURES_KEPT)
         self.sync = False
         # Filled on the client's threads and emptied by `take` on the
         # simulation's; a deque is safe for both.
@@ -360,8 +392,36 @@ class Recorder:
         entry[0] += 1
         entry[1] += size
         wanted = ident == BUILD_OP if kind == "receive" else ident in BUILD_MESSAGES
-        if wanted and data and len(self.samples) < MAX_SAMPLES:
+        if (
+            wanted
+            and data
+            and len(self.samples) - self._sample_floor < MAX_SAMPLES
+            and len(self.samples) < MAX_SAMPLES_KEPT
+        ):
             self.samples.append((kind, ident, size, self._memory.read(data, min(size, SAMPLE_BYTES))))
+        if kind != "receive" and data:
+            if ident == LOT_DATA:
+                self._lot_data(data, size)
+            elif ident == OP_FAIL:
+                self._failure(data, size)
+
+    def _lot_data(self, data, size):
+        """Keep a fingerprint of the walls of the lot that was loaded. Two
+        games can only replay each other's edits of a lot built the same way
+        in both; in two saves of their own it is not, and every edit is then
+        refused (see Sync)."""
+        if size < LOT_WALLS_AT:
+            return
+        lot = self._memory.u32(data)
+        crc = None
+        if _crc32 is not None and size <= MAX_LOT_BYTES:
+            crc = _crc32(self._memory.read(data + LOT_WALLS_AT, size - LOT_WALLS_AT)) & MASK32
+        self.lot_data = (lot, size, crc)
+        self.lot_loads += 1
+
+    def _failure(self, data, size):
+        fields = _varints(self._memory.read(data, min(size, SAMPLE_BYTES)))
+        self.failures.append((fields.get(1, 0), fields.get(2, 0)))
 
     def _on_send(self, area, zone, client, message, data, size):
         self.note("send", message & MASK32, data, size & MASK32)
@@ -398,8 +458,11 @@ class Recorder:
         return ops, sizes
 
     def forget(self):
-        """Forget the connections seen: the zone was left or loaded again."""
+        """Forget the connections seen: the zone was left or loaded again.
+        The next load also keeps samples of its own: they are what tells
+        one load's lot data and refusals from another's."""
         self._connections.clear()
+        self._sample_floor = len(self.samples)
 
     def _ready_zone(self):
         """A zone that has our table and whose client has called it since
@@ -527,15 +590,69 @@ class Recorder:
         return lines
 
     def sample_lines(self):
-        return [
-            "{} {} size {}: {}".format(kind, _name(kind, ident), size, head.hex())
-            for kind, ident, size, head in self.samples
-        ]
+        # Samples are only ever added, and live mode asks for them all every
+        # few seconds: each is written out once.
+        for kind, ident, size, head in self.samples[len(self._sample_lines):]:
+            self._sample_lines.append("{} {} size {}: {}".format(kind, _name(kind, ident), size, head.hex()))
+        return list(self._sample_lines)
 
 
 def _name(kind, ident):
     # Calls from the client are known by a hash, messages by a small number.
     return "{:x}".format(ident) if kind == "receive" else str(ident)
+
+
+def _varints(data):
+    """{field number: value} of the varint fields of a protobuf message,
+    as far as it can be read."""
+    fields = {}
+    position = 0
+    try:
+        while position < len(data):
+            tag, position = _varint(data, position)
+            wire = tag & 7
+            if wire == 0:
+                fields[tag >> 3], position = _varint(data, position)
+            elif wire == 1:
+                position += 8
+            elif wire == 2:
+                length, position = _varint(data, position)
+                position += length
+            elif wire == 5:
+                position += 4
+            else:
+                break
+    except IndexError:
+        pass
+    return fields
+
+
+def _varint(data, position):
+    value = shift = 0
+    while True:
+        byte = data[position]
+        position += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if byte < 0x80 or shift > 63:
+            return value, position
+
+
+def _op_type(op):
+    """The type of a build operation: the first u32 its stream has left to
+    read, which is what a refusal names. None if there is none."""
+    if len(op.data) < op.position + 4:
+        return None
+    return struct.unpack_from("<I", op.data, op.position)[0]
+
+
+def _fingerprint(lot_data):
+    """A lot's data as `Recorder.lot_data` keeps it, as it travels in
+    `native_have`: lot id, size and checksum."""
+    if lot_data is None:
+        return None
+    lot, size, crc = lot_data
+    return "{:08x}-{}-{}".format(lot, size, "?" if crc is None else "{:08x}".format(crc))
 
 
 # This game's own operations kept per lot for the other game to catch up on.
@@ -725,6 +842,43 @@ class Shared(collections.namedtuple("Shared", "zone save run seq after_gap op"))
         return cls(zone, save, run, seq, bool(flags & FLAG_AFTER_GAP), op)
 
 
+# A refusal of the simulation names only the op type: it is taken for the
+# oldest operation of that type made or replayed within so many ticks.
+REFUSAL_TICKS = 64
+RECENT_OPS = 4096
+# The key of the other game while there is only one. The frames of the other
+# game do not say yet which guest sent them, so a session of several guests
+# still shares one `_Other`; each gets its own under its peer number once
+# they do.
+PAIR = 0
+
+DIFFERENT_WALLS = "off: the two games have different walls for this lot"
+UNKNOWN_WALLS = "off: the walls of this lot are not known in both games"
+
+
+class _Other:
+    """What this game knows of another game that may take part."""
+
+    def __init__(self):
+        # Whether it takes part; None until it says.
+        self.ok = None
+        # (save, zone) -> (run, number) of its last operation replayed here.
+        self.applied = {}
+        # (save, zone) -> number of our last operation it has or was sent;
+        # none is sent before it said how far it got.
+        self.cursors = {}
+        # (save, zone) -> the fingerprint of its walls of that lot, as it
+        # said in `native_have`, or None.
+        self.arch = {}
+        # The run it last said it is in, and (save, zone) -> (that run,
+        # number of our last operation sent to it). Kept when the session
+        # drops: they tell a game that was started again from one that only
+        # lost its link.
+        self.run = None
+        self.delivered = {}
+        self.asked = None
+
+
 class Sync:
     """Shares this game's build operations with the other game and replays
     the other game's here, the same way in both games whoever is the host.
@@ -738,6 +892,18 @@ class Sync:
     only sent and replayed while both games take part, on the lot both are
     on. One that arrives out of order is not replayed: the other game is
     asked again from the last one replayed, so that none is skipped.
+
+    Replaying a call only means it was made. The simulation may still refuse
+    it, which it tells its client in message 719; those are counted as
+    refused here, not as replayed.
+
+    In a session of families from saves of their own (`cross`), the walls of
+    a lot come from each game's own save and differ between the two, so an
+    edit of the other game's is refused here or lands on another house. There
+    operations are only shared on a lot whose walls both games loaded the
+    same (`arch_match`), which each learns from the lot data its simulation
+    sends its client when the zone loads (`Recorder.lot_data`), and a game
+    started again is not sent what it already replayed before.
     """
 
     def __init__(self, known, run=None):
@@ -746,22 +912,28 @@ class Sync:
         # off with the cheat, which live mode then leaves alone.
         self.enabled = True
         self.user_off = False
+        # Whether the families come from saves of their own; set by live mode.
+        self.cross = False
         self._known = known
         self.run = run if run is not None else (struct.unpack("<I", os.urandom(4))[0] or 1)
         self.journal = Journal(self._note)
         self._pending = Pending()
-        # (save, zone) -> (run, number) of the other game's last operation replayed here.
-        self.applied = {}
-        # (save, zone) -> number of our last operation the other game has or
-        # was sent; none is sent before the other game said how far it got.
-        self._cursors = {}
-        # Whether the other game takes part; None until it says.
-        self.theirs_ok = None
+        self._others = {PAIR: _Other()}
+        self._other = self._others[PAIR]
         self.place = None
+        # The fingerprint of the walls of the lot running here, or None, and
+        # how many lot data messages the recorder had seen when the zone
+        # was left: only one seen after that is this zone's.
+        self.arch = None
+        self._arch_seen = 0
+        self._said_arch = None
+        self._shown_arch = None
+        self._was_active = False
+        # Operations of the other game were refused while sync was off here.
+        self._missed = False
         self._live = False
         self._said_ok = None
         self._shown = None
-        self._asked = None
         # Operations were refused for want of room; asked for again once
         # the queue is empty.
         self._overflow = False
@@ -769,12 +941,32 @@ class Sync:
         self._frames = []
         self._notes = []
         self._ticks = 0
+        # (tick, op type, whether this game's own) of operations made or
+        # replayed lately, to tell whose a refusal is.
+        self._recent = collections.deque()
+        self._codes_here = {}
+        self._codes_own = {}
         self.recorded = 0
         self.sent = 0
         self.replayed = 0
         self.duplicates = 0
         self.refused = 0
         self.oversized = 0
+        self.failed_here = 0
+        self.failed_own = 0
+
+    @property
+    def theirs_ok(self):
+        """Whether the other game takes part; None until it says."""
+        return self._other.ok
+
+    @theirs_ok.setter
+    def theirs_ok(self, value):
+        self._other.ok = value
+
+    @property
+    def applied(self):
+        return self._other.applied
 
     @property
     def ok(self):
@@ -783,15 +975,26 @@ class Sync:
         return self.enabled and not self.user_off and bool(self._known())
 
     @property
+    def arch_match(self):
+        """Whether both games loaded the walls of the lot running here the same."""
+        return bool(self.arch) and self.arch == self._other.arch.get(self.place)
+
+    @property
     def active(self):
-        return self.ok and self.theirs_ok is True
+        return self.ok and self.theirs_ok is True and (not self.cross or self.arch_match)
 
     def state(self):
         if not self.ok:
             return "off here"
         if self.theirs_ok is None:
             return "waiting for the other game"
-        return "on" if self.theirs_ok else "off in the other game"
+        if not self.theirs_ok:
+            return "off in the other game"
+        if self.cross and not self.arch_match:
+            if self.arch and self._other.arch.get(self.place):
+                return DIFFERENT_WALLS
+            return UNKNOWN_WALLS
+        return "on"
 
     def _note(self, line):
         self._notes.append(line)
@@ -802,8 +1005,11 @@ class Sync:
         return lines
 
     def _have(self, key):
-        run, seq = self.applied.get(key, (0, 0))
-        return {"save": str(key[0]), "zone": str(key[1]), "run": str(run), "seq": seq}
+        run, seq = self._other.applied.get(key, (0, 0))
+        have = {"save": str(key[0]), "zone": str(key[1]), "run": str(run), "seq": seq, "own_run": str(self.run)}
+        if key == self.place and self.arch:
+            have["arch"] = self.arch
+        return have
 
     def greet(self, place, want=True):
         """Tell the other game whether we take part and how far we got with
@@ -811,21 +1017,25 @@ class Sync:
         self._said_ok = self.ok
         self._frames.append(frames.control("native", ok=self._said_ok, format=FORMAT))
         if place is not None:
-            self._frames.append(frames.control("native_have", want=want, **self._have(place)))
+            have = self._have(place)
+            self._said_arch = (place, have.get("arch"))
+            self._frames.append(frames.control("native_have", want=want, **have))
 
     def _ask(self, key):
         """Ask the other game again for what follows our last replayed
         operation of lot `key`; once until something changes."""
-        marker = (key, self.applied.get(key))
-        if marker != self._asked:
-            self._asked = marker
+        marker = (key, self._other.applied.get(key))
+        if marker != self._other.asked:
+            self._other.asked = marker
             self._frames.append(frames.control("native_have", **self._have(key)))
 
     def control(self, message):
-        """A `native` or `native_have` control message of the other game."""
+        """A `native`, `native_have` or `native_held` control message of the
+        other game."""
+        other = self._other
         kind = message.get("type")
         if kind == "native":
-            self.theirs_ok = bool(message.get("ok")) and message.get("format") == FORMAT
+            other.ok = bool(message.get("ok")) and message.get("format") == FORMAT
         elif kind == "native_have":
             try:
                 key = (int(message["save"]), int(message["zone"]))
@@ -833,10 +1043,54 @@ class Sync:
             except (KeyError, TypeError, ValueError):
                 self._note("native_have not understood: {!r}".format(message)[:200])
                 return
+            arch = message.get("arch")
+            other.arch[key] = str(arch) if arch else None
+            their_run = message.get("own_run")
+            their_run = None if their_run is None else str(their_run)
             # Numbers of an earlier run of this game mean nothing in this one.
-            self._cursors[key] = seq if run == self.run else 0
+            other.cursors[key] = seq if run == self.run else self._held(other, key, their_run)
+            if their_run is not None:
+                other.run = their_run
             if message.get("want"):
                 self.greet(self.place, want=False)
+        elif kind == "native_held":
+            try:
+                key = (int(message["save"]), int(message["zone"]))
+                run, seq = int(message["run"]), int(message["seq"])
+            except (KeyError, TypeError, ValueError):
+                self._note("native_held not understood: {!r}".format(message)[:200])
+                return
+            # Only taken by a game that has replayed none of that run's
+            # operations of the lot, which is what being started again leaves.
+            if other.applied.get(key, (None, 0))[0] != run:
+                other.applied[key] = (run, seq)
+                self._note(
+                    "build op(s) 1-{} of the other game on zone {} were replayed before this game was "
+                    "started again; they are taken as in our save".format(seq, key[1])
+                )
+
+    def _held(self, other, key, their_run):
+        """Where to start sending to a game that has replayed none of this
+        run's operations of lot `key`: from the first, unless it was sent
+        some while it ran before and has been started again since. Its save
+        then holds them, as far as it was saved, and replaying them again
+        would build everything twice. It numbers from scratch, so it is told
+        with `native_held`.
+
+        Only in a session of saves of their own (see `cross`); a session of
+        one save shared starts from the first, as it always did."""
+        mark = other.delivered.get(key)
+        if not self.cross or mark is None or mark[0] is None or their_run is None or mark[0] == their_run:
+            return 0
+        seq = mark[1]
+        self._frames.append(
+            frames.control("native_held", save=str(key[0]), zone=str(key[1]), run=str(self.run), seq=seq)
+        )
+        self._note(
+            "the other game was started again: build op(s) 1-{} of zone {}, sent to it before, "
+            "are taken as in its save and not sent again".format(seq, key[1])
+        )
+        return seq
 
     def incoming(self, call, payload):
         """A NATIVE frame of the other game; handled on the next tick, when
@@ -852,6 +1106,7 @@ class Sync:
             self._moved(place)
         elif self.recorder is not None and self.recorder.sync and self._ticks % REHOOK_TICKS == 0:
             self.recorder.start(receive=True)
+        self._look_at_lot()
         if self._live and not live:
             self._left()
         self._live = live
@@ -864,20 +1119,44 @@ class Sync:
         result, self._frames = self._frames, []
         return result
 
+    def _lot_loads(self):
+        return getattr(self.recorder, "lot_loads", 0) if self.recorder is not None else 0
+
     def _moved(self, place):
         self._drop_pending("the zone changed")
+        if place is None or self.place is not None:
+            # The lot data of the zone that comes next is sent while it
+            # loads, before it runs: only what comes from now on is its.
+            self._arch_seen = self._lot_loads()
         self.place = place
+        self.arch = None
         if self.recorder is not None:
             self.recorder.forget()
             if self.recorder.sync:
                 self.recorder.start(receive=True)
 
+    def _look_at_lot(self):
+        """Take the fingerprint of the walls of the lot running here from
+        the lot data its simulation sent since it was loaded."""
+        loads = self._lot_loads()
+        if loads < self._arch_seen:
+            # Another recorder, which counts from scratch.
+            self._arch_seen = loads
+        if self.place is not None and loads > self._arch_seen:
+            self._arch_seen = loads
+            self.arch = _fingerprint(self.recorder.lot_data)
+
     def _left(self):
         self._drop_pending("the session is no longer live")
         # Both games tell each other again when it is live again.
-        self.theirs_ok = None
-        self._cursors.clear()
+        other = self._other
+        other.ok = None
+        other.cursors.clear()
+        other.arch.clear()
         self._shown = None
+        self._shown_arch = None
+        self._was_active = False
+        self._missed = False
 
     def _record(self):
         if self.recorder is None:
@@ -887,6 +1166,7 @@ class Sync:
             self.oversized += 1
             self._note("build op too large to share, {} bytes".format(size))
         for op in ops:
+            self._remember(op, True)
             if self.place is None:
                 self._note("build op made while no zone runs, not kept")
             else:
@@ -900,10 +1180,43 @@ class Sync:
             # Taking part again, the other game's edits refused meanwhile
             # are to be sent again: it is asked where it stands.
             self.greet(self.place, want=self.ok)
+        elif self.cross and self.place is not None and self._said_arch != (self.place, self.arch):
+            # The walls here became known after the greeting, and the other
+            # game shares nothing on this lot until it has them.
+            self._said_arch = (self.place, self.arch)
+            self._frames.append(frames.control("native_have", **self._have(self.place)))
+        active = self.active
+        if self.cross and active and not self._was_active and self._missed and self.place is not None:
+            # Its edits refused here while the walls were not known to
+            # match are to be sent again.
+            self._missed = False
+            self._frames.append(frames.control("native_have", **self._have(self.place)))
+        self._was_active = active
+        self._show_arch()
         state = self.state()
         if state != self._shown and state != "waiting for the other game":
             self._shown = state
             self._note("build mode sync with the other game: " + state)
+
+    def _show_arch(self):
+        """Log the walls each game loaded for the lot, once each time either
+        changes: whether two games of one save agree on them is what tells
+        if the fingerprint can be trusted."""
+        if self.place is None:
+            return
+        theirs = self._other.arch.get(self.place)
+        shown = (self.place, self.arch, theirs)
+        if shown == self._shown_arch or not (self.arch or theirs):
+            return
+        self._shown_arch = shown
+        verdict = ""
+        if self.arch and theirs:
+            verdict = " (the same)" if self.arch == theirs else " (different)"
+        self._note(
+            "walls of zone {}: here {}, in the other game {}{}".format(
+                self.place[1], self.arch or "not known", theirs or "not known", verdict
+            )
+        )
 
     def _take(self, now):
         """Replay what waits and what arrived, in order. Each is replayed as
@@ -925,6 +1238,7 @@ class Sync:
         if replayed:
             self.replayed += len(replayed)
             self._note("replayed build op(s) {} of the other game".format(_span(replayed)))
+        self._refusals()
         if self._pending.expired(now):
             self._drop_pending("none could be replayed for {:.0f} s".format(PENDING_SECONDS))
             # Asked for at once: nothing else might ask for them.
@@ -934,6 +1248,49 @@ class Sync:
             self._overflow = False
             self._ask(self.place)
 
+    def _remember(self, op, ours):
+        kind = _op_type(op)
+        if kind is None:
+            return
+        self._recent.append((self._ticks, kind, ours))
+        if len(self._recent) > RECENT_OPS:
+            self._recent.popleft()
+
+    def _refusals(self):
+        """Count the operations the simulation refused (message 719), as
+        the other game's or this game's own. A refusal names only the op
+        type, so it is taken for the oldest operation of that type made or
+        replayed in the last `REFUSAL_TICKS` ticks; one that matches none is
+        counted as this game's own."""
+        recent = self._recent
+        while recent and recent[0][0] < self._ticks - REFUSAL_TICKS:
+            recent.popleft()
+        failures = getattr(self.recorder, "failures", None) if self.recorder is not None else None
+        here = {}
+        own = {}
+        while failures:
+            code, kind = failures.popleft()
+            ours = True
+            for index, (_, made, mine) in enumerate(recent):
+                if made == kind:
+                    ours = mine
+                    del recent[index]
+                    break
+            codes = own if ours else here
+            codes[code] = codes.get(code, 0) + 1
+        if here:
+            count = sum(here.values())
+            self.failed_here += count
+            # They were counted as replayed when the call was made.
+            self.replayed -= count
+            _add_codes(self._codes_here, here)
+            self._note("{} replayed build op(s) of the other game refused here ({})".format(count, _codes(here)))
+        if own:
+            count = sum(own.values())
+            self.failed_own += count
+            _add_codes(self._codes_own, own)
+            self._note("{} build op(s) of this game refused ({})".format(count, _codes(own)))
+
     def _accept(self, shared, now):
         """Queue an operation of the other game for replay. Returns why it
         was not, or None (also for one replayed before)."""
@@ -942,6 +1299,7 @@ class Sync:
         if not self._live:
             return "the session is not live"
         if not self.active:
+            self._missed = True
             return "build mode sync is " + self.state()
         if shared.key != self.place:
             return "made on another lot or save"
@@ -976,12 +1334,13 @@ class Sync:
                 return False
             self._pending.pop()
             self.applied[shared.key] = (shared.run, shared.seq)
+            self._remember(shared.op, False)
             replayed.append(shared.seq)
         return True
 
     def _drop_pending(self, reason):
         count = self._pending.clear()
-        self._asked = None
+        self._other.asked = None
         # Every caller asks again or greets again.
         self._overflow = False
         if count:
@@ -989,7 +1348,8 @@ class Sync:
 
     def _send(self):
         key = self.place
-        cursor = self._cursors.get(key)
+        other = self._other
+        cursor = other.cursors.get(key)
         if key is None or cursor is None:
             return
         ops = self.journal.after(key, cursor)
@@ -1006,18 +1366,31 @@ class Sync:
             self._frames.append(Shared(key[1], key[0], self.run, seq, after_gap, op).frame())
             cursor = seq
             size += len(op.data)
-        self._cursors[key] = cursor
+        other.cursors[key] = cursor
+        other.delivered[key] = (other.run, cursor)
         self.sent += len(ops)
         self._note("sent build op(s) {} ({} bytes)".format(_span([seq for seq, _ in ops]), size))
 
     def describe(self):
         return [
             "native sync: {}; recorded {}, sent {}, replayed {}, waiting {}, duplicates {}, "
-            "not replayed {}, too large {}".format(
+            "not replayed {}, too large {}, refused here {}{}, own refused {}{}".format(
                 self.state(), self.recorded, self.sent, self.replayed, len(self._pending),
                 self.duplicates, self.refused, self.oversized,
+                self.failed_here, " ({})".format(_codes(self._codes_here)) if self._codes_here else "",
+                self.failed_own, " ({})".format(_codes(self._codes_own)) if self._codes_own else "",
             )
         ]
+
+
+def _add_codes(total, codes):
+    for code, count in codes.items():
+        total[code] = total.get(code, 0) + count
+
+
+def _codes(codes):
+    """"codes 0x1001 x5, 0x1003 x1" for a log line about refusals."""
+    return "codes " + ", ".join("{:#x} x{}".format(code, count) for code, count in sorted(codes.items()))
 
 
 _build_known = None
@@ -1068,6 +1441,13 @@ def command(mode):
 def configure(enabled):
     """Whether config.json lets live mode share build operations."""
     _sync.enabled = bool(enabled)
+
+
+def set_cross(cross):
+    """Whether the session is one of families from saves of their own
+    (live.cross_save): build operations are then shared only on a lot whose
+    walls both games loaded the same (see Sync)."""
+    _sync.cross = bool(cross)
 
 
 def wanted():

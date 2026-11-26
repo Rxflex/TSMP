@@ -4,7 +4,7 @@ The game imports this package when it loads tsmp.ts4script. Nothing here may
 raise: a failing script mod can break the game's own startup.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 try:
     from tsmp import bootstrap

@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -215,13 +216,121 @@ class WelcomeTest(unittest.TestCase):
         self.assertEqual([sim.id for sim in household.unclaimed(group, {2})], [1, 3])
         self.assertEqual(household.unclaimed(group, set()), group)
 
+    def test_a_sim_of_ours_is_refused_to_a_player_whose_game_plays_another_household(self):
+        Services(self, {1: Member(1, 5), 2: Member(2, 6)})
+        client = Client(5)
+        # Nothing was handed to it before, but its game says what it plays.
+        self.assertEqual(household.welcome(1, client, guest_household=6), [])
+        self.assertEqual(household.welcome(2, client, guest_household=6), [2])
+        # With one family together it plays ours.
+        self.assertEqual(household.welcome(1, client, guest_household=5), [1])
+        self.assertEqual(household.welcome(1, client), [1])
+        self.assertEqual(client.added, [2])
+
     def test_the_sims_that_came_along_are_those_in_this_zone(self):
         members = [Sim(1, zone_id=7), Sim(2, zone_id=7), Sim(3, zone_id=8)]
         self.assertEqual([sim.id for sim in household._travellers(1, members, 7)], [2])
         self.assertEqual(household._travellers(1, members, 0), [])
 
 
+class Member:
+    """A sim info on our lot."""
+
+    def __init__(self, sim_id, household_id, zone_id=7):
+        self.id = sim_id
+        self.household_id = household_id
+        self.zone_id = zone_id
+        self.left = False
+
+    def is_instanced(self):
+        return True
+
+    def get_sim_instance(self):
+        return self
+
+    @property
+    def household(self):
+        return types.SimpleNamespace(sim_info_gen=lambda: iter([self]))
+
+
+class Client:
+    def __init__(self, household_id, active=None):
+        self.household = types.SimpleNamespace(id=household_id)
+        self.active_sim_info = active
+        self.selectable_sims = []
+        self.added = []
+
+    def add_selectable_sim_info(self, info):
+        self.selectable_sims.append(info)
+        self.added.append(info.id)
+
+    def remove_selectable_sim_info(self, info):
+        self.selectable_sims.remove(info)
+
+
+class Services:
+    """The game's `services` module, as far as welcoming and sending off
+    sims go, for the length of a test."""
+
+    def __init__(self, test, infos):
+        situations = types.SimpleNamespace(make_sim_leave_now_must_run=lambda sim: setattr(sim, "left", True))
+        module = types.ModuleType("services")
+        module.sim_info_manager = lambda: infos
+        module.current_zone_id = lambda: 7
+        module.get_zone_situation_manager = lambda: situations
+        kept = sys.modules.get("services")
+        sys.modules["services"] = module
+        test.addCleanup(lambda: sys.modules.__setitem__("services", kept) if kept else sys.modules.pop("services"))
+
+
+class HomeTest(unittest.TestCase):
+    """The lot a household given to the host is to live on."""
+
+    def settle(self, foreign):
+        Services(self, {})
+        home = Zone(9)
+        home.household_id = 0
+        # Our save's own owner account of the lot, as a copy of it has.
+        home.nucleus_id = 0x44
+        persistence = Persistence(home)
+        persistence._save_game_data_proto = types.SimpleNamespace(zones=persistence.zones)
+        persistence.get_lot_data_from_zone_data = lambda zone: None
+        given = types.SimpleNamespace(household_id=5, name="")
+        self.assertEqual(household._settle_home(persistence, given, 0x33, None, 9, b"", foreign=foreign), 9)
+        self.assertEqual(home.household_id, 5)
+        return home
+
+    def test_a_home_from_a_save_of_another_new_game_is_our_accounts(self):
+        self.assertEqual(self.settle(foreign=True).nucleus_id, 0x33)
+
+    def test_with_one_family_the_lot_keeps_its_account_as_before(self):
+        self.assertEqual(self.settle(foreign=False).nucleus_id, 0x44)
+
+
 class SendOffTest(unittest.TestCase):
+    def test_a_sim_of_ours_stays_when_a_player_of_another_household_leaves(self):
+        ours, other, theirs = Member(1, 5), Member(3, 5), Member(2, 6)
+        Services(self, {1: ours, 2: theirs, 3: other})
+        client = Client(5, active=ours)
+        self.assertEqual(household.send_off([1, 2, 3], client, guest_household=6), [2])
+        self.assertFalse(other.left)
+        self.assertTrue(theirs.left)
+
+    def test_with_one_family_together_the_other_players_sims_of_ours_go(self):
+        ours, other = Member(1, 5), Member(3, 5)
+        Services(self, {1: ours, 3: other})
+        client = Client(5, active=ours)
+        self.assertEqual(household.send_off([1, 3], client, guest_household=5), [3])
+        self.assertEqual(household.send_off([3], client), [3])
+        # Never the sim our player plays.
+        self.assertFalse(ours.left)
+
+    def test_who_stays(self):
+        self.assertTrue(household.stays(5, 5, 6))
+        self.assertFalse(household.stays(6, 5, 6))
+        self.assertFalse(household.stays(5, 5, 5))
+        self.assertFalse(household.stays(5, 5, 0))
+
     def test_the_first_way_that_works_is_taken(self):
         calls = []
 
@@ -477,6 +586,31 @@ class MergesTest(unittest.TestCase):
         # Our game loaded a save from the menu, perhaps without that gift.
         gifts.forget()
         self.assertFalse(gifts.older(5, 9, ("p1", 2, 4)))
+
+    def test_a_household_from_another_save_is_marked_for_good(self):
+        merges = household.Merges(self.path)
+        merges.took(5, 8, 9, household.TOOK_IN)
+        self.assertTrue(merges.foreign(5, 9))
+        self.assertFalse(merges.foreign(5, 8))
+        # Played here since, by a guest that loaded our save.
+        merges.joined([5], 9)
+        merges.took(5, 9, 9, household.UPDATED)
+        self.assertTrue(merges.foreign(5, 9))
+        self.assertTrue(household.Merges(self.path).foreign(5, 9))
+        # A copy from before is kept, and the household is still foreign.
+        merges.took(5, 8, 9, household.KEPT)
+        self.assertTrue(merges.foreign(5, 9))
+        self.assertTrue(merges.keeps_ours(5, 8, 9))
+
+    def test_a_household_of_our_own_save_is_not(self):
+        merges = household.Merges(self.path)
+        merges.took(5, 9, 9, household.UPDATED)
+        merges.took(6, 0, 9, household.TOOK_IN)
+        self.assertFalse(merges.foreign(5, 9))
+        self.assertFalse(merges.foreign(6, 9))
+        # Kept for being older, it is known to come from elsewhere.
+        merges.took(6, 8, 9, household.OLDER)
+        self.assertTrue(merges.foreign(6, 9))
 
     def test_an_older_gift_is_kept_out_of_the_record_of_merges(self):
         merges = household.Merges(self.path)

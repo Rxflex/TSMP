@@ -77,6 +77,7 @@ def _consts():
         shared=[_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41)],
         notice=_name(Consts_pb2, "MSG_UI_NOTIFICATION_SHOW", 41),
         travel=_name(Consts_pb2, "MSG_TRAVEL_SIMS_TO_ZONE", 239),
+        selectable=_name(operation, "SELECTABLE_SIMS_UPDATE", 120),
     )
 
 
@@ -212,9 +213,74 @@ class Game:
         resync.install()
         resync.take(done, places)
 
-    def adopt(self, payload, travellers=()):
+    def adopt(self, payload, travellers=(), joined=None):
         sims = list(travellers) or [self.active_sim_id()]
-        resync.adopt(payload, sims, session_module.RELOAD_SECONDS)
+        resync.adopt(payload, sims, session_module.RELOAD_SECONDS, joined=joined)
+
+    def adopted_zone(self):
+        return resync.adopted_zone()
+
+    def cancel_adopt(self):
+        return resync.cancel()
+
+    def travel(self, zone_id, sim_ids):
+        from world import travel_service
+
+        travel_service.travel_sims_to_zone([sim_id for sim_id in sim_ids if sim_id], zone_id)
+
+    def our_zone(self, zone_id, lot=""):
+        """Our zone of the lot `lot`, else the one the host names
+        `zone_id`, 0 when our save has neither."""
+        import services
+
+        persistence = services.get_persistence_service()
+        zone = resync.on_lot(persistence, lot)
+        if zone is not None:
+            return zone.zone_id
+        for zone in persistence.zone_proto_buffs_gen():
+            if resync.host_zone(zone.zone_id) == zone_id:
+                return zone.zone_id
+        return 0
+
+    def home_lot(self):
+        import services
+
+        household = services.active_household()
+        return resync.lot_key(household.home_zone_id) if household is not None else ""
+
+    def cross_save(self):
+        return resync.cross_save()
+
+    def foreign_home(self, zone_id):
+        import services
+
+        return resync.foreign_home(services.get_persistence_service(), zone_id)
+
+    def clock_speed(self):
+        import services
+
+        return int(services.game_clock_service().clock_speed)
+
+    def resume_after_travel(self, speed):
+        """Undo the pause the game put itself in as it ordered our client to
+        travel, an order that was a guest's and that our client never got:
+        the speed `speed` it ran at before comes back, unless it was paused
+        or is not known (negative). A travel of a situation keeps a pause
+        request of its own, with the situation it was for, until the zone
+        is left; both are let go."""
+        import services
+        from clock import ClockSpeedMode, GameSpeedChangeSource
+
+        clock = services.game_clock_service()
+        situations = services.get_zone_situation_manager()
+        handle = getattr(situations, "_pause_handle", None)
+        if handle is not None:
+            situations._pause_handle = None
+            situations._departing_situation_seed = None
+            clock.remove_request(handle, source=GameSpeedChangeSource.SITUATION)
+            log.info("the pause of a guest's situation travel is let go")
+        if speed > 0 and speed != ClockSpeedMode.PAUSED:
+            clock.set_clock_speed(ClockSpeedMode(speed))
 
     def host_zone(self, zone_id):
         return resync.host_zone(zone_id)
@@ -277,11 +343,11 @@ class Game:
     def forget_gifts(self):
         household.forget_gifts()
 
-    def welcome(self, sim_id, before=(), travellers=(), claimed=()):
-        return household.welcome(sim_id, _client(), before, travellers, claimed)
+    def welcome(self, sim_id, before=(), travellers=(), claimed=(), guest_household=0):
+        return household.welcome(sim_id, _client(), before, travellers, claimed, guest_household=guest_household)
 
-    def send_off(self, sim_ids):
-        household.send_off(sim_ids, _client())
+    def send_off(self, sim_ids, guest_household=0):
+        household.send_off(sim_ids, _client(), guest_household=guest_household)
 
     def joined(self, sim_id):
         import services
@@ -361,8 +427,41 @@ def _watch_loading_screen():
         finally:
             _loaded_zone = self.id
             log.info("loading screen finished")
+            _log_lot_data(self)
 
     Zone.on_loading_screen_animation_finished = on_loading_screen_animation_finished
+
+
+def _log_lot_data(zone):
+    """One line on each load about the lot the game is on and whose it is:
+    which household owns it, the one played, and the accounts of each, as
+    a game refuses build mode on a lot that is not its player's."""
+    try:
+        import services
+
+        lot = zone.lot
+        owner = getattr(lot, "zone_owner_household_id", 0) or 0
+        active = services.active_household_id() or 0
+        if not owner:
+            whose = "none"
+        else:
+            whose = "ours" if owner == active else "another's"
+        played = services.active_household()
+        account = getattr(getattr(_client(), "account", None), "id", 0) or 0
+        theirs = getattr(getattr(played, "account", None), "id", 0) or 0
+        home = getattr(played, "home_zone_id", 0) or 0
+        log.info("lot data: zone {:#x}, lot {:#x}, owner household {:#x} ({}), active household {:#x} with home "
+                 "{:#x}, account of the client {:#x}, of the household {:#x}".format(
+                     zone.id, getattr(lot, "lot_id", 0) or 0, owner, whose, active, home, account, theirs))
+    except Exception:
+        log.exception("could not read the lot's data")
+
+
+def cross_save():
+    """Whether the session is one of families of their own, brought from
+    saves of their own (see session.Session.cross_save): build mode is then
+    not shared between the games (see native.Sync)."""
+    return _session is not None and _session.cross_save
 
 
 def _forward_log(message):
@@ -407,6 +506,7 @@ def _native_tick():
         if note != _native_note:
             _native_note = note
             log.info("native sync: " + note)
+    native.set_cross(cross_save())
     live = _session.live
     if live and not _native_was_live:
         native.joined(place)

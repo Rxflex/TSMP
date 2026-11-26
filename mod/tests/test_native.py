@@ -286,6 +286,54 @@ class RecorderTest(unittest.TestCase):
         self.call(self.zone, 7, 21, native.BUILD_OP, 3, 4, self.stream(b"operation"))
         self.assertEqual(self.recorder.take(), ([], []))
 
+    def test_lot_data_is_fingerprinted_from_its_walls(self):
+        import zlib
+
+        self.recorder.start()
+        header = bytes.fromhex("c0b24a3b160073108a17c000")
+        walls = b"LDNB" + bytes(range(200))
+        data = self.memory.buffer(header + walls)
+        # The host's simulation broadcasts it, a guest's sends it.
+        self.call(self.interface, 2, 5, native.LOT_DATA, data, len(header + walls))
+        self.assertEqual(self.recorder.lot_data, (0x3B4AB2C0, 216, zlib.crc32(walls)))
+        self.assertEqual(self.recorder.lot_loads, 1)
+        other = self.memory.buffer(header + walls[:-1] + b"x")
+        self.call(self.interface, 3, 5, 6, native.LOT_DATA, other, len(header + walls))
+        self.assertEqual(self.recorder.lot_loads, 2)
+        self.assertNotEqual(self.recorder.lot_data[2], zlib.crc32(walls))
+        # Too short to hold walls: not lot data this reads.
+        self.call(self.interface, 3, 5, 6, native.LOT_DATA, data, 8)
+        self.assertEqual(self.recorder.lot_loads, 2)
+        self.assertEqual(native._fingerprint((0x3B4AB2C0, 216, 0xAB)), "3b4ab2c0-216-000000ab")
+        self.assertEqual(native._fingerprint((1, 2, None)), "00000001-2-?")
+
+    def test_a_refusal_is_read(self):
+        self.recorder.start()
+        for sample in ("088120108db0f8b50c", "08832010fce48803", "0885601000"):
+            payload = bytes.fromhex(sample)
+            self.call(self.interface, 3, 5, 6, native.OP_FAIL, self.memory.buffer(payload), len(payload))
+        self.assertEqual(list(self.recorder.failures), [(0x1001, 0xC6BE180D), (0x1003, 0x0062327C), (0x3005, 0)])
+
+    def test_fields_of_a_message_that_cannot_be_read_whole(self):
+        self.assertEqual(native._varints(bytes.fromhex("0881")), {})
+        self.assertEqual(native._varints(bytes.fromhex("08011203616263180a")), {1: 1, 3: 10})
+        self.assertEqual(native._varints(bytes.fromhex("0801 0f".replace(" ", ""))), {1: 1})
+
+    def test_each_zone_load_keeps_samples_of_its_own(self):
+        self.recorder.start()
+        data = self.memory.buffer(bytes(16))
+        for _ in range(native.MAX_SAMPLES + 5):
+            self.call(self.interface, 3, 5, 6, native.OP_FAIL, data, 9)
+        self.assertEqual(len(self.recorder.samples), native.MAX_SAMPLES)
+        lines = self.recorder.sample_lines()
+        self.recorder.forget()
+        for _ in range(3):
+            self.call(self.interface, 3, 5, 6, native.LOT_DATA, data, 16)
+        self.assertEqual(len(self.recorder.samples), native.MAX_SAMPLES + 3)
+        # Only ever added to, which is how live mode tells the new ones.
+        self.assertEqual(self.recorder.sample_lines()[: len(lines)], lines)
+        self.assertEqual(self.recorder.sample_lines()[-1], "send 708 size 16: " + "00" * 16)
+
     def test_stop_restores_tables(self):
         self.recorder.start(receive=True)
         self.assertEqual(self.recorder.stop(), 2)

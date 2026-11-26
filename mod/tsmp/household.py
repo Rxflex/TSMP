@@ -72,8 +72,10 @@ class Merges:
     A guest that played joined played in our save, so our copy is the newer
     one. When that guest later comes back from a save of its own, the copy
     it brings is from before, and taking it in would undo what was played
-    here. The record lives in a small JSON file so that it outlasts the
-    game; it is read once and written whole, and a failure to write is only
+    here. It also says which households came from a save of another new
+    game (`foreign`): the walls of their home here are ours, not theirs.
+    The record lives in a small JSON file so that it outlasts the game; it
+    is read once and written whole, and a failure to write is only
     logged."""
 
     # Households remembered; the oldest are forgotten first.
@@ -91,6 +93,12 @@ class Merges:
         entry = self._load().get(str(household_id))
         return entry is not None and entry.get("save") == save and entry.get("joined") is True
 
+    def foreign(self, household_id, save):
+        """True when `household_id` was taken into our save `save` from a
+        save of another new game."""
+        entry = self._load().get(str(household_id))
+        return entry is not None and entry.get("save") == save and entry.get("foreign") is True
+
     def joined(self, household_ids, save):
         for household_id in household_ids:
             self._set(household_id, save, True)
@@ -107,14 +115,28 @@ class Merges:
             # Played in our own save: copies from any other are older.
             self.joined([household_id], save)
         elif outcome not in (KEPT, OLDER):
-            self.merged(household_id, save)
+            self._set(household_id, save, False, foreign=bool(origin_save) or None)
+            self._write()
+        elif origin_save and not self.foreign(household_id, save):
+            # Ours is kept, but the household came from elsewhere all the
+            # same.
+            entry = self._load().get(str(household_id))
+            joined = entry is not None and entry.get("save") == save and entry.get("joined") is True
+            self._set(household_id, save, joined, foreign=True)
+            self._write()
 
-    def _set(self, household_id, save, joined):
+    def _set(self, household_id, save, joined, foreign=None):
+        """`foreign` None keeps what the record says of it in that save:
+        where a household came from does not change as it is played."""
         entries = self._load()
         key = str(household_id)
         # Moved to the end, so that the first one is the oldest.
-        entries.pop(key, None)
+        old = entries.pop(key, None) or {}
+        if foreign is None:
+            foreign = old.get("save") == save and old.get("foreign") is True
         entries[key] = {"save": save, "joined": joined}
+        if foreign:
+            entries[key]["foreign"] = True
         while len(entries) > self.LIMIT:
             del entries[next(iter(entries))]
 
@@ -202,6 +224,16 @@ def _record():
             directory = None
         _merges = Merges(os.path.join(directory, MERGES_FILE) if directory else None)
     return _merges
+
+
+def from_another_save(household_id):
+    """Host: whether `household_id` was taken into the save we play from a
+    save of another new game."""
+    try:
+        return _record().foreign(household_id, resync.current_save())
+    except Exception:
+        log.exception("household: could not tell where {:#x} came from".format(household_id))
+        return False
 
 
 def note_joined(household_ids):
@@ -365,7 +397,10 @@ def take_in(payload, origin_save=0, player="", version=None, others=()):
         if keeps_household(household_id, services.active_household_id(), known, given.sims.ids, others):
             outcome = _update_played(persistence, part, household_id, player, others)
         else:
-            outcome = _take(persistence, part, given, home, objects, known, player, others)
+            # From a save of another new game, as a guest of a family of
+            # its own brings it.
+            foreign = bool(origin_save) and origin_save != save
+            outcome = _take(persistence, part, given, home, objects, known, player, others, foreign=foreign)
     except Refusal:
         raise
     except Exception as error:
@@ -393,8 +428,9 @@ def _read(payload, message_type):
     return home, part, objects
 
 
-def _take(persistence, part, given, home, objects, known, player="", others=()):
-    """A household we do not play: the guest's copy replaces ours."""
+def _take(persistence, part, given, home, objects, known, player="", others=(), foreign=False):
+    """A household we do not play: the guest's copy replaces ours. `foreign`
+    says it comes from a save of another new game."""
     import services
 
     household_id = given.household_id
@@ -410,7 +446,7 @@ def _take(persistence, part, given, home, objects, known, player="", others=()):
     # Households of an account the game does not know get a made-up one.
     ours.account_id = account
     zone = _with_id(part.zones, home)
-    ours.home_zone = _settle_home(persistence, ours, account, zone, home, objects)
+    ours.home_zone = _settle_home(persistence, ours, account, zone, home, objects, foreign=foreign)
     _place(persistence, sims, part.zones, home, ours.home_zone, player)
 
     manager = services.household_manager()
@@ -648,10 +684,10 @@ def _with_id(zones, zone_id):
     return None
 
 
-def _settle_home(persistence, household, account, given, home, objects):
+def _settle_home(persistence, household, account, given, home, objects, foreign=False):
     """Give the household its lot in our save, when that lot is free there.
-    `given` is the guest's ZoneData of it. Returns the id of its home zone,
-    0 for none."""
+    `given` is the guest's ZoneData of it, of a save of another new game
+    when `foreign`. Returns the id of its home zone, 0 for none."""
     import services
 
     household_id = household.household_id
@@ -681,6 +717,11 @@ def _settle_home(persistence, household, account, given, home, objects):
         _copy_lot(zone, given)
         resync.keep_objects(ours, _objects_for(ours, objects))
     zone.household_id = household_id
+    if foreign:
+        # A lot of our save is owned by our account, as its owner record
+        # says; the ZoneData of a guest from a save of its own names the
+        # guest's. A copy of our save names ours already.
+        zone.nucleus_id = account
     _set_owner(persistence, zone, household, account)
     return ours
 
@@ -777,7 +818,7 @@ def _set_owner(persistence, zone, household, account):
         owner.household_name = household.name
 
 
-def welcome(sim_id, client, theirs=(), travellers=(), claimed=()):
+def welcome(sim_id, client, theirs=(), travellers=(), claimed=(), guest_household=0):
     """Host: the other player controls `sim_id`. Have that sim, and the sims
     of its household that came along to our lot, on the lot and in our game
     client's list of controllable sims, so that they are simulated as played
@@ -785,8 +826,11 @@ def welcome(sim_id, client, theirs=(), travellers=(), claimed=()):
     that player before, `travellers` the sims the other player's game
     travelled with to our lot, `claimed` the sims other players play: none
     of them is handed over, and `sim_id` being one is refused, so that a
-    guest that goes is never followed off the lot by another's sim. Returns
-    the ids of the sims now controllable for them, [] when refused."""
+    guest that goes is never followed off the lot by another's sim.
+    `guest_household` is the household the other player's game plays, 0
+    when not known: a sim of ours is refused to a player of another one.
+    Returns the ids of the sims now controllable for them, [] when
+    refused."""
     import services
 
     infos = services.sim_info_manager()
@@ -799,8 +843,12 @@ def welcome(sim_id, client, theirs=(), travellers=(), claimed=()):
         log.info("household: another player plays the sim {:#x}; refused".format(sim_id))
         return []
     own = _household_id(client)
-    before = [info for info in (infos.get(other) for other in theirs) if info is not None]
-    if _steals(sim_info.household_id, own, [info.household_id for info in before]):
+    before = [info.household_id for info in (infos.get(other) for other in theirs) if info is not None]
+    if guest_household:
+        # Its game says which household it plays, which holds before it
+        # was handed any sim.
+        before.append(guest_household)
+    if _steals(sim_info.household_id, own, before):
         # A guest that plays another household asks for one of ours: it
         # would take a sim the host is playing.
         log.info("household: the other player plays another household and asks for our sim {:#x}; refused".format(
@@ -864,12 +912,15 @@ def _make_controllable(client, sim_info, own):
         return False
 
 
-def send_off(sim_ids, client):
+def send_off(sim_ids, client, guest_household=0):
     """Host: the other player has left our lot with these sims. Without
     this we would go on simulating them, and our next save would overwrite
     what was played with them apart. Takes them out of our client's
     controllable sims (unless of our household) and off the lot. Returns the
-    ids of the sims made to leave."""
+    ids of the sims made to leave. A player of another household than ours,
+    `guest_household` (0 when not known), never played one of ours, so none
+    of ours is made to leave; with one family together the other player's
+    sims are ours too, and go."""
     import services
 
     infos = services.sim_info_manager()
@@ -885,6 +936,9 @@ def send_off(sim_ids, client):
             if client is not None and sim_info.household_id != own and sim_info in client.selectable_sims:
                 client.remove_selectable_sim_info(sim_info)
                 log.info("household: the other player's sim {:#x} is no longer controllable here".format(sim_id))
+            if stays(sim_info.household_id, own, guest_household):
+                log.info("household: the sim {:#x} is of our household and stays".format(sim_id))
+                continue
             sim = sim_info.get_sim_instance() if sim_info.is_instanced() else None
             if sim is None or (active is not None and active.id == sim_id):
                 continue
@@ -896,6 +950,13 @@ def send_off(sim_ids, client):
         except Exception:
             log.exception("household: could not send the sim {:#x} off".format(sim_id))
     return gone
+
+
+def stays(household_id, own, guest_household):
+    """Whether a sim of `household_id` stays on our lot as a player of
+    `guest_household` leaves it: one of our household `own`, which that
+    player does not play."""
+    return bool(guest_household) and guest_household != own and household_id == own
 
 
 def _ways_to_leave(sim):
