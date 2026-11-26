@@ -1669,14 +1669,22 @@ mod tests {
 
     #[test]
     fn an_idle_remote_hears_beats_and_the_game_does_not() {
-        let (_relay, mut game, remote) = joined();
+        let relay = host_relay(2);
+        let mut game = Game::connect(relay.port());
+        assert_eq!(game.receive_control(), serde_json::json!({"type": "link", "remotes": 0}));
+        let (_, mut remote) = add(&relay, "guest");
+        assert_eq!(game.link(), serde_json::json!({"type": "link", "remotes": 1}));
+        // Timed from before the game's state, which the remote hears first:
+        // every beat after it waits for the remote to be idle for a beat,
+        // however late this thread is to read them.
         let since = Instant::now();
+        game.state("host", true);
+        remote.receive();
         for _ in 0..3 {
             let frame = read_frame(&mut &remote.stream).unwrap().unwrap();
             assert!(is_beat(&frame));
         }
-        // The first comes at once, the next two after the remote has been idle.
-        assert!(since.elapsed() >= QUICK.beat * 2);
+        assert!(since.elapsed() >= QUICK.beat * 3);
 
         game.stream.set_read_timeout(Some(QUICK.beat * 4)).unwrap();
         let error = read_frame(&mut game.stream).unwrap_err();
@@ -2208,7 +2216,10 @@ mod tests {
         let link = LiveLink::start(Route::Direct((Ipv4Addr::LOCALHOST, host.port()).into()), hello("guest")).unwrap();
         let mut host_game = Game::connect(host.live().port());
         let mut guest_game = Game::connect(link.port());
-        wait_for("the launchers to connect", || link.status().remotes.len() == 1);
+        // Each launcher takes the other in on a thread of its own.
+        wait_for("the launchers to connect", || {
+            link.status().remotes.len() == 1 && host.live().status().remotes.len() == 1
+        });
         let peer = host.live().status().remotes[0].peer;
 
         host_game.state_v("host", 3);
